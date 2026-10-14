@@ -748,17 +748,20 @@ class TestFireAndForgetSpawn:
 
 
 class TestCapAndDeferDelivery:
-    """A large result is excerpted in the completion note, then the task dropped."""
+    """
+    A large result is spilled and excerpted in the completion note, then the
+    task dropped.
+    """
 
     @pytest.mark.asyncio
-    async def test_large_result_excerpted_then_dropped(self):
+    async def test_without_a_file_backend_the_result_is_inlined_whole(self):
         tool = BigOutputTool(size=1000, cap=100)
         executor, _, _ = _make_executor([], tools=[tool])
         mgr = executor.agent_ctx.bg_tasks
         ctx = executor.ctx
 
         call = FunctionToolCallItem(call_id="c1", name="big", arguments='{"text":"x"}')
-        _note, event = await mgr.run_backgroundable(
+        _note, launched = await mgr.run_backgroundable(
             call,
             tool,
             EchoInput(text="x"),
@@ -766,14 +769,14 @@ class TestCapAndDeferDelivery:
             exec_id="t",
             agent_ctx=executor.agent_ctx,
         )
-        task_id = event.data.task_id
+        task_id = launched.task_id
 
         await mgr.wait_idle()
-        notes = [str(c.note.message) for c in await mgr.pop_completions(ctx=ctx)]
+        notes = [str(c.note.message) for c in mgr.pop_completions(ctx=ctx)]
         assert len(notes) == 1
-        # Excerpted — the full output belongs in the .grasp log, not the
-        # transcript (this tool streams nothing, so there is no pointer here).
-        assert "chars omitted" in notes[0]
+        # Nowhere to spill the full text: truncating would lose it.
+        assert "X" * 1000 in notes[0]
+        assert "chars omitted" not in notes[0]
         # Once its note is delivered the task no longer gates the answer and is
         # dropped — nothing is retained in memory for a poll.
         assert not mgr.has_blocking_tasks
@@ -798,7 +801,7 @@ class TestCapAndDeferDelivery:
         mgr = executor.agent_ctx.bg_tasks
 
         call = FunctionToolCallItem(call_id="c1", name="big", arguments='{"text":"x"}')
-        _note, event = await mgr.run_backgroundable(
+        _note, launched = await mgr.run_backgroundable(
             call,
             tool,
             EchoInput(text="x"),
@@ -806,10 +809,10 @@ class TestCapAndDeferDelivery:
             exec_id="t",
             agent_ctx=executor.agent_ctx,
         )
-        task_id = event.data.task_id
+        task_id = launched.task_id
 
         await mgr.wait_idle()
-        notes = [c.note.message.text for c in await mgr.pop_completions(ctx=ctx)]
+        notes = [c.note.message.text for c in mgr.pop_completions(ctx=ctx)]
         assert len(notes) == 1
         assert "chars omitted" in notes[0]
 
@@ -842,7 +845,7 @@ class TestDurableTaskRecords:
 
         # A non-None path is required for a backgrounded call to be keyed +
         # persisted (``make_tool_call_path(None, ...)`` is ``None``).
-        mgr = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
+        mgr = BackgroundTaskManager[None](tools={}, path=[])
 
         # A non-resumable, long-running spawned task.
         tool = SlowTool(delay=10.0)
@@ -863,7 +866,7 @@ class TestDurableTaskRecords:
 
         # A fresh manager on the same session = a restart; the owning context
         # writes the notices it returns into the transcript.
-        mgr2 = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
+        mgr2 = BackgroundTaskManager[None](tools={}, path=[])
         agent_ctx2 = _make_agent_ctx(
             agent_name="t",
             bg_tasks=mgr2,
@@ -882,7 +885,7 @@ class TestDurableTaskRecords:
         # caller (LLMAgent) can stream them — no transcript message stays hidden
         # from the event stream.
         assert notes
-        assert t2.messages[-len(notes) :] == [n.message for n in notes]
+        assert t2[-len(notes) :] == [n.message for n in notes]
 
         # The record stays PENDING until a checkpoint persists the notice —
         # a crash before that must re-surface it on the next resume.
@@ -892,7 +895,7 @@ class TestDurableTaskRecords:
         # flush_flips (called after the agent checkpoint) makes the
         # record terminal, so a second resume surfaces nothing.
         await mgr2.flush_flips(ctx=ctx)
-        mgr3 = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
+        mgr3 = BackgroundTaskManager[None](tools={}, path=[])
         assert await mgr3.resume_durable(ctx=ctx, exec_id="t") == []
 
     @pytest.mark.asyncio
@@ -904,16 +907,16 @@ class TestDurableTaskRecords:
 
         store = InMemoryCheckpointStore()
         ctx = SessionContext[None](state=None, checkpoint_store=store, session_key="s1")
-        mgr = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
+        mgr = BackgroundTaskManager[None](tools={}, path=[])
 
         call = FunctionToolCallItem(
             call_id="c1", name="failing_bg", arguments='{"text":"x"}'
         )
-        _note, event = await mgr.run_backgroundable(
+        _note, launched = await mgr.run_backgroundable(
             call, FailingBgTool(), EchoInput(text="x"), ctx=ctx, exec_id="t"
         )
         # Wait for the task to finish so _consume persists the outcome.
-        await mgr._tasks[event.data.task_id].consumer  # pyright: ignore[reportPrivateUsage]
+        await mgr._tasks[launched.task_id].consumer  # pyright: ignore[reportPrivateUsage]
 
         # A genuine runtime failure is recorded as FAILED with its error (so a
         # crash before delivery leaves a terminal record, not a re-runnable PENDING).
@@ -956,9 +959,7 @@ class TestDurableTaskRecords:
             auto_background_at=0,
         )
 
-        mgr = BackgroundTaskManager[None](
-            agent_name="coordinator", tools={"researcher": researcher}, path=[]
-        )
+        mgr = BackgroundTaskManager[None](tools={"researcher": researcher}, path=[])
 
         # A PENDING record with the original args but NO child checkpoint on
         # disk — exactly the state a crash leaves before the child's first
@@ -1021,9 +1022,7 @@ class TestDurableTaskRecords:
             sys_prompt="Answer.",
             auto_background_at=0,
         )
-        mgr = BackgroundTaskManager[None](
-            agent_name="coordinator", tools={"researcher": researcher}, path=[]
-        )
+        mgr = BackgroundTaskManager[None](tools={"researcher": researcher}, path=[])
 
         # Two interrupted tasks with the original run's ids bg_1, bg_2.
         for tid, cid in [("bg_1", "c1"), ("bg_2", "c2")]:
@@ -1101,13 +1100,19 @@ class _BgStreamingTool(BaseTool[EchoInput, Any, Any]):
             source="bg_streamer",
             exec_id=exec_id,
         )
-        # A nested tool's stream (as bubbled through a sub-agent task).
-        yield ToolStreamEvent(data="inner", source="inner_tool", exec_id=exec_id)
+        # A nested tool's stream, as bubbled through a sub-agent task: already
+        # claimed by the nested call.
+        yield ToolStreamEvent(
+            data="inner",
+            source="inner_tool",
+            exec_id=exec_id,
+            tool_call_id="inner_call",
+        )
         yield ToolOutputEvent(data="done", source="bg_streamer", exec_id=exec_id)
 
 
 class TestBackgroundStreamTaskStamping:
-    """Bubbling stamps a task's own stream deltas with its task identity."""
+    """A task's own stream deltas carry its tool call id; nested ones keep theirs."""
 
     @pytest.mark.asyncio
     async def test_bubble_stamps_task_id_and_keeps_subclass(self):
@@ -1120,7 +1125,7 @@ class TestBackgroundStreamTaskStamping:
         ctx = executor.ctx
 
         call = FunctionToolCallItem(call_id="c1", name="bg_streamer", arguments="{}")
-        _note, event = await mgr.run_backgroundable(
+        _note, launched = await mgr.run_backgroundable(
             call,
             tool,
             EchoInput(text="x"),
@@ -1128,16 +1133,15 @@ class TestBackgroundStreamTaskStamping:
             exec_id="t",
             agent_ctx=executor.agent_ctx,
         )
-        assert event is not None
-        task_id = event.data.task_id
+        assert launched is not None
 
         await mgr.wait_idle()
-        bubbled = [e async for e in mgr.bubble_events(ctx=ctx)]
+        bubbled = [e async for e in mgr.bubble_events()]
         streams = [e for e in bubbled if isinstance(e, ToolStreamEvent)]
 
         own = [e for e in streams if e.source == "bg_streamer"]
         assert own
-        assert all(e.task_id == task_id for e in own)
+        assert all(e.tool_call_id == "c1" for e in own)
         # run_stream already stamped the owning agent as the destination.
         assert all(e.destination == "test" for e in own)
         # A structured subclass survives the stamping intact.
@@ -1147,7 +1151,7 @@ class TestBackgroundStreamTaskStamping:
         # An inner tool's stream is not claimed by the outer task.
         inner = [e for e in streams if e.source == "inner_tool"]
         assert inner
-        assert all(e.task_id is None for e in inner)
+        assert all(e.tool_call_id == "inner_call" for e in inner)
 
 
 class TestToolStreamDestinationStamping:
@@ -1190,9 +1194,9 @@ class TestToolStreamDestinationStamping:
 
 class TestFrontTrim:
     """
-    Bubbling front-trims a surviving task's buffer: events consumed by both the
-    bubble and flush cursors are dropped, bounding memory for a chatty command,
-    while a terminal result event is preserved for ``_outcome_from_events``.
+    Bubbling front-trims a surviving task's buffer: events already bubbled are
+    dropped, bounding memory for a chatty command, while the task's own
+    terminal event — its outcome — is kept for ``_outcome_from_events``.
     """
 
     @pytest.mark.asyncio
@@ -1202,7 +1206,6 @@ class TestFrontTrim:
 
         executor, _, _ = _make_executor([])
         mgr = executor.agent_ctx.bg_tasks
-        ctx = executor.ctx
 
         async def _never() -> None:
             await asyncio.Event().wait()
@@ -1213,16 +1216,17 @@ class TestFrontTrim:
             tool_name="x",
             tool_call_id="c1",
             exec_id="t",
-            consumer=task,
             blocks_final_answer=False,
         )
+        pt.consumer = task
         for i in range(10):
             pt.events.append(ToolStreamEvent(data=f"s{i}", source="x"))
         mgr._tasks["bg_1"] = pt  # pyright: ignore[reportPrivateUsage]
 
-        # bubble_events bubbles + flushes the 10 events (cursor → 10) in one
-        # pass then trims the consumed prefix → buffer emptied, cursor reset.
-        _ = [e async for e in mgr.bubble_events(ctx=ctx)]
+        # bubble_events bubbles the 10 events (cursor → 10) in one pass, then
+        # trims the consumed prefix: a running task has no outcome to keep, so
+        # the buffer empties.
+        _ = [e async for e in mgr.bubble_events()]
         assert pt.events == []
         assert pt.cursor == 0
 
@@ -1255,40 +1259,50 @@ class TestFrontTrim:
         )
         await mgr.wait_idle()
 
-        async for _ in mgr.bubble_events(ctx=ctx):
+        async for _ in mgr.bubble_events():
             pass
 
-        completions = await mgr.pop_completions(ctx=ctx)
+        completions = mgr.pop_completions(ctx=ctx)
         assert len(completions) == 1
         note = str(completions[0].note.message)
         assert "<status> completed </status>" in note
         assert "done" in note
 
     @pytest.mark.asyncio
-    async def test_trim_stops_before_a_terminal_result(self):
-        from grasp_agents.agent.background_tasks import BackgroundTask
-        from grasp_agents.types.events import ToolOutputEvent, ToolStreamEvent
+    async def test_trim_keeps_the_tasks_own_terminal(self):
+        from grasp_agents.agent.background_tasks import (
+            BackgroundTask,
+            _outcome_from_events,  # pyright: ignore[reportPrivateUsage]
+        )
+        from grasp_agents.types.events import (
+            ToolErrorEvent,
+            ToolErrorInfo,
+            ToolOutputEvent,
+            ToolStreamEvent,
+        )
 
-        async def _noop() -> None: ...
-
-        task = asyncio.create_task(_noop())
-        await task
-
+        # A finished sub-agent-like buffer: an inner tool's error early (its own
+        # call's), the task's result, then a trailing stream event.
         pt = BackgroundTask(
-            task_id="bg_1", tool_name="x", tool_call_id="c1", exec_id="t", consumer=task
+            task_id="bg_1", tool_name="x", tool_call_id="c1", exec_id="t"
         )
         pt.events.append(ToolStreamEvent(data="s0", source="x"))
-        pt.events.append(ToolOutputEvent(data="RESULT", source="x"))  # terminal
-        pt.events.append(ToolStreamEvent(data="s2", source="x"))
-        pt.cursor = 3
+        pt.events.append(
+            ToolErrorEvent(
+                data=ToolErrorInfo(tool_name="inner", error="boom"),
+                tool_call_id="inner_call",
+            )
+        )
+        pt.events.append(ToolOutputEvent(data="RESULT", source="x", tool_call_id="c1"))
+        pt.events.append(ToolStreamEvent(data="s3", source="x"))
+        pt.cursor = 4
 
         pt.trim_consumed()
 
-        # Trim stops before the terminal result at index 1 → only ``s0`` dropped,
-        # so a later ``_outcome_from_events`` still finds the result.
-        assert len(pt.events) == 2
-        assert isinstance(pt.events[0], ToolOutputEvent)
+        # Trimmed up to the task's own terminal, wherever it sits in the buffer.
+        assert [type(e) for e in pt.events] == [ToolOutputEvent, ToolStreamEvent]
         assert pt.cursor == 2
+        assert _outcome_from_events(pt.events, "c1") == ("RESULT", None)
 
     @pytest.mark.asyncio
     async def test_run_stream_without_agent_ctx_leaves_unset(self):

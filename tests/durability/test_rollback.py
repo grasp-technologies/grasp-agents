@@ -38,7 +38,9 @@ _KEY = "s1/agent/test_agent"
 
 
 def test_transcript_truncate() -> None:
-    cw = ContextWindowManager(model_name="mock", source="t")
+    cw = ContextWindowManager(
+        model_name="mock",
+    )
     cw.add_messages(
         [InputMessageItem.from_text(f"m{i}", role="user") for i in range(5)]
     )
@@ -197,7 +199,7 @@ async def test_rollback_to_first_step_empties_log_keeps_ephemeral_prompt() -> No
     await agent.rollback_to_step(0)
 
     # Back to an empty conversation log — ready to (re)deliver the first step.
-    assert agent.transcript.messages == []
+    assert list(agent.transcript) == []
     assert agent.step == 0  # parked at the start of step 0
 
     # The durable head is empty too (the system prompt is never persisted).

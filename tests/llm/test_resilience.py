@@ -1041,7 +1041,7 @@ class TestFallbackCapabilities:
         llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
 
         cw = ContextWindowManager(
-            model_name=llm.model_name, capabilities=llm.capabilities, source="A"
+            model_name=llm.model_name, capabilities=llm.capabilities
         )
         budget = cw.default_budget()
 

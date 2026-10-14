@@ -13,6 +13,7 @@ full ``AgentLoop`` (the manager owns the deadline race; the bash tool reads its
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +27,7 @@ from grasp_agents.types.items import FunctionToolCallItem
 from tests._helpers import _make_agent_ctx
 
 if TYPE_CHECKING:
+    from grasp_agents.file_backend.base import FileBackend
     from grasp_agents.sandbox.environment import ExecutionEnvironment
     from grasp_agents.session_context import SessionContext
 
@@ -37,9 +39,7 @@ def make_stack() -> tuple[AgentContext, BackgroundTaskManager[Any]]:
     ``path=[]`` so a store-backed ctx persists task records + progress logs
     (``make_tool_call_path(None, ...)`` would otherwise yield ``None``).
     """
-    mgr: BackgroundTaskManager[Any] = BackgroundTaskManager(
-        agent_name="t", tools={}, path=[]
-    )
+    mgr: BackgroundTaskManager[Any] = BackgroundTaskManager(tools={}, path=[])
     agent_ctx = _make_agent_ctx(agent_name="t", bg_tasks=mgr)
     return agent_ctx, mgr
 
@@ -126,25 +126,30 @@ async def kill(mgr: BackgroundTaskManager[Any], task_id: str) -> KillTaskResult:
     return await KillTask(mgr)._run(TaskIdInput(task_id=task_id))
 
 
-async def flush(mgr: BackgroundTaskManager[Any], ctx: SessionContext[Any]) -> None:
+async def read_log_until(
+    file_backend: FileBackend, log_path: str, text: str, *, timeout: float = 5.0
+) -> str:
     """
-    Drive one ``bubble_events`` pass for its log-mirroring side effect,
-    discarding the bubbled events; used by tests that just want a running task's
-    output written to its ``.grasp`` log.
+    A task's log once it holds ``text``: running output reaches the log within
+    the log's flush interval, not at once.
     """
-    async for _ in mgr.bubble_events(ctx=ctx):
-        pass
+    deadline = asyncio.get_running_loop().time() + timeout
+    content = ""
+    while asyncio.get_running_loop().time() < deadline:
+        with contextlib.suppress(Exception):  # not written yet
+            content, _ = await file_backend.read_text(Path(log_path))
+        if text in content:
+            return content
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{text!r} never reached {log_path}: {content!r}")
 
 
 async def drain_notes(agent_ctx: AgentContext, ctx: SessionContext[Any]) -> list[str]:
     """
     The completion notes one turn boundary delivers into ``agent_ctx``'s
-    transcript, as the model sees them. Bubbles first (mirroring progress to the
-    ``.grasp`` logs) so a truncated note points at a complete log.
+    transcript, as the model sees them.
     """
-    mgr = agent_ctx.bg_tasks
-    await flush(mgr, ctx)
-    completions = await mgr.pop_completions(ctx=ctx)
+    completions = agent_ctx.bg_tasks.pop_completions(ctx=ctx)
     agent_ctx.deliver_task_notes([c.note for c in completions])
     return [c.note.message.text for c in completions]
 

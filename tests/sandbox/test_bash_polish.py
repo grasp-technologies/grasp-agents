@@ -24,15 +24,18 @@ if TYPE_CHECKING:
 
 from grasp_agents.agent.agent_context import AgentContext
 from grasp_agents.agent.agent_loop import AgentLoop
-from grasp_agents.agent.background_tasks import BackgroundTaskManager
 from grasp_agents.llm.llm import LLM
 from grasp_agents.sandbox import local_environment
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.bash import Bash, BashInput, bash_tools
 from grasp_agents.tools.task_tools import KillTask, TaskIdInput
-from grasp_agents.types.events import BackgroundTaskLaunchedEvent, UserMessageEvent
+from grasp_agents.types.events import (
+    BackgroundTaskInfo,
+    BackgroundTaskLaunchedEvent,
+    UserMessageEvent,
+)
 from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
-from tests._helpers import _make_agent_ctx, _make_agent_loop
+from tests._helpers import _make_agent_ctx, _make_agent_loop, _until
 
 pytestmark = pytest.mark.asyncio
 
@@ -118,26 +121,16 @@ def _ctx(tmp_path: Path) -> SessionContext[None]:
     return SessionContext(environment=env)
 
 
-async def _flush(
-    manager: BackgroundTaskManager[None], ctx: SessionContext[None]
-) -> None:
-    """
-    Drive one ``bubble_events`` pass for its log-mirroring side effect,
-    discarding the bubbled events.
-    """
-    async for _ in manager.bubble_events(ctx=ctx):
-        pass
+def _log_holds(log: Path, text: str) -> bool:
+    return log.exists() and text in log.read_text()
 
 
 async def _drain_notes(agent_ctx: AgentContext, ctx: SessionContext[None]) -> list[str]:
     """
     The completion notes one turn boundary delivers into ``agent_ctx``'s
-    transcript, as the model sees them. Bubbles first (mirroring progress to the
-    ``.grasp`` logs) so a truncated note can point at a complete log.
+    transcript, as the model sees them.
     """
-    mgr = agent_ctx.bg_tasks
-    await _flush(mgr, ctx)
-    completions = await mgr.pop_completions(ctx=ctx)
+    completions = agent_ctx.bg_tasks.pop_completions(ctx=ctx)
     agent_ctx.deliver_task_notes([c.note for c in completions])
     return [c.note.message.text for c in completions]
 
@@ -468,9 +461,9 @@ async def test_large_result_excerpted_and_deferred(tmp_path: Path) -> None:
 
 async def test_progress_log_appends_deltas(tmp_path: Path) -> None:
     """
-    ``drain`` appends only the *new* output each time — not a full rewrite
-    (would be O(n²)) and not a re-append of already-written text (would
-    duplicate). Two drains over a staged command leave each line exactly once.
+    Each write appends only the *new* output — not a full rewrite (would be
+    O(n²)) and not a re-append of already-written text (would duplicate). Two
+    writes over a staged command leave each line exactly once.
     """
     from pathlib import Path as _Path
 
@@ -482,15 +475,11 @@ async def test_progress_log_appends_deltas(tmp_path: Path) -> None:
     )
     assert task_id is not None
 
-    await asyncio.sleep(0.3)  # AAAA emitted, BBBB not yet
-    await _flush(mgr, ctx)
     log = _Path(mgr._tasks[task_id].log_path or "")  # pyright: ignore[reportPrivateUsage]
-    first = log.read_text()
-    assert "AAAA" in first
-    assert "BBBB" not in first
+    await _until(lambda: _log_holds(log, "AAAA"))
+    assert "BBBB" not in log.read_text()
 
-    await asyncio.sleep(0.6)  # BBBB now emitted
-    await _flush(mgr, ctx)
+    await _until(lambda: _log_holds(log, "BBBB"))
     second = log.read_text()
     assert "BBBB" in second
     assert second.count("AAAA") == 1  # delta-appended, not rewritten or duplicated
@@ -518,7 +507,7 @@ async def test_nonblocking_task_bubbles_stream_events(tmp_path: Path) -> None:
     assert mgr._tasks[task_id].blocks_final_answer is False  # pyright: ignore[reportPrivateUsage]  # non-blocking opt-out
 
     await mgr.wait_idle()
-    events = [e async for e in mgr.bubble_events(ctx=ctx)]
+    events = [e async for e in mgr.bubble_events()]
     streamed = [e for e in events if isinstance(e, ToolStreamEvent)]
     assert streamed  # bubbled despite blocks_final_answer=False
     assert any("streamed" in str(e.data) for e in streamed)
@@ -727,11 +716,12 @@ async def test_bash_tools_factory_builds_pair(tmp_path: Path) -> None:
     assert killed.status == "cancelled"
 
 
-async def test_deadline_backgrounding_emits_launched_event(tmp_path: Path) -> None:
+async def test_deadline_backgrounding_reports_the_launch(tmp_path: Path) -> None:
     """
-    A deadline-sidelined command emits a ``BackgroundTaskLaunchedEvent`` — the
-    same lifecycle event a spawned (answer-blocking) task emits — so observers
-    see it move to the background, not just a transcript note.
+    A deadline-sidelined command reports its launch — the same info a spawned
+    (answer-blocking) task reports, which the loop announces as a
+    ``BackgroundTaskLaunchedEvent`` — so observers see it move to the
+    background, not just a transcript note.
     """
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
@@ -745,14 +735,14 @@ async def test_deadline_backgrounding_emits_launched_event(tmp_path: Path) -> No
         agent_ctx=loop.agent_ctx,
     )
     assert "moved to the background" in note
-    assert isinstance(launched, BackgroundTaskLaunchedEvent)
-    assert launched.data.tool_name == "Bash"
-    assert launched.data.task_id in loop.agent_ctx.bg_tasks._tasks  # pyright: ignore[reportPrivateUsage]
-    await loop.agent_ctx.bg_tasks.kill_task(launched.data.task_id)
+    assert isinstance(launched, BackgroundTaskInfo)
+    assert launched.tool_name == "Bash"
+    assert launched.task_id in loop.agent_ctx.bg_tasks._tasks  # pyright: ignore[reportPrivateUsage]
+    await loop.agent_ctx.bg_tasks.kill_task(launched.task_id)
 
 
 async def test_foreground_finish_emits_no_launched_event(tmp_path: Path) -> None:
-    """A command that finishes within the deadline returns no launched event."""
+    """A command that finishes within the deadline reports no launch."""
     ctx = _ctx(tmp_path)
     loop = _loop(ctx)
     call = FunctionToolCallItem(call_id="c1", name="Bash", arguments="{}")
@@ -853,7 +843,7 @@ async def test_kill_marks_record_cancelled(tmp_path: Path) -> None:
     assert all(r.status == TaskStatus.CANCELLED for r in recs)
 
     # A later resume must NOT report a deliberately-killed task as interrupted.
-    mgr2 = BackgroundTaskManager(agent_name="t", tools={}, path=[])
+    mgr2 = BackgroundTaskManager(tools={}, path=[])
     agent_ctx2 = _make_agent_ctx(agent_name="t", bg_tasks=mgr2)
     agent_ctx2.deliver_task_notes(await mgr2.resume_durable(ctx=ctx, exec_id="t"))
     assert not any("interrupted" in str(m) for m in agent_ctx2.transcript.messages)
@@ -910,17 +900,12 @@ async def test_backgrounded_bash_writes_greppable_log(tmp_path: Path) -> None:
     )
     assert task_id is not None
 
-    await asyncio.sleep(0.2)  # let the command emit "HELLO" before flushing
-    await _flush(loop.agent_ctx.bg_tasks, ctx)
-
     keys = await store.list_keys(task_prefix(ctx.session_key))
     rec = TaskRecord.model_validate_json(await store.load(keys[0]))
     # The record indexes an agent-readable .grasp/tasks log holding the output.
     assert rec.log_path is not None
     assert ".grasp/tasks" in rec.log_path
-    log = _Path(rec.log_path)
-    assert log.exists()
-    assert "HELLO" in log.read_text()
+    await _until(lambda: _log_holds(_Path(rec.log_path or ""), "HELLO"))
 
     await loop.agent_ctx.bg_tasks.cancel_all(ctx=ctx)
 
@@ -939,12 +924,8 @@ async def test_backgrounded_bash_writes_log_without_store(tmp_path: Path) -> Non
     )
     assert task_id is not None
 
-    await asyncio.sleep(0.2)
-    await _flush(loop.agent_ctx.bg_tasks, ctx)
-
-    logs = list((tmp_path / ".grasp" / "tasks").glob("*.log"))
-    assert logs, "no log written with a file backend but no checkpoint store"
-    assert any("HELLO" in p.read_text() for p in logs)
+    log_dir = tmp_path / ".grasp" / "tasks"
+    await _until(lambda: any(_log_holds(p, "HELLO") for p in log_dir.glob("*.log")))
 
     await loop.agent_ctx.bg_tasks.cancel_all(ctx=ctx)
 
@@ -964,9 +945,6 @@ async def test_resume_interrupted_points_at_log(tmp_path: Path) -> None:
     assert task_id is not None
 
     await asyncio.sleep(0.2)
-    await _flush(
-        loop.agent_ctx.bg_tasks, ctx
-    )  # mirrors the .grasp log (log_path set at launch)
 
     # Simulate a crash: drop the in-flight task without finalizing the record.
     for pt in list(loop.agent_ctx.bg_tasks._tasks.values()):  # pyright: ignore[reportPrivateUsage]
@@ -974,7 +952,7 @@ async def test_resume_interrupted_points_at_log(tmp_path: Path) -> None:
         with _contextlib.suppress(asyncio.CancelledError):
             await pt.consumer
 
-    mgr2 = BackgroundTaskManager(agent_name="t", tools={}, path=[])
+    mgr2 = BackgroundTaskManager(tools={}, path=[])
     agent_ctx2 = _make_agent_ctx(agent_name="t", bg_tasks=mgr2)
     agent_ctx2.deliver_task_notes(await mgr2.resume_durable(ctx=ctx, exec_id="t"))
 

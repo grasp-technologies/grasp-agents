@@ -30,12 +30,16 @@ class LLMAgentTranscript(Sequence[InputItem]):
     __slots__ = ("_messages",)
 
     def __init__(self, messages: list[InputItem] | None = None) -> None:
-        # Shared with the owner, which mutates it in place and never rebinds it.
+        """
+        A view over ``messages`` — the list itself, not a copy: the owner
+        mutates it in place and the view reflects every change.
+        """
         self._messages: list[InputItem] = messages if messages is not None else []
 
     @property
-    def messages(self) -> Sequence[InputItem]:
-        return self._messages
+    def messages(self) -> tuple[InputItem, ...]:
+        """A snapshot of the messages; the view itself is the cheap read path."""
+        return tuple(self._messages)
 
     def __len__(self) -> int:
         return len(self._messages)

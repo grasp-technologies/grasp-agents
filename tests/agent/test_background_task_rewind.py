@@ -36,7 +36,7 @@ from tests.agent.test_background_tools import (
 
 def _make_manager() -> tuple[BackgroundTaskManager[None], AgentContext]:
     """A manager and its owning context, transcript seeded with one system message."""
-    mgr = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
+    mgr = BackgroundTaskManager[None](tools={}, path=[])
     agent_ctx = _make_agent_ctx(
         agent_name="t",
         bg_tasks=mgr,
@@ -51,9 +51,9 @@ async def _drain(
     ctx: SessionContext[None],
 ) -> list[TaskCompletion]:
     """The loop's turn-boundary delivery: bubble, pop, write notes into the log."""
-    async for _ in mgr.bubble_events(ctx=ctx):
+    async for _ in mgr.bubble_events():
         pass
-    completions = await mgr.pop_completions(ctx=ctx)
+    completions = mgr.pop_completions(ctx=ctx)
     agent_ctx.deliver_task_notes([c.note for c in completions])
     return completions
 
@@ -67,11 +67,11 @@ async def _launch(
 ) -> str:
     tool = SlowTool(delay=delay)
     call = FunctionToolCallItem(call_id=call_id, name="slow", arguments='{"text":"x"}')
-    _note, event = await mgr.run_backgroundable(
+    _note, launched = await mgr.run_backgroundable(
         call, tool, EchoInput(text="x"), ctx=ctx, exec_id="t"
     )
-    assert event is not None
-    return event.data.task_id
+    assert launched is not None
+    return launched.task_id
 
 
 async def _load_only_record(
@@ -312,7 +312,7 @@ class TestAgentRewindsTaskPlane:
         _, record = await _load_only_record(store, "s1")
         assert record.status == TaskStatus.RUNNING
 
-        mgr2 = BackgroundTaskManager[None](agent_name="a", tools={}, path=[])
+        mgr2 = BackgroundTaskManager[None](tools={}, path=[])
         notes = await mgr2.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=0)
         assert notes == []  # no "interrupted" ghost for the orphan
         _, record = await _load_only_record(store, "s1")
@@ -382,10 +382,10 @@ class TestUndeliverAfter:
         call = FunctionToolCallItem(
             call_id="c1", name="fire_and_forget", arguments='{"text":"x"}'
         )
-        _note, event = await mgr.run_backgroundable(
+        _note, launched = await mgr.run_backgroundable(
             call, tool, EchoInput(text="x"), ctx=ctx, exec_id="t"
         )
-        assert event is not None
+        assert launched is not None
         await agent.save_checkpoint(turn=0)  # the launch is durable pre-step-2
         await mgr.wait_idle()  # finished before step 2 starts
 
@@ -411,7 +411,7 @@ class TestUndeliverAfter:
         assert record.note_transcript_pos == len(agent.transcript.messages)
 
         # A cold resume injects nothing extra (no duplicate note).
-        mgr2 = BackgroundTaskManager[None](agent_name="a", tools={}, path=[])
+        mgr2 = BackgroundTaskManager[None](tools={}, path=[])
         notes = await mgr2.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
         assert notes == []
 
@@ -439,10 +439,10 @@ class TestUndeliverAfter:
         call = FunctionToolCallItem(
             call_id="c1", name="fire_and_forget", arguments='{"text":"x"}'
         )
-        _note, event = await mgr.run_backgroundable(
+        _note, launched = await mgr.run_backgroundable(
             call, tool, EchoInput(text="x"), ctx=ctx, exec_id="t"
         )
-        assert event is not None
+        assert launched is not None
         await mgr.wait_idle()
         await _drain(mgr, agent.agent_ctx, ctx)
         await agent.save_checkpoint(turn=1)
@@ -578,7 +578,7 @@ class TestKillsSurviveCrashBeforeFlush:
         assert state.deferred_cancelled
 
         # Cold resume: fresh manager, state restored from the head.
-        mgr2 = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
+        mgr2 = BackgroundTaskManager[None](tools={}, path=[])
         agent_ctx2 = _make_agent_ctx(agent_name="t", bg_tasks=mgr2)
         agent_ctx2.restore(state)
 
@@ -740,10 +740,10 @@ class TestSettleKeepsDeliveredFlips:
         call = FunctionToolCallItem(
             call_id="c1", name="fire_and_forget", arguments='{"text":"x"}'
         )
-        _note, event = await mgr.run_backgroundable(
+        _note, launched = await mgr.run_backgroundable(
             call, tool, EchoInput(text="x"), ctx=ctx, exec_id="t"
         )
-        assert event is not None
+        assert launched is not None
         await agent.save_checkpoint(turn=0)  # boundary covers the launch
 
         # …completes and its note is delivered into the transcript.
@@ -769,6 +769,6 @@ class TestSettleKeepsDeliveredFlips:
         assert record.status == TaskStatus.DELIVERED
 
         # …so a cold resume injects nothing (no duplicate note).
-        mgr2 = BackgroundTaskManager[None](agent_name="a", tools={}, path=[])
+        mgr2 = BackgroundTaskManager[None](tools={}, path=[])
         notes = await mgr2.resume_durable(ctx=ctx, exec_id="t", task_launch_seq=1)
         assert notes == []

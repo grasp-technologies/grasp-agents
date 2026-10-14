@@ -141,7 +141,7 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
         self._in_type: type[InT]
         super().__init__()
 
-        self._agent_name = agent_name
+        self.agent_name = agent_name
         self._sys_prompt = sys_prompt
         self._in_prompt = in_prompt
         self._in_args_type_adapter: TypeAdapter[InT] = TypeAdapter(self._in_type)
@@ -358,9 +358,9 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
         if chat_inputs is not None:
             if in_args is not None:
                 raise InputPromptBuilderError(
-                    proc_name=self._agent_name,
+                    proc_name=self.agent_name,
                     message="Cannot use both chat inputs and input arguments "
-                    f"at the same time [agent_name={self._agent_name}]",
+                    f"at the same time [agent_name={self.agent_name}]",
                 )
 
             if isinstance(chat_inputs, str):
@@ -389,9 +389,9 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
     def build_input_content(self, in_args: InT | None, *, exec_id: str) -> Content:
         if in_args is None and self._in_type is not type(None):
             raise InputPromptBuilderError(
-                proc_name=self._agent_name,
+                proc_name=self.agent_name,
                 message="Either chat inputs or input arguments must be provided "
-                f"when input type is not None [agent_name={self._agent_name}]",
+                f"when input type is not None [agent_name={self.agent_name}]",
             )
 
         in_args = cast("InT", in_args)

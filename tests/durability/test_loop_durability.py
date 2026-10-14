@@ -44,7 +44,12 @@ from grasp_agents.types.items import (
     OutputMessageItem,
 )
 from grasp_agents.types.packet import Packet
-from tests._helpers import MockLLM, _text_response, _tool_call_response
+from tests._helpers import (
+    MockLLM,
+    _make_agent_loop,
+    _text_response,
+    _tool_call_response,
+)
 from tests.agent.test_background_tools import EchoInput, SlowTool
 from tests.durability.test_sessions import load_agent_checkpoint
 
@@ -518,6 +523,70 @@ class TestLenientArgsDispatch:
 
 
 # ---------------------------------------------------------------------------
+# Input is persisted before the turn that answers it
+# ---------------------------------------------------------------------------
+
+
+def _recording_loop(
+    tail: list[Any], *, turn: int
+) -> tuple[Any, list[tuple[AgentCheckpointLocation, int]]]:
+    """A loop resumed at ``turn``; records each checkpoint with the LLM calls so far."""
+    llm = MockLLM(responses_queue=[_text_response("done")])
+    loop = _make_agent_loop(
+        agent_name="t",
+        llm=llm,
+        ctx=SessionContext[None](state=None),
+        messages=[
+            InputMessageItem.from_text("go", role="user"),
+            FunctionToolCallItem(call_id="c1", name="echo", arguments="{}"),
+            FunctionToolOutputItem.from_tool_result(call_id="c1", output="ok"),
+            *tail,
+        ],
+        max_turns=10,
+        stream_llm=False,
+    )
+    loop.turn = turn
+    seen: list[tuple[AgentCheckpointLocation, int]] = []
+
+    async def record(
+        *,
+        turn: int = 0,
+        location: AgentCheckpointLocation = AgentCheckpointLocation.AFTER_INPUT,
+        output: str | None = None,
+        stop_reason: StopReason | None = None,
+    ) -> None:
+        del turn, output, stop_reason
+        seen.append((location, llm.call_count))
+
+    loop.checkpoint_callback = record
+    return loop, seen
+
+
+class TestEntryCheckpoint:
+    @pytest.mark.asyncio
+    async def test_input_at_the_tail_is_persisted_before_generating(self) -> None:
+        # Resumed mid-step with side-channel input (here a task note) that the
+        # turn boundary delivering it never got to persist.
+        note = InputMessageItem.from_text("<task_notification/>", role="user")
+        loop, seen = _recording_loop([note], turn=3)
+
+        async for _ in loop.execute_stream(exec_id="t"):
+            pass
+
+        assert seen[0] == (AgentCheckpointLocation.AFTER_INPUT, 0)
+
+    @pytest.mark.asyncio
+    async def test_tool_output_at_the_tail_is_not_re_persisted(self) -> None:
+        loop, seen = _recording_loop([], turn=3)
+
+        async for _ in loop.execute_stream(exec_id="t"):
+            pass
+
+        assert (AgentCheckpointLocation.AFTER_INPUT, 0) not in seen
+        assert seen[0][1] == 1  # the first checkpoint follows the LLM call
+
+
+# ---------------------------------------------------------------------------
 # View projection leaves the durable log intact
 # ---------------------------------------------------------------------------
 
@@ -616,7 +685,7 @@ class TestDeadlineBackgroundedOutcomePersisted:
         ctx: SessionContext[None] = SessionContext(
             state=None, checkpoint_store=store, session_key="s1"
         )
-        mgr = BackgroundTaskManager[None](agent_name="t", tools={}, path=[])
+        mgr = BackgroundTaskManager[None](tools={}, path=[])
 
         tool = SlowTool(delay=0.3)
         tool.auto_background_at = 0.05  # sideline after 50ms, finish at 300ms

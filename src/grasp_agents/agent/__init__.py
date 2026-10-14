@@ -16,6 +16,9 @@ from .approval_store import (
     PendingApproval,
     build_store_approval,
 )
+from .background_tasks import TaskNote
+from .context_window import ContextWindowManager
+from .deferred_effects import DeferredEffect, DeferredEffects
 from .llm_agent import LLMAgent
 from .llm_agent_transcript import LLMAgentTranscript
 from .loop_state import (
@@ -44,6 +47,9 @@ __all__ = [
     "ApprovalDeny",
     "ApprovalScope",
     "ApprovalStore",
+    "ContextWindowManager",
+    "DeferredEffect",
+    "DeferredEffects",
     "InMemoryApprovalStore",
     "LLMAgent",
     "LLMAgentTranscript",
@@ -56,6 +62,7 @@ __all__ = [
     "PendingApproval",
     "RaiseToolException",
     "RejectToolContent",
+    "TaskNote",
     "ToolCallDecision",
     "build_callback_approval",
     "build_store_approval",

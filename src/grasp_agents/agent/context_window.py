@@ -51,7 +51,6 @@ class ContextWindowManager:
         self,
         *,
         model_name: str,
-        source: str,
         capabilities: ModelCapabilities | None = None,
     ) -> None:
         # The log. Mutated in place only — ``transcript`` is a read-only view
@@ -64,8 +63,6 @@ class ContextWindowManager:
         # cascade's smallest member window); omitted, they are looked up by name.
         self._model_name = model_name
         self._capabilities = capabilities
-
-        self._source = source  # agent name, stamped on emitted compaction events
 
         # Ephemeral system-prompt header (+ leading messages), rebuilt per step by
         # ``LLMAgent`` and prepended to the view; never written to the log.
@@ -102,7 +99,7 @@ class ContextWindowManager:
         position of the last message appended). Appends need no view repair:
         folds and the token anchor index a prefix the append leaves intact.
         """
-        self._messages.extend(messages)
+        self._messages.extend(list(messages))  # ``messages`` may be the log itself
         return len(self._messages)
 
     # --- registration (called by LLMAgent's hooks) ---
@@ -240,9 +237,11 @@ class ContextWindowManager:
         rewind, interrupt settling). Folds whose span extends past the cut are
         dropped (those messages are gone; the view falls back to the
         originals); the token anchor survives unless the cut falls below its
-        counted prefix.
+        counted prefix. A count past the end keeps everything.
         """
-        del self._messages[max(message_count, 0) :]
+        if message_count < 0:
+            raise ValueError(f"message_count must be >= 0, got {message_count}")
+        del self._messages[message_count:]
         self.folds = [f for f in self.folds if f.end <= message_count]
         if self._last_counted_len > message_count:
             self.reset_anchor()
@@ -254,10 +253,19 @@ class ContextWindowManager:
         """
         Replace the transcript wholesale (resume from a checkpoint) together
         with its folds — lossy summaries are carried so resume doesn't
-        re-summarize — and recount the budget anchor.
+        re-summarize — and recount the budget anchor. A fold reaching past the
+        new log is dropped: once the log grew past it, it would summarize
+        messages it never saw.
         """
         self._messages[:] = list(messages)
-        self.folds = list(folds)
+        kept = [f for f in folds if f.end <= len(self._messages)]
+        if len(kept) < len(folds):
+            logger.warning(
+                "dropped %d summary fold(s) reaching past the %d-message log",
+                len(folds) - len(kept),
+                len(self._messages),
+            )
+        self.folds = kept
         self.reset_anchor()
         self._pending_view_count = 0
 
@@ -299,12 +307,14 @@ class ContextWindowManager:
         )
         return fold
 
-    def compaction_event(self, fold: FoldSpec, *, exec_id: str) -> CompactionEvent:
+    def compaction_event(
+        self, fold: FoldSpec, *, source: str, exec_id: str
+    ) -> CompactionEvent:
         """The event announcing a recorded fold (the reduced view size + summary)."""
         messages = self._messages
         budget = getattr(self.compactor, "budget", None)
         return CompactionEvent(
-            source=self._source,
+            source=source,
             exec_id=exec_id,
             data=CompactionInfo(
                 folded_turns=count_turns(messages[fold.start : fold.end]),

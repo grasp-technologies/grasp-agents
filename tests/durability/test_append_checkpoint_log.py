@@ -256,7 +256,7 @@ async def test_agent_appends_incrementally_and_resumes(tmp_path: Path) -> None:
         store=store,  # type: ignore[arg-type]
     )
     await agent3.load_checkpoint()
-    assert agent3.transcript.messages == log2
+    assert list(agent3.transcript) == log2
 
 
 async def test_reset_transcript_rewrites_log(tmp_path: Path) -> None:

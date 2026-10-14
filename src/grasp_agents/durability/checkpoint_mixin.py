@@ -11,8 +11,15 @@ from .store_keys import make_store_key
 
 if TYPE_CHECKING:
     from grasp_agents.session_context import SessionContext
+    from grasp_agents.types.items import InputItem
+
+    from .checkpoint_store import CheckpointStore
 
 logger = logging.getLogger(__name__)
+
+# What a save believes the store holds: the messages on the log (``None`` when
+# unknown), the log version the head points at, and the checkpoint number.
+type _LogState = tuple[tuple[InputItem, ...] | None, int, int]
 
 
 class CheckpointPersistMixin:
@@ -107,10 +114,38 @@ class AgentCheckpointPersistMixin(CheckpointPersistMixin):
     # ``_persisted_messages`` holds the exact message objects already on the
     # log (strong refs, so identity comparison stays sound): a save appends the
     # delta while they remain a leading prefix of the transcript, else rewrites
-    # the whole log. ``_log_version`` is the log file the current head points
-    # at — rewrites bump it (see :meth:`_serialize_agent_checkpoint`).
-    _persisted_messages: tuple[Any, ...] = ()
+    # the whole log. ``None`` means the store's log may not match — a save
+    # that failed partway, or a conversation the caller replaced — so the next
+    # save re-reads the stored head and rewrites the log in full.
+    # ``_log_version`` is the log file the current head points at — rewrites
+    # bump it (see :meth:`_serialize_agent_checkpoint`).
+    _persisted_messages: tuple[InputItem, ...] | None = ()
     _log_version: int = 0
+
+    def _log_state(self) -> _LogState:
+        return self._persisted_messages, self._log_version, self._checkpoint_number
+
+    def _invalidate_log_state(self, before: _LogState | None = None) -> None:
+        """
+        Forget what the store's log holds — after a save that may have rolled
+        back or landed only partly, or when the conversation is replaced — so
+        the next save rewrites it in full. ``before`` restores the version and
+        number the failed save started from.
+        """
+        if before is not None:
+            _, self._log_version, self._checkpoint_number = before
+        self._persisted_messages = None
+
+    async def _sync_with_stored_head(self, store: CheckpointStore, key: str) -> bool:
+        """Adopt the stored head's log version and number; ``False`` if none."""
+        head = await store.load_json(
+            key, AgentCheckpoint, subject=f"checkpoint at {key}"
+        )
+        if head is None:
+            return False
+        self._log_version = head.current.log_version
+        self._checkpoint_number = max(self._checkpoint_number, head.checkpoint_number)
+        return True
 
     async def _serialize_agent_checkpoint(
         self,
@@ -150,14 +185,21 @@ class AgentCheckpointPersistMixin(CheckpointPersistMixin):
         t0 = time.monotonic()
         messages = checkpoint.messages
         persisted = self._persisted_messages
-        prefix_intact = len(messages) >= len(persisted) and all(
-            m is p for m, p in zip(messages, persisted, strict=False)
-        )
-        rewrite = not prefix_intact
-        # A new version is only needed when an existing head + log pair
-        # would be superseded; the first save of a fresh session rewrites
-        # its own (empty) version in place.
-        supersedes = bool(persisted) or self._checkpoint_number > 0
+        if persisted is None:
+            # The store's log may not match what was last persisted: rewrite it
+            # to a version past the one the stored head points at.
+            rewrite = True
+            supersedes = await self._sync_with_stored_head(store, key)
+            persisted = ()
+        else:
+            prefix_intact = len(messages) >= len(persisted) and all(
+                m is p for m, p in zip(messages, persisted, strict=False)
+            )
+            rewrite = not prefix_intact
+            # A new version is only needed when an existing head + log pair
+            # would be superseded; the first save of a fresh session rewrites
+            # its own (empty) version in place.
+            supersedes = bool(persisted) or self._checkpoint_number > 0
         log_version = self._log_version + (1 if rewrite and supersedes else 0)
         if rewrite:
             await store.rewrite_messages(key, messages, version=log_version)
@@ -220,6 +262,12 @@ class AgentCheckpointPersistMixin(CheckpointPersistMixin):
         if store is None or key is None:
             self._persisted_messages = tuple(messages)
             return
+
+        if self._persisted_messages is None:
+            # Cut the log the stored head points at, not a version a failed
+            # save left behind; the kept prefix is the one it committed.
+            await self._sync_with_stored_head(store, key)
+            checkpoint.current.log_version = self._log_version
 
         checkpoint.checkpoint_number = self._checkpoint_number + 1
         head_blob = checkpoint.model_dump_json(exclude={"messages"}).encode("utf-8")

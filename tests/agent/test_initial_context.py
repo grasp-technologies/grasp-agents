@@ -222,5 +222,5 @@ class TestEntryFailure:
             await agent.run("second")
         assert isinstance(err.value.__cause__, RuntimeError)
 
-        assert agent.transcript.messages == messages_before
+        assert list(agent.transcript) == list(messages_before)
         assert agent.rollback_steps == steps_before

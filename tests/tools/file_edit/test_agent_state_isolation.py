@@ -27,7 +27,6 @@ def _make_loop():
     stub_llm = _StubLLM()
     agent_ctx = AgentContext.create(model_name="stub", tools={}, agent_name="A")
     return AgentLoop[BaseModel](
-        agent_name="A",
         llm=stub_llm,  # type: ignore[arg-type]
         agent_ctx=agent_ctx,
         ctx=SessionContext[BaseModel](),  # type: ignore[call-arg]

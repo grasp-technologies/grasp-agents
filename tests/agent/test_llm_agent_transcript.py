@@ -1,5 +1,8 @@
 """``LLMAgentTranscript``: a read-only view over the log its manager owns."""
 
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import sys
+
 import pytest
 
 from grasp_agents.agent.context_window import ContextWindowManager
@@ -36,7 +39,9 @@ def _result(cid: str, output: object = "ok") -> FunctionToolOutputItem:
 
 
 def _cw(messages: list[InputItem] | None = None) -> ContextWindowManager:
-    cw = ContextWindowManager(model_name="mock", source="t")
+    cw = ContextWindowManager(
+        model_name="mock",
+    )
     if messages:
         cw.add_messages(messages)
     return cw
@@ -153,6 +158,40 @@ class TestView:
 
         cw.add_messages([_result("c1", "r")])
         assert t.owes_response  # tool result awaiting a continuation
+
+
+class TestMessagesSnapshot:
+    def test_messages_is_an_immutable_snapshot(self):
+        cw = _cw([_user("a"), _user("b")])
+        snapshot = cw.transcript.messages
+
+        assert isinstance(snapshot, tuple)
+        assert not hasattr(snapshot, "append")
+        with pytest.raises(TypeError):
+            snapshot[0] = _user("x")  # pyright: ignore[reportIndexIssue]
+
+        cw.add_messages([_user("c")])
+        assert len(snapshot) == 2  # taken before the append
+        assert len(cw.transcript.messages) == 3
+
+    def test_appending_the_log_to_itself_terminates(self):
+        # Extending a list from an iterator over that same list never ends, so
+        # run the call in a child process that a timeout can kill.
+        code = (
+            "from grasp_agents.agent.context_window import ContextWindowManager\n"
+            "from grasp_agents.types.items import InputMessageItem\n"
+            "cw = ContextWindowManager(model_name='mock')\n"
+            "cw.add_messages([InputMessageItem.from_text('a', role='user')])\n"
+            "print(cw.add_messages(cw.transcript))\n"
+        )
+        done = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+        )
+        assert done.stdout.strip() == "2"
 
 
 class TestFullConversation:

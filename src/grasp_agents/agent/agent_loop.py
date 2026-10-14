@@ -26,6 +26,8 @@ from grasp_agents.types.errors import (
 )
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
+    BackgroundTaskInfo,
+    BackgroundTaskLaunchedEvent,
     Event,
     GenerationEndEvent,
     LLMStreamEvent,
@@ -190,7 +192,6 @@ class AgentLoop[CtxT]:
     callback slots set by the owning LLMAgent.
     """
 
-    agent_name: Final[str]
     stream_llm: Final[bool]
     final_answer_type: type[BaseModel]
     final_answer_as_tool_call: Final[bool]
@@ -234,7 +235,6 @@ class AgentLoop[CtxT]:
     def __init__(
         self,
         *,
-        agent_name: str,
         llm: LLM,
         ctx: SessionContext[CtxT],
         agent_ctx: AgentContext,
@@ -259,7 +259,6 @@ class AgentLoop[CtxT]:
 
         # Frozen
 
-        self.agent_name = agent_name
         self.stream_llm = stream_llm
         self.max_turns = max_turns
         self.run_timeout = run_timeout
@@ -311,7 +310,7 @@ class AgentLoop[CtxT]:
         if final_answer_as_tool_call:
             if self._final_answer_tool.name in agent_ctx.tools:
                 raise ValueError(
-                    f"Agent '{agent_name}' has a tool named "
+                    f"Agent '{agent_ctx.agent_name}' has a tool named "
                     f"'{self._final_answer_tool.name}', colliding with the "
                     "final-answer tool; tool names must be unique."
                 )
@@ -320,6 +319,10 @@ class AgentLoop[CtxT]:
     @property
     def agent_ctx(self) -> AgentContext:
         return self._agent_ctx
+
+    @property
+    def agent_name(self) -> str:
+        return self._agent_ctx.agent_name
 
     @property
     def cw(self) -> ContextWindowManager:
@@ -416,7 +419,7 @@ class AgentLoop[CtxT]:
                 call_id=call.call_id, output=output
             ).output
             if not is_error and isinstance(parts, str):
-                parts = await spill_if_large(
+                parts, _ = await spill_if_large(
                     self.ctx.file_backend,
                     name=call.call_id,
                     text=parts,
@@ -715,7 +718,9 @@ class AgentLoop[CtxT]:
             fold = await self.cw.maybe_compact(exec_id=exec_id, force=True)
             if fold is None:
                 raise
-            yield self.cw.compaction_event(fold, exec_id=exec_id)
+            yield self.cw.compaction_event(
+                fold, source=self.agent_name, exec_id=exec_id
+            )
             logger.warning(
                 "agent '%s' hit the context window; compacted and retrying",
                 self.agent_name,
@@ -793,8 +798,10 @@ class AgentLoop[CtxT]:
         # Launch backgroundable calls now so each races its own
         # ``auto_background_at`` concurrently with the immediate batch. The
         # manager returns the result if the call finished in the foreground,
-        # else a launch note + a ``BackgroundTaskLaunchedEvent`` to bubble.
-        bg_tasks_async: dict[int, asyncio.Task[Any]] = {
+        # else a launch note + the launched task to announce.
+        bg_tasks_async: dict[
+            int, asyncio.Task[tuple[Any, BackgroundTaskInfo | None]]
+        ] = {
             i: asyncio.create_task(
                 self.bg_tasks.run_backgroundable(
                     call,
@@ -838,12 +845,16 @@ class AgentLoop[CtxT]:
                     streams, max_concurrency=1 if conflict else None
                 )
                 async for stream_idx, event in merged:
-                    # Capture the tool's terminal event — its result
-                    # (ToolOutputEvent) or failure (ToolErrorEvent). Nested
-                    # sub-agent tool events bubble through too; the tool's OWN
-                    # terminal is always emitted last.
-                    if isinstance(event, (ToolOutputEvent, ToolErrorEvent)):
-                        outputs[immediate[stream_idx][0]] = event.data
+                    # Capture the call's own terminal event — its result
+                    # (ToolOutputEvent) or failure (ToolErrorEvent), claimed
+                    # with its call id. A sub-agent's nested tool events bubble
+                    # through too, carrying their own calls' ids.
+                    out_idx, out_call, _, _ = immediate[stream_idx]
+                    if (
+                        isinstance(event, (ToolOutputEvent, ToolErrorEvent))
+                        and event.tool_call_id == out_call.call_id
+                    ):
+                        outputs[out_idx] = event.data
                     yield event
 
                 for err in merged.errors:
@@ -863,11 +874,13 @@ class AgentLoop[CtxT]:
             # Collect backgroundable results — each already raced its own
             # deadline concurrently with the immediate batch (finished in the
             # foreground, or backgrounded into ``bg_tasks`` and returned a launch
-            # note + a ``BackgroundTaskLaunchedEvent`` to bubble).
+            # note + the launched task to announce).
             for i, bg_task in bg_tasks_async.items():
                 outputs[i], launched = await bg_task
                 if launched is not None:
-                    yield launched
+                    yield BackgroundTaskLaunchedEvent(
+                        source=self.agent_name, exec_id=exec_id, data=launched
+                    )
         finally:
             # On cancellation (turn abort), don't leak a call still racing in the
             # foreground (an already-backgrounded one is done here and lives on
@@ -1539,13 +1552,16 @@ class AgentLoop[CtxT]:
         """
         Deliver every finished background task's completion note as a user turn
         at the turn boundary — the counterpart to :meth:`_drain_inbox` for the
-        other side channel. Each note enters the transcript (through the owner
-        of both the log and the task manager) before its events fire, per the
-        ``_item_events`` convention.
+        other side channel. The whole batch enters the transcript before any
+        event fires (per the ``_item_events`` convention), so a consumer that
+        stops mid-stream loses no outcome.
         """
-        for done in await self.bg_tasks.pop_completions(ctx=self.ctx):
-            self._agent_ctx.deliver_task_notes([done.note])
+        completions = self.bg_tasks.pop_completions(ctx=self.ctx)
+        self._agent_ctx.deliver_task_notes([done.note for done in completions])
 
+        for done in completions:
+            for event in done.events:
+                yield event
             yield BackgroundTaskCompletedEvent(
                 source=self.agent_name, exec_id=exec_id, data=done.info
             )
@@ -1555,6 +1571,10 @@ class AgentLoop[CtxT]:
                 exec_id=exec_id,
                 data=done.note.message,
             )
+
+    def _ends_in_input(self) -> bool:
+        transcript = self.cw.transcript
+        return not transcript.is_empty and isinstance(transcript[-1], InputMessageItem)
 
     def _turn_input_messages(self) -> list[InputItem]:
         """
@@ -1592,8 +1612,10 @@ class AgentLoop[CtxT]:
             else None
         )
 
-        # Checkpoint after input memorization (new step only)
-        if self.turn == 0:
+        # Make the input this run answers durable before the first generation:
+        # a new step's input, or side-channel input that an interrupted turn
+        # boundary or a resume left at the tail of the log.
+        if self.turn == 0 or self._ends_in_input():
             await self.checkpoint(
                 turn=self.turn,
                 location=AgentCheckpointLocation.AFTER_INPUT,
@@ -1634,7 +1656,7 @@ class AgentLoop[CtxT]:
                 yield event
 
             # Bubble live progress events from background tasks
-            async for event in self.bg_tasks.bubble_events(ctx=self.ctx):
+            async for event in self.bg_tasks.bubble_events():
                 yield event
 
             async for event in self._drain_bg_completions(exec_id=exec_id):
@@ -1652,7 +1674,9 @@ class AgentLoop[CtxT]:
             # approaches the budget (no-op without a compactor / under budget).
             fold = await self.cw.maybe_compact(exec_id=exec_id)
             if fold is not None:
-                yield self.cw.compaction_event(fold, exec_id=exec_id)
+                yield self.cw.compaction_event(
+                    fold, source=self.agent_name, exec_id=exec_id
+                )
 
             yield TurnStartEvent(
                 source=self.agent_name,

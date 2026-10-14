@@ -31,6 +31,7 @@ from grasp_agents.context.prompt_builder import PromptBuilder
 from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.context.untrusted_content import make_untrusted_content_section
 from grasp_agents.durability import AgentCheckpoint, AgentCheckpointPersistMixin
+from grasp_agents.durability.checkpoint_store import CheckpointStore
 from grasp_agents.durability.checkpoints import (
     AgentCheckpointLocation,
     CheckpointKind,
@@ -442,7 +443,6 @@ class LLMAgent[InT, OutT, CtxT](
             llm=llm,
             ctx=self._ctx,
             agent_ctx=self._agent_ctx,
-            agent_name=self.name,
             path=path,
             llm_output_schema=llm_output_schema,
             max_turns=max_turns,
@@ -522,6 +522,12 @@ class LLMAgent[InT, OutT, CtxT](
         self._agent_ctx.bg_tasks.durability_enabled = self.durability_enabled
         loop.path = self.path
         loop.ctx = self._ctx
+
+        # The agent's name is stamped on the events it and its tools emit; a
+        # renamed copy (e.g. a parallel replica) is re-adopted under its new
+        # name.
+        self._agent_ctx.agent_name = self.name
+        self._prompt_builder.agent_name = self.name
 
         # Forward adoption onto every tool (no-op for stateless tools;
         # :class:`ProcessorTool` rebinds its wrapped processor).
@@ -604,20 +610,26 @@ class LLMAgent[InT, OutT, CtxT](
     def reset_transcript(self) -> None:
         """
         Start a fresh conversation: clear the log together with the view state
-        derived from it (summary folds, token-budget anchor).
+        derived from it (summary folds, token-budget anchor) and the pending
+        effects of its tool calls. Rollback boundaries of earlier steps index
+        the old log, so they are dropped; the next run does not reload the
+        persisted conversation, and the next checkpoint rewrites the log.
         """
-        self._agent_ctx.cw.clear_transcript()
-        self._agent_ctx.drop_orphaned_effects()
+        self.replace_transcript([])
 
     def replace_transcript(self, messages: Sequence[InputItem]) -> None:
         """
         Replace the conversation wholesale — the seeding surface for a session
         whose history comes from outside the checkpoint store — together with
         the view state derived from it (summary folds dropped, token-budget
-        anchor reset). The next checkpoint persists the new log in full.
+        anchor reset) and the pending effects of tool calls no longer in it.
+        Rollback boundaries of earlier steps index the old log, so they are
+        dropped. The next checkpoint persists the new log in full.
         """
         self._agent_ctx.cw.replace_transcript(messages)
         self._agent_ctx.drop_orphaned_effects()
+        self._step_watermarks = []
+        self._invalidate_log_state()
 
     async def aclose(self) -> None:
         """
@@ -698,26 +710,23 @@ class LLMAgent[InT, OutT, CtxT](
         """
         Rehydrate the session from the checkpoint store on a cold start.
 
-        Called at the start of every run but **no-ops unless the transcript is
-        empty**. An empty transcript is the signal for a cold start (a fresh
-        process / new instance) where the durable log is the only surviving copy
-        of the conversation, so it is reloaded here along with turn, kernels,
-        file-edit ledger, and background tasks. A non-empty transcript means a
-        live in-memory session is already present (a prior run in this process,
-        or caller-seeded) and must not be clobbered by a reload.
+        Called at the start of every run but **no-ops unless this is a cold
+        start**: an instance that has not yet loaded or saved a checkpoint, with
+        an empty transcript. There the durable log is the only surviving copy of
+        the conversation, so it is reloaded along with turn, kernels, file-edit
+        ledger, and background tasks. Otherwise a live in-memory session is
+        already present (a prior run in this process, a caller-seeded or reset
+        conversation) and must not be clobbered by a reload.
 
         Only this agent's working state is restored here; session-scoped state
         (``ctx.state``, the shared filesystem) is restored once per session by
         ``SessionContext.load_checkpoint``.
 
         Per-turn pruning / compaction belongs in the view projector, which
-        never touches this log. A transcript *builder* that reseeds history
-        must keep at least one message: an emptied transcript reads as a cold
-        start, and the next run reloads the persisted log and silently undoes
-        the reseed.
+        never touches this log.
         """
-        if not self.transcript.is_empty:
-            return None  # Already has messages — don't reload
+        if self._committed is not None or not self.transcript.is_empty:
+            return None  # A live session — don't reload
 
         checkpoint = await self._deserialize_agent_checkpoint(self._ctx)
         if checkpoint is None:
@@ -911,76 +920,114 @@ class LLMAgent[InT, OutT, CtxT](
         transaction: AbstractAsyncContextManager[None] = (
             store.transaction() if store is not None else nullcontext()
         )
-        async with transaction:
-            # Effects first: on a store without transactions, a crash after
-            # them replays a round whose artifacts already exist (compensable)
-            # rather than persisting a round whose artifacts are missing.
-            effects_ran = await self._agent_ctx.run_effects()
-
-            # Session record before this agent's head: a crash in between
-            # leaves the filesystem at-or-after the transcript (work gets
-            # redone). The inverse — a transcript ahead of the restored
-            # filesystem — happens only when a head advances past the last
-            # snapshot (a mid-run boundary under ``"final"``); a cold resume
-            # detects that and injects a filesystem-restored notice (see
-            # ``load_checkpoint``). Written by the session's owner only (see
-            # ``_is_session_writer``).
-            if self.durability_enabled:
-                if self._is_session_writer():
-                    await self._ctx.save_checkpoint(fs_snapshot_ref=fs_snapshot_ref)
-                elif (
-                    self._ctx.session_writer is None
-                    and self._ctx.session_record_enabled
-                ):
-                    # Every agent is contained and none has claimed: the
-                    # enabled session persistence is silently inert — say so,
-                    # once.
-                    self._ctx.warn_unowned_session_record()
-
-            agent_ctx_state = self._agent_ctx.snapshot()
-            if fs_snapshot_ref is None:
-                agent_ctx_state = agent_ctx_state.model_copy(
-                    update={"ipy_exec_context_id": None, "nb_exec_context_id": None}
+        bg_tasks = self._agent_ctx.bg_tasks
+        log_state = self._log_state()
+        flips = (
+            bg_tasks.export_deferred_delivered(),
+            bg_tasks.export_deferred_cancelled(),
+        )
+        try:
+            async with transaction:
+                effects_ran, current = await self._run_checkpoint_unit(
+                    store=store,
+                    turn=turn,
+                    output=output,
+                    location=location,
+                    stop_reason=stop_reason,
+                    fs_snapshot_ref=fs_snapshot_ref,
                 )
-
-            # The current position's message/log watermark is filled by
-            # ``_serialize_agent_checkpoint`` once the log is written.
-            current = StepWatermark(
-                step=self._step,
-                turn=turn,
-                prompt_cache_key=self.prompt_cache_key,
-                fs_snapshot_ref=fs_snapshot_ref,
-                agent_ctx_state=agent_ctx_state,
-            )
-            checkpoint = AgentCheckpoint(
-                processor_name=self.name,
-                session_key=self._ctx.session_key,
-                messages=list(self.transcript),
-                current=current,
-                step_watermarks=list(self._step_watermarks),
-                folds=list(self._agent_ctx.cw.folds),
-                output=output,
-                location=location,
-                stop_reason=stop_reason,
-            )
-            await self._serialize_agent_checkpoint(self._ctx, checkpoint)
-
-            # The persisted transcript now contains any delivered
-            # background-task notes — only now is it safe to flip their
-            # durable records to DELIVERED.
-            await self._agent_ctx.bg_tasks.flush_flips(ctx=self._ctx)
+        except BaseException:
+            # The unit rolled back, or landed only partly on a store without
+            # transactions: keep the flips for the next checkpoint and make it
+            # rewrite the log from the stored head.
+            self._invalidate_log_state(log_state)
+            bg_tasks.restore_deferred_delivered(flips[0])
+            bg_tasks.restore_deferred_cancelled(flips[1])
+            raise
 
         # Only once every write of the unit has landed: cache this head as the
         # rewind point a *future* step will be cut from, and retire the effects
         # it made durable.
         self._committed = current
-        self._agent_ctx.commit_effects(effects_ran)
+        self._agent_ctx.effects.commit(effects_ran)
 
         # Same persist covers a resident's drained inbox message: ack it now
         # (the inbox analog of the bg-task flush) so a crash before the
         # persist re-delivers it instead of stranding it.
         if self._agent_ctx.inbox is not None:
             await self._agent_ctx.inbox.flush_acks()
+
+    async def _run_checkpoint_unit(
+        self,
+        *,
+        store: CheckpointStore | None,
+        turn: int,
+        output: str | None,
+        location: AgentCheckpointLocation,
+        stop_reason: StopReason | None,
+        fs_snapshot_ref: str | None,
+    ) -> tuple[int, StepWatermark]:
+        """
+        The writes of one checkpoint, in order; returns how many deferred
+        effects await commit and the new head's position.
+        """
+        # Effects first: on a store without transactions, a crash after them
+        # replays a round whose artifacts already exist (compensable) rather
+        # than persisting a round whose artifacts are missing. Such a store
+        # cannot undo an effect, so each is retired as soon as it succeeds.
+        effects_ran = await self._agent_ctx.effects.run(
+            retire_each=store is None or not store.transactional
+        )
+
+        # Session record before this agent's head: a crash in between leaves
+        # the filesystem at-or-after the transcript (work gets redone). The
+        # inverse — a transcript ahead of the restored filesystem — happens
+        # only when a head advances past the last snapshot (a mid-run boundary
+        # under ``"final"``); a cold resume detects that and injects a
+        # filesystem-restored notice (see ``load_checkpoint``). Written by the
+        # session's owner only (see ``_is_session_writer``).
+        if self.durability_enabled:
+            if self._is_session_writer():
+                await self._ctx.save_checkpoint(fs_snapshot_ref=fs_snapshot_ref)
+            elif self._ctx.session_writer is None and self._ctx.session_record_enabled:
+                # Every agent is contained and none has claimed: the enabled
+                # session persistence is silently inert — say so, once.
+                self._ctx.warn_unowned_session_record()
+
+        agent_ctx_state = self._agent_ctx.snapshot()
+        if fs_snapshot_ref is None:
+            agent_ctx_state = agent_ctx_state.model_copy(
+                update={"ipy_exec_context_id": None, "nb_exec_context_id": None}
+            )
+
+        # The current position's message/log watermark is filled by
+        # ``_serialize_agent_checkpoint`` once the log is written.
+        current = StepWatermark(
+            step=self._step,
+            turn=turn,
+            prompt_cache_key=self.prompt_cache_key,
+            fs_snapshot_ref=fs_snapshot_ref,
+            agent_ctx_state=agent_ctx_state,
+        )
+        checkpoint = AgentCheckpoint(
+            processor_name=self.name,
+            session_key=self._ctx.session_key,
+            messages=list(self.transcript),
+            current=current,
+            step_watermarks=list(self._step_watermarks),
+            folds=list(self._agent_ctx.cw.folds),
+            output=output,
+            location=location,
+            stop_reason=stop_reason,
+        )
+        await self._serialize_agent_checkpoint(self._ctx, checkpoint)
+
+        # The persisted transcript now contains any delivered background-task
+        # notes — only now is it safe to flip their durable records to
+        # DELIVERED.
+        await self._agent_ctx.bg_tasks.flush_flips(ctx=self._ctx)
+
+        return effects_ran, current
 
     def _settle_run(self, *, failed: bool = False) -> None:
         """
@@ -1417,8 +1464,10 @@ class LLMAgent[InT, OutT, CtxT](
         # No mutations above this line.
         if self.reset_transcript_on_run:
             # A reset run starts a new conversation: drop the log (the system
-            # prompt lives in the ephemeral header, not here).
-            self.reset_transcript()
+            # prompt lives in the ephemeral header, not here). Earlier steps'
+            # boundaries stay valid: each was archived over an empty log.
+            self._agent_ctx.cw.clear_transcript()
+            self._agent_ctx.drop_orphaned_effects()
 
         self._archive_step_boundary()
         self._loop.turn = 0

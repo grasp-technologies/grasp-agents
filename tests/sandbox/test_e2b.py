@@ -51,11 +51,11 @@ from grasp_agents.session_context import SessionContext
 from ._bg_harness import (
     background,
     drain_notes,
-    flush,
     kill,
     make_stack,
     marker_size,
     poll_until_done,
+    read_log_until,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -1208,16 +1208,12 @@ async def test_e2b_live_background_writes_greppable_log() -> None:
         )
         assert task_id is not None
 
-        await asyncio.sleep(1.0)  # let HELLO stream from the sandbox
-        await flush(mgr, ctx)
-
         keys = await store.list_keys(task_prefix("s1"))
         rec = TaskRecord.model_validate_json((await store.load(keys[0])) or b"{}")
         assert rec.log_path is not None
         assert ".grasp/tasks" in rec.log_path
         # The log lives in the remote sandbox FS and holds the streamed output.
-        content, _ = await env.file_backend.read_text(Path(rec.log_path))
-        assert "HELLO" in content
+        await read_log_until(env.file_backend, rec.log_path, "HELLO", timeout=15)
 
         await kill(mgr, task_id)
 
