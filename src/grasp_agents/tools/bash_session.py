@@ -52,9 +52,9 @@ class BashSessionHolder:
     agent owns its tools (deep-copied at construction), sub-agents and parallel
     replicas each get their own stateful shell. The session is opened on first
     use and reopened if a command closed it (e.g. one that ignored the interrupt
-    and forced a session-level kill) or if it reached its lifetime cap (E2B's
-    per-session timeout). A reopen loses shell state, so it is flagged for the
-    ``BashSession`` tool to surface to the model (see :meth:`take_reset`).
+    and forced a session-level kill, or any timeout on E2B). A reopen loses
+    shell state, so it is flagged for the ``BashSession`` tool to surface to the
+    model (see :meth:`take_reset`).
     """
 
     def __init__(self) -> None:
@@ -75,13 +75,10 @@ class BashSessionHolder:
             current = self._session
             if current is None:
                 current = await backend.open_session()
-            elif current.closed or getattr(current, "expired", False):
-                # Prior shell died or hit its lifetime cap — a fresh shell loses
-                # cwd / env / shell variables, so flag it for BashSession to
-                # report. Close a still-open-but-expired one first.
-                if not current.closed:
-                    with contextlib.suppress(Exception):
-                        await current.close()
+            elif current.closed:
+                # Prior shell died (e.g. killed by a timeout) — a fresh shell
+                # loses cwd / env / shell variables, so flag it for BashSession
+                # to report.
                 current = await backend.open_session()
                 self._was_reset = True
             self._session = current
@@ -222,7 +219,7 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
             )
             if holder is not None and holder.take_reset():
                 notice = (
-                    "[shell session expired and was reset: working directory, "
+                    "[shell session was reset: working directory, "
                     "exported environment, and shell variables set in earlier "
                     "calls were lost]\n"
                 )

@@ -165,26 +165,46 @@ class _FakeHandle:
         exit_code: int = 0,
         chunks: tuple[tuple[str, str], ...] = (),
         raise_exc: BaseException | None = None,
+        hang: bool = False,
+        deadline: asyncio.TimerHandle | None = None,
         on_stdout: Any = None,
         on_stderr: Any = None,
     ) -> None:
         self.exit_code = exit_code
+        self.killed = False
+        self.disconnected = False
         self._chunks = chunks
         self._raise = raise_exc
+        self._hang = hang
+        self._deadline = deadline
+        self._stopped = asyncio.Event()
         self._on_stdout = on_stdout
         self._on_stderr = on_stderr
 
     async def wait(self) -> Any:
-        for stream, data in self._chunks:
-            cb = self._on_stdout if stream == "stdout" else self._on_stderr
-            if cb is not None:
-                cb(data)
-        if self._raise is not None:
-            raise self._raise
-        return None
+        try:
+            for stream, data in self._chunks:
+                cb = self._on_stdout if stream == "stdout" else self._on_stderr
+                if cb is not None:
+                    cb(data)
+            if self._hang:  # runs until killed / disconnected
+                await self._stopped.wait()
+                raise _FakeCommandExit(exit_code=137)
+            if self._raise is not None:
+                raise self._raise
+            return None
+        finally:
+            if self._deadline is not None:
+                self._deadline.cancel()
 
     async def kill(self) -> Any:
+        self.killed = True
+        self._stopped.set()
         return True
+
+    async def disconnect(self) -> None:
+        self.disconnected = True
+        self._stopped.set()
 
 
 class _FakeCommands:
@@ -195,6 +215,7 @@ class _FakeCommands:
         chunks: tuple[tuple[str, str], ...] = (),
         raise_exc: BaseException | None = None,
         run_raises: BaseException | None = None,
+        hang: bool = False,
         fg_stdout: str = "",
         fg_exit_code: int = 0,
         fg_raises: BaseException | None = None,
@@ -206,6 +227,8 @@ class _FakeCommands:
         self._chunks = chunks
         self._raise = raise_exc
         self._run_raises = run_raises
+        self._hang = hang
+        self.handles: list[_FakeHandle] = []
         self._fg_stdout = fg_stdout
         self._fg_exit_code = fg_exit_code
         self._fg_raises = fg_raises
@@ -235,13 +258,23 @@ class _FakeCommands:
         if background:
             if self._run_raises is not None:
                 raise self._run_raises
-            return _FakeHandle(
+            # Like the SDK, a command timeout cancels the task that called run.
+            deadline = None
+            if timeout:
+                task = asyncio.current_task()
+                assert task is not None
+                deadline = asyncio.get_running_loop().call_later(timeout, task.cancel)
+            handle = _FakeHandle(
                 exit_code=self._exit_code,
                 chunks=self._chunks,
                 raise_exc=self._raise,
+                hang=self._hang,
+                deadline=deadline,
                 on_stdout=on_stdout,
                 on_stderr=on_stderr,
             )
+            self.handles.append(handle)
+            return handle
         if self._fg_raises is not None:
             raise self._fg_raises
         return _FakeResult(self._fg_stdout, self._fg_exit_code)
@@ -510,6 +543,32 @@ async def test_timeout_maps_to_overall_timeout() -> None:
     res = await _env(_FakeSandbox(commands=cmds)).exec_backend.execute("sleep 999")
     assert res.reason is TerminationReason.OVERALL_TIMEOUT
     assert res.returncode == -1
+
+
+async def test_command_timeout_is_enforced_by_the_backend() -> None:
+    cmds = _FakeCommands(chunks=(("stdout", "partial"),), hang=True)
+    backend = _env(_FakeSandbox(commands=cmds)).exec_backend
+    res = await backend.execute("sleep 999", timeout=0.2)
+    assert res.reason is TerminationReason.OVERALL_TIMEOUT
+    assert res.returncode == -1
+    assert res.stdout == "partial"
+    assert cmds.calls[0]["timeout"] == 0  # never armed on the caller's task
+    assert cmds.handles[0].killed
+
+
+async def test_abandoned_stream_kills_and_disconnects() -> None:
+    cmds = _FakeCommands(chunks=(("stdout", "a"),), hang=True)
+    stream = _env(_FakeSandbox(commands=cmds)).exec_backend.stream("sleep 999")
+    assert await anext(stream) == ExecChunk(stream="stdout", data="a")
+    await stream.aclose()
+    assert cmds.handles[0].killed
+    assert cmds.handles[0].disconnected
+
+
+async def test_cancel_while_starting_propagates() -> None:
+    cmds = _FakeCommands(run_raises=asyncio.CancelledError())
+    with pytest.raises(asyncio.CancelledError):
+        await _env(_FakeSandbox(commands=cmds)).exec_backend.execute("echo hi")
 
 
 async def test_spawn_failure_maps_to_spawn_error() -> None:

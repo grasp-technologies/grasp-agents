@@ -49,9 +49,10 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
 
     Bridges E2B's callback-driven streaming onto our ``ExecChunk`` generator,
     returns non-zero exits as data (catching ``CommandExitException`` instead
-    of letting it raise), and maps ``timeout=None`` to a bounded default
-    (E2B would otherwise impose its own 60 s ceiling). Co-located with the
-    paired :class:`E2BFileBackend` via the shared :class:`SandboxHandle`.
+    of letting it raise), and enforces the command timeout itself
+    (``timeout=None`` uses ``default_timeout``): a command that runs past it
+    is killed and reported as ``OVERALL_TIMEOUT``. Co-located with the paired
+    :class:`E2BFileBackend` via the shared :class:`SandboxHandle`.
     """
 
     def __init__(
@@ -141,18 +142,21 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
             _push("stderr", data)
 
         start = time.monotonic()
+        deadline = asyncio.get_running_loop().time() + eff_timeout
         try:
+            # The deadline is enforced below rather than by E2B: its command
+            # timeout cancels whichever task called ``run``, not the stream.
             handle = await sb.commands.run(
                 wrapped,
                 background=True,
                 cwd=cwd_str,
                 envs=envs,
-                timeout=eff_timeout,
+                timeout=0,
                 stdin=False,
                 on_stdout=on_stdout,
                 on_stderr=on_stderr,
             )
-        except BaseException as exc:
+        except Exception as exc:
             reason = (
                 TerminationReason.OVERALL_TIMEOUT
                 if is_timeout(exc)
@@ -180,32 +184,44 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
                 queue.put_nowait(None)
 
         waiter = asyncio.create_task(_drain())
-        completed = False
+        completed = timed_out = False
         try:
             while True:
-                item = await queue.get()
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        item = await queue.get()
+                except TimeoutError:
+                    timed_out = True
+                    break
                 if item is None:
                     completed = True
                     break
                 yield item
         finally:
-            # Early exit (the consumer cancelled / closed us — e.g. KillTask):
-            # kill the remote command so it doesn't keep running in the sandbox,
-            # then cancel the drain (its ``handle.wait()`` would otherwise block
-            # forever on a long-running command). On normal completion the drain
-            # already finished, so just reap it.
-            if not completed and not waiter.done():
+            # Timed out, or the consumer stopped early (cancelled / closed us —
+            # e.g. KillTask): kill the remote command so it doesn't keep running
+            # in the sandbox, and stop listening to it.
+            if not completed:
                 with contextlib.suppress(Exception):
                     await handle.kill()
+                await handle.disconnect()
                 waiter.cancel()
-            with contextlib.suppress(BaseException):
-                await waiter
+            await asyncio.wait([waiter])
 
+        runtime_ms = (time.monotonic() - start) * 1000
+        if timed_out:
+            yield ExecResult(
+                stdout="",
+                stderr="",
+                returncode=-1,
+                reason=TerminationReason.OVERALL_TIMEOUT,
+                runtime_ms=runtime_ms,
+                backend=self._name,
+                truncated=truncated,
+            )
+            return
         yield self._terminal(
-            handle,
-            outcome.get("exc"),
-            runtime_ms=(time.monotonic() - start) * 1000,
-            truncated=truncated,
+            handle, outcome.get("exc"), runtime_ms=runtime_ms, truncated=truncated
         )
 
     def _terminal(
