@@ -257,6 +257,18 @@ class TestValidationErrorTypes:
             await llm.generate_response(_USER_MSG, tools={"add": AddTool()})
 
     @pytest.mark.asyncio
+    async def test_bad_tool_args_name_the_failing_field(self):
+        """The tool result the model sees says which argument failed and why."""
+        llm = MockLLM(
+            model_name="mock",
+            responses=[_tool_call_response("add", '{"a": "nope", "b": 1}')],
+        )
+        with pytest.raises(LLMToolCallValidationError) as ei:
+            await llm.generate_response(_USER_MSG, tools={"add": AddTool()})
+        ((_, _, message),) = ei.value.failed_calls
+        assert "- a: Input should be a valid integer" in message
+
+    @pytest.mark.asyncio
     async def test_unknown_tool_raises_tool_call_error(self):
         """Tool call for a tool not in the tools dict → LLMToolCallValidationError."""
         llm = MockLLM(
@@ -300,6 +312,22 @@ class TestValidationErrorTypes:
 
         with pytest.raises(LLMResponseValidationError):
             await llm.generate_response(_USER_MSG, output_schema=StrictModel)
+
+    @pytest.mark.asyncio
+    async def test_output_schema_error_carries_details(self):
+        """A rejected structured output keeps the per-field reasons."""
+        llm = MockLLM(
+            model_name="mock",
+            responses=[_text_response('{"value": "nope"}')],
+        )
+
+        class StrictModel(BaseModel):
+            value: int
+
+        with pytest.raises(LLMResponseValidationError) as ei:
+            await llm.generate_response(_USER_MSG, output_schema=StrictModel)
+        assert ei.value.details[0].startswith("value: Input should be a valid integer")
+        assert "- value: Input should be a valid integer" in str(ei.value)
 
 
 class TestRefusalAndContentFilter:

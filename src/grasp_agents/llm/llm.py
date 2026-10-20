@@ -410,7 +410,7 @@ class LLM(ABC):
                 )
             except JSONSchemaValidationError as exc:
                 raise LLMResponseValidationError(
-                    response.output_text, output_schema
+                    response.output_text, output_schema, details=exc.details
                 ) from exc
 
     def _validate_tool_calls(

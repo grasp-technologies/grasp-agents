@@ -16,6 +16,8 @@ logger = getLogger(__name__)
 
 _JSON_START_RE = re.compile(r"[{\[]")
 
+_MAX_ERROR_DETAILS = 20
+
 # A fence wrapping the *whole* payload — the shape a model produces when it
 # answers a JSON request with ```json ... ```. Anchored at both ends on
 # purpose: a fence mid-message belongs to the content (a code block inside a
@@ -97,4 +99,20 @@ def validate_obj_from_json_or_py_string[T](
             )
         return TypeAdapter(schema).validate_python(parsed)
     except PydanticValidationError as exc:
-        raise JSONSchemaValidationError(s, schema) from exc
+        raise JSONSchemaValidationError(
+            s, schema, details=validation_error_details(exc)
+        ) from exc
+
+
+def validation_error_details(
+    exc: PydanticValidationError, *, max_errors: int = _MAX_ERROR_DETAILS
+) -> list[str]:
+    """One ``field.path: reason`` line per error, capped at ``max_errors``."""
+    errors = exc.errors(include_url=False, include_input=False)
+    lines: list[str] = []
+    for error in errors[:max_errors]:
+        loc = ".".join(str(part) for part in error["loc"])
+        lines.append(f"{loc}: {error['msg']}" if loc else error["msg"])
+    if len(errors) > max_errors:
+        lines.append(f"... and {len(errors) - max_errors} more")
+    return lines
