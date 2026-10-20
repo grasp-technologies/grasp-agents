@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any, cast
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from grasp_agents.agent.agent_loop import AgentLoop
 from grasp_agents.agent.approval_store import (
@@ -276,6 +276,57 @@ class TestNoDuplicateToolResults:
         assert len(_tool_outputs_for(transcript, "bad1")) == 1
         assert len(_tool_outputs_for(transcript, "fa1")) == 1
         transcript.validate_tool_call_pairing()
+
+
+# ---------- Rejected tool arguments tell the model why ----------
+
+
+class _RangeInput(BaseModel):
+    lo: float
+    hi: float
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "_RangeInput":
+        if self.lo >= self.hi:
+            raise ValueError("lo must be below hi")
+        return self
+
+
+class _RangeTool(BaseTool[_RangeInput, Any, Any]):
+    def __init__(self) -> None:
+        super().__init__(name="span", description="Width of a range")
+
+    async def _run(self, inp: _RangeInput, *, ctx: Any = None, **kwargs: Any) -> float:
+        return inp.hi - inp.lo
+
+
+class TestToolArgumentErrors:
+    @pytest.mark.asyncio
+    async def test_tool_result_carries_the_validator_reason(self) -> None:
+        responses = [
+            _tool_call_response("span", '{"lo": 2, "hi": 1}', "tc1"),
+            _text_response("done"),
+        ]
+        loop, transcript = _make_loop(responses, tools=[_RangeTool()])
+
+        await _drain(loop)
+
+        (output,) = _tool_outputs_for(transcript, "tc1")
+        assert "lo must be below hi" in output.text
+
+    @pytest.mark.asyncio
+    async def test_tool_result_names_each_failing_field(self) -> None:
+        responses = [
+            _tool_call_response("span", '{"lo": "low"}', "tc1"),
+            _text_response("done"),
+        ]
+        loop, transcript = _make_loop(responses, tools=[_RangeTool()])
+
+        await _drain(loop)
+
+        (output,) = _tool_outputs_for(transcript, "tc1")
+        assert "- lo: Input should be a valid number" in output.text
+        assert "- hi: Field required" in output.text
 
 
 # ---------- Synthetic closure outputs are announced on the event stream ----------

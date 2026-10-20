@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from grasp_agents.types.errors import (
     JSONSchemaValidationError,
@@ -112,3 +112,58 @@ class TestValidateFromString:
 
         with pytest.raises(JSONSchemaValidationError):
             validate_obj_from_json_or_py_string("not json at all", schema=M)
+
+
+class _Range(BaseModel):
+    lo: float
+    hi: float
+
+    @model_validator(mode="after")
+    def _ordered(self) -> _Range:
+        if self.lo >= self.hi:
+            raise ValueError("lo must be below hi")
+        return self
+
+
+class _Ranges(BaseModel):
+    ranges: list[_Range]
+
+
+class TestSchemaErrorDetails:
+    """A rejected payload says what failed, so a model can correct it."""
+
+    def test_validator_reason_is_reported_with_its_path(self) -> None:
+        with pytest.raises(JSONSchemaValidationError) as ei:
+            validate_obj_from_json_or_py_string(
+                '{"ranges": [{"lo": 2, "hi": 1}]}', schema=_Ranges
+            )
+
+        assert ei.value.details == ["ranges.0: Value error, lo must be below hi"]
+        assert "- ranges.0: Value error, lo must be below hi" in str(ei.value)
+
+    def test_each_field_error_gets_a_line(self) -> None:
+        with pytest.raises(JSONSchemaValidationError) as ei:
+            validate_obj_from_json_or_py_string(
+                '{"ranges": [{"lo": "x"}]}', schema=_Ranges
+            )
+
+        assert [line.split(":")[0] for line in ei.value.details] == [
+            "ranges.0.lo",
+            "ranges.0.hi",
+        ]
+
+    def test_unparseable_payload_reports_a_root_error(self) -> None:
+        with pytest.raises(JSONSchemaValidationError) as ei:
+            validate_obj_from_json_or_py_string("not json at all", schema=_Ranges)
+
+        assert len(ei.value.details) == 1
+        assert ei.value.details[0].startswith("Input should be")
+
+    def test_details_are_capped(self) -> None:
+        payload = "[" + ",".join('"x"' for _ in range(30)) + "]"
+
+        with pytest.raises(JSONSchemaValidationError) as ei:
+            validate_obj_from_json_or_py_string(payload, schema=list[int])
+
+        assert len(ei.value.details) == 21
+        assert ei.value.details[-1] == "... and 10 more"

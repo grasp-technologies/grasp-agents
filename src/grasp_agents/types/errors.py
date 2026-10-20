@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Any
 
 # --- Processor errors ---
@@ -147,13 +148,30 @@ class PyJSONStringParsingError(Exception):
 
 
 class JSONSchemaValidationError(Exception):
-    def __init__(self, s: str, schema: object, message: str | None = None) -> None:
-        super().__init__(
+    """
+    ``details`` lists what failed, one line per error (``field.path: reason``),
+    and is appended to the message — the text a model sees when its tool
+    arguments or structured output are rejected.
+    """
+
+    def __init__(
+        self,
+        s: str,
+        schema: object,
+        message: str | None = None,
+        *,
+        details: Sequence[str] = (),
+    ) -> None:
+        text = (
             message
             or f"JSON schema validation failed for:\n{s}\nExpected type: {schema}"
         )
+        if details:
+            text += "\nErrors:\n" + "\n".join(f"- {line}" for line in details)
+        super().__init__(text)
         self.s = s
         self.schema = schema
+        self.details = list(details)
 
 
 class CompletionError(Exception):
@@ -187,10 +205,18 @@ class LLMToolCallValidationError(Exception):
 
 
 class LLMResponseValidationError(JSONSchemaValidationError):
-    def __init__(self, s: str, schema: object, message: str | None = None) -> None:
+    def __init__(
+        self,
+        s: str,
+        schema: object,
+        message: str | None = None,
+        *,
+        details: Sequence[str] = (),
+    ) -> None:
         super().__init__(
             s,
             schema,
             message
             or f"Failed to validate LLM response:\n{s}\nExpected type: {schema}",
+            details=details,
         )
