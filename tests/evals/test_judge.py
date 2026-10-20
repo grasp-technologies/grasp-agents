@@ -346,7 +346,7 @@ class TestJudgeIdentity:
         assert self._source(same) == self._source(built)
 
     def test_tools_are_part_of_the_identity(self) -> None:
-        from grasp_agents.tools.function_tool import function_tool  # noqa: PLC0415
+        from grasp_agents.tools.function_tool import function_tool
 
         def lookup(query: str) -> str:
             """Look a term up."""
@@ -421,14 +421,14 @@ class TestJudgeSpend:
 
     @pytest.mark.asyncio
     async def test_a_failing_judgment_stops_the_others(self) -> None:
-        import asyncio  # noqa: PLC0415
+        import asyncio
 
-        from grasp_agents.evals import (  # noqa: PLC0415
+        from grasp_agents.evals import (
             Perturbation,
             ScoreContext,
             scorer,
         )
-        from grasp_agents.evals.validation import ProbeTask  # noqa: PLC0415
+        from grasp_agents.evals.validation import ProbeTask
 
         finished: list[str] = []
 

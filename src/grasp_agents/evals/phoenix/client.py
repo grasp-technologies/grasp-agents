@@ -183,7 +183,7 @@ class PhoenixClient:
                 f"Phoenix base URL not given and ${BASE_URL_ENV} is not set"
             )
         try:
-            import phoenix.client as phoenix_client  # noqa: PLC0415
+            import phoenix.client as phoenix_client  # ruff: ignore[import-outside-top-level]
         except ImportError as exc:
             raise ImportError(
                 "Phoenix support needs the phoenix extra: "

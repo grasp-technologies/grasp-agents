@@ -254,7 +254,9 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         path: list[str] | None = None,
         agent_ctx: "AgentContext | None" = None,
     ) -> AsyncIterator[Event[Any]]:
-        from grasp_agents.types.events import ToolOutputEvent  # noqa: PLC0415
+        from grasp_agents.types.events import (
+            ToolOutputEvent,
+        )
 
         out = await self._run(
             inp,
@@ -309,7 +311,7 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
                 while True:
                     remaining = deadline - loop.time()
                     if remaining <= 0:
-                        raise TimeoutError  # noqa: TRY301
+                        raise TimeoutError  # ruff: ignore[raise-within-try]
                     try:
                         event = await asyncio.wait_for(anext(stream), timeout=remaining)
                     except StopAsyncIteration:

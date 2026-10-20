@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypedDict
 
 from anthropic import AsyncAnthropic
-from anthropic._types import omit  # type: ignore[import]  # noqa: PLC2701
+from anthropic._types import (
+    omit,  # type: ignore[import]  # ruff: ignore[import-private-name]
+)
 from anthropic.types import (
     MetadataParam,
     OutputConfigParam,
@@ -204,7 +206,7 @@ class AnthropicLLM(CloudLLM):
         )
         if self.platform in {"bedrock", "bedrock_mantle"}:
             try:
-                from anthropic import (  # noqa: PLC0415
+                from anthropic import (  # ruff: ignore[import-outside-top-level]
                     AsyncAnthropicBedrock,  # pyright: ignore[reportPrivateImportUsage]
                     AsyncAnthropicBedrockMantle,  # pyright: ignore[reportPrivateImportUsage]
                 )
@@ -225,7 +227,7 @@ class AnthropicLLM(CloudLLM):
 
         elif self.platform == "vertex":
             try:
-                from anthropic import (  # noqa: PLC0415
+                from anthropic import (  # ruff: ignore[import-outside-top-level]
                     AsyncAnthropicVertex,  # pyright: ignore[reportPrivateImportUsage]
                 )
             except ImportError as err:
@@ -263,7 +265,7 @@ class AnthropicLLM(CloudLLM):
 
     def _make_api_input(  # type: ignore[override]
         self,
-        input: Sequence[InputItem],  # noqa: A002
+        input: Sequence[InputItem],  # ruff: ignore[builtin-argument-shadowing]
         tools: Mapping[str, BaseTool[BaseModel, Any, Any]] | None = None,
         tool_choice: ToolChoice | None = None,
         output_schema: type | None = None,

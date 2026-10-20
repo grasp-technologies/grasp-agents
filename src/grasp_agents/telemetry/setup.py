@@ -109,7 +109,7 @@ def add_otlp_http_exporter(
     Requires: pip install opentelemetry-exporter-otlp-proto-http
     """
     # Deferred: needs the optional otlp-proto-http exporter package.
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # noqa: PLC0415
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # ruff: ignore[import-outside-top-level]
         OTLPSpanExporter,
     )
 

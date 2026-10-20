@@ -664,7 +664,7 @@ class Processor[InT, OutT, CtxT](
         blocks_final_answer: bool = True,
         max_inline_result_chars: int | None = None,
     ) -> "ProcessorTool[InT, OutT, CtxT]":  # type: ignore[return-value]
-        from grasp_agents.tools.processor_tool import (  # noqa: PLC0415
+        from grasp_agents.tools.processor_tool import (  # ruff: ignore[import-outside-top-level]
             ProcessorTool as _ProcessorTool,
         )
 

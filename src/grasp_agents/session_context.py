@@ -49,7 +49,7 @@ def _default_transport(data: dict[str, Any]) -> Transport[TeamMessage]:
     ``checkpoint_store`` and ``session_key``, or the lookups below fail.
     """
     # Local import: mailbox.py imports this module at module level.
-    from .mailbox import (  # noqa: PLC0415
+    from .mailbox import (  # ruff: ignore[import-outside-top-level]
         CheckpointMailboxTransport,
         InMemoryMailboxTransport,
     )
@@ -478,7 +478,7 @@ class SessionContext[CtxT](BaseModel):
         if not isinstance(self.environment, SnapshotCapable):
             # RuntimeError, not TypeError, to match load_checkpoint's
             # resume-side twin of this wiring check.
-            raise RuntimeError(  # noqa: TRY004
+            raise RuntimeError(  # ruff: ignore[type-check-without-type-error]
                 f"Restoring fs_snapshot_ref={fs_snapshot_ref!r} requires a "
                 "SnapshotCapable ctx.environment; got "
                 f"{type(self.environment).__name__}."
@@ -521,7 +521,9 @@ class SessionContext[CtxT](BaseModel):
         # durability fate: consumed mail's handling lives only in transcripts,
         # and pending mail lives only in the mailbox. A caller-supplied
         # transport can break that pairing — the built default never does.
-        from .mailbox import CheckpointMailboxTransport  # noqa: PLC0415
+        from .mailbox import (
+            CheckpointMailboxTransport,
+        )
 
         durable_session = self.checkpoint_store is not None
         durable_mailbox = isinstance(self.transport, CheckpointMailboxTransport)

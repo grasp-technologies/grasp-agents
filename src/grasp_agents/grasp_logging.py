@@ -279,7 +279,7 @@ def setup_logging(logs_file_path: str | Path, logs_config_path: str | Path) -> N
     root = logging.getLogger()
     for handler in root.handlers:
         if handler.formatter is not None:
-            fmt_str = handler.formatter._fmt  # noqa: SLF001
+            fmt_str = handler.formatter._fmt  # ruff: ignore[private-member-access]
             handler.setFormatter(ColorFormatter(fmt_str))
     _instrument_handlers(root.handlers)
 
@@ -324,7 +324,7 @@ def enable_verbose_stdout_logging(
         handler.setLevel(level)
     else:
         handler = logging.StreamHandler(sys.stdout)
-        handler._grasp_verbose_handler = True  # type: ignore[attr-defined]  # noqa: SLF001
+        handler._grasp_verbose_handler = True  # type: ignore[attr-defined]  # ruff: ignore[private-member-access]
         handler.setLevel(level)
         handler.setFormatter(ColorFormatter(_VERBOSE_FORMAT))
         handler.addFilter(SecretRedactingFilter())

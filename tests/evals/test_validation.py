@@ -234,7 +234,7 @@ class TestJudgeValidation:
     ) -> None:
         @scorer(name="good", annotator="LLM")
         async def costly(ctx: Judged) -> bool:
-            from grasp_agents.evals import Usage  # noqa: PLC0415
+            from grasp_agents.evals import Usage
 
             ctx.record_usage(Usage(input_tokens=7, cost_usd=0.01))
             if ctx.output.startswith("bad"):
@@ -304,7 +304,7 @@ class TestValidationGates:
         assert find_validation(store, [good_judge], "good") is None
 
     def test_gate_reads_the_lower_bound_by_default(self) -> None:
-        from grasp_agents.evals import (  # noqa: PLC0415
+        from grasp_agents.evals import (
             ComponentInfo,
             JudgeValidation,
             MetricResult,
@@ -332,7 +332,7 @@ class TestValidationGates:
     async def test_gated_evaluation_needs_a_passing_validation(
         self, tmp_path: Path, store: LocalRunStore
     ) -> None:
-        from grasp_agents.evals import Dataset, Example, FunctionTask  # noqa: PLC0415
+        from grasp_agents.evals import Dataset, Example, FunctionTask
 
         answers = Dataset(
             [Example(id=str(i), input=w) for i, w in enumerate(["good", "bad", "good"])]
@@ -588,8 +588,8 @@ class TestValidationCoverage:
         assert named.run_id == old.id
         assert named.accuracy.value == 1.0
         # Re-judging the old run does not make its labels the newest.
-        from grasp_agents.evals import rescore  # noqa: PLC0415
-        from grasp_agents.evals.validation import LabelAgreement  # noqa: PLC0415
+        from grasp_agents.evals import rescore
+        from grasp_agents.evals.validation import LabelAgreement
 
         await rescore(old, [LabelAgreement(["good"])], rerun=True, store=store)
         assert find_validation(store, [good_judge], "good").run_id == new.id  # type: ignore[union-attr]

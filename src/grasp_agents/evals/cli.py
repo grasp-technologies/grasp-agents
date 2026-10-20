@@ -277,7 +277,7 @@ async def _cmd_run(args: argparse.Namespace) -> int:
 
 
 async def _push(run: EvaluationRun, store: LocalRunStore, base_url: str | None) -> str:
-    from .phoenix import (  # noqa: PLC0415
+    from .phoenix import (  # ruff: ignore[import-outside-top-level]
         PhoenixClient,
         experiment_url,
         push_run,
@@ -536,7 +536,7 @@ async def _cmd_datasets(args: argparse.Namespace) -> int:
 
 
 async def _cmd_phoenix_datasets(args: argparse.Namespace) -> int:
-    from .phoenix import (  # noqa: PLC0415
+    from .phoenix import (  # ruff: ignore[import-outside-top-level]
         PhoenixClient,
         pull_dataset,
         push_dataset,
@@ -578,7 +578,7 @@ async def _cmd_phoenix_datasets(args: argparse.Namespace) -> int:
 
 
 def _cmd_labels(args: argparse.Namespace) -> int:
-    from .labeling import (  # noqa: PLC0415
+    from .labeling import (  # ruff: ignore[import-outside-top-level]
         import_labels,
         known_splits,
         label_requests,
@@ -648,13 +648,13 @@ def _cmd_labels(args: argparse.Namespace) -> int:
 
 
 async def _pull_labels(args: argparse.Namespace) -> int:
-    from .labeling import (  # noqa: PLC0415
+    from .labeling import (  # ruff: ignore[import-outside-top-level]
         annotation_value,
         label_requests,
         merge_labels,
     )
-    from .phoenix import PhoenixClient  # noqa: PLC0415
-    from .phoenix.annotations import (  # noqa: PLC0415
+    from .phoenix import PhoenixClient  # ruff: ignore[import-outside-top-level]
+    from .phoenix.annotations import (  # ruff: ignore[import-outside-top-level]
         PhoenixProjectNotFoundError,
         human_annotations,
     )
@@ -1075,7 +1075,7 @@ _USAGE_ERRORS: tuple[type[BaseException], ...] = (
 
 
 def _exit_code(exc: BaseException) -> int:
-    from .phoenix import (  # noqa: PLC0415
+    from .phoenix import (  # ruff: ignore[import-outside-top-level]
         DatasetPushError,
         PhoenixError,
         StaleDatasetError,

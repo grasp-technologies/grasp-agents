@@ -41,10 +41,10 @@ def init_phoenix(
     processors would otherwise duplicate and double every exported span.
     """
     # Deferred: these need the optional grasp-agents[phoenix] extra.
-    from openinference.instrumentation.openllmetry import (  # noqa: PLC0415
+    from openinference.instrumentation.openllmetry import (  # ruff: ignore[import-outside-top-level]
         OpenInferenceSpanProcessor,
     )
-    from phoenix.otel import (  # noqa: PLC0415
+    from phoenix.otel import (  # ruff: ignore[import-outside-top-level]
         BatchSpanProcessor,
         HTTPSpanExporter,
         SimpleSpanProcessor,

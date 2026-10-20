@@ -133,7 +133,7 @@ class EnvironmentConfig(BaseModel):
 
 def load_environment_config(path: str | Path) -> EnvironmentConfig:
     """Load + validate an :class:`EnvironmentConfig` from a JSON file."""
-    from pathlib import Path as _Path  # noqa: PLC0415
+    from pathlib import Path as _Path  # ruff: ignore[import-outside-top-level]
 
     return EnvironmentConfig.model_validate(
         json.loads(_Path(path).read_text(encoding="utf-8"))

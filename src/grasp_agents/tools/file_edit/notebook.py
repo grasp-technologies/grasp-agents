@@ -168,7 +168,7 @@ class NotebookEditResult(BaseModel):
 
 def _nbformat() -> Any:
     try:
-        import nbformat  # noqa: PLC0415
+        import nbformat  # ruff: ignore[import-outside-top-level]
     except ImportError as exc:  # pragma: no cover - exercised only without the extra
         raise ValueError(
             "Notebook editing tools require the 'nbformat' package. "
@@ -194,7 +194,7 @@ def _cell_source(cell: Any) -> str:
 
 
 def _deterministic_cell_id(index: int, source: str, taken: set[str]) -> str:
-    digest = hashlib.sha1(  # noqa: S324 - id derivation, not security
+    digest = hashlib.sha1(  # ruff: ignore[hashlib-insecure-hash-function] - id derivation, not security
         f"{index}\x00{source}".encode()
     ).hexdigest()[:8]
     cell_id = digest
@@ -480,7 +480,9 @@ class NotebookReadTool(
         timeout: float | None = None,
         redactor: SecretRedactor | None = None,
     ) -> None:
-        from .redact import DefaultSecretRedactor  # noqa: PLC0415
+        from .redact import (
+            DefaultSecretRedactor,
+        )
 
         super().__init__(timeout=timeout)
         self._output_preview_chars = output_preview_chars

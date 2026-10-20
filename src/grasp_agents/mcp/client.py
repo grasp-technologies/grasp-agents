@@ -132,7 +132,9 @@ class MCPClient:
             else:
                 try:
                     # Deferred: SSE transport needs the optional httpx-sse extra.
-                    from mcp.client.sse import sse_client  # noqa: PLC0415
+                    from mcp.client.sse import (
+                        sse_client,
+                    )
                 except ImportError as err:
                     msg = (
                         "SSE transport requires the 'mcp' package with "

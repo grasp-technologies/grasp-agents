@@ -20,7 +20,7 @@ from typing import Any, cast, overload
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.context import (
-    _SUPPRESS_INSTRUMENTATION_KEY,  # noqa: PLC2701 # pyright: ignore[reportPrivateUsage]
+    _SUPPRESS_INSTRUMENTATION_KEY,  # ruff: ignore[import-private-name] # pyright: ignore[reportPrivateUsage]
     Context,
 )
 from opentelemetry.trace.propagation import set_span_in_context

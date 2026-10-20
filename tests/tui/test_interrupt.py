@@ -93,7 +93,7 @@ async def test_escape_stops_background_stream_and_message_resumes_it() -> None:
         starts.append(1)
         try:
             yield TurnStartEvent(data=TurnInfo(turn=0), source="lead")
-            while True:  # parked until cancelled; nothing to signal  # noqa: ASYNC110
+            while True:  # parked until cancelled; nothing to signal  # ruff: ignore[async-busy-wait]
                 await asyncio.sleep(0.02)
         finally:
             closed.append(1)

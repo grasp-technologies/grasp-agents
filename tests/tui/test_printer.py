@@ -105,7 +105,7 @@ class TestRenderPayload:
         # A string payload is shown as-is — no wrapping quotes, and a non-ASCII
         # char (here the multiplication sign) is not escaped to a \\uXXXX
         # sequence (the bug: json.dumps gave '"**347 \\u00d7 ..."').
-        s = "**347 × 829 = 287,663**"  # noqa: RUF001
+        s = "**347 × 829 = 287,663**"  # ruff: ignore[ambiguous-unicode-character-string]
         assert render_payload(s) == s
 
     def test_model_as_indented_json(self):

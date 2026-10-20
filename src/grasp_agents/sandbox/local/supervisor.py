@@ -124,7 +124,7 @@ def make_rlimit_preexec(limits: SupervisorLimits) -> Callable[[], None] | None:
     ):
         return None
 
-    import resource  # noqa: PLC0415  (POSIX-only; imported only when used)
+    import resource  # ruff: ignore[import-outside-top-level]  (POSIX-only; imported only when used)
 
     rlimits: list[tuple[int, int]] = []
     if limits.cpu_timeout is not None:

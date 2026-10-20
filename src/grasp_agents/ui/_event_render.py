@@ -452,7 +452,7 @@ class _ThinkingGutter:
     def __init__(self, body: str) -> None:
         self._body = body
 
-    def __rich_console__(  # noqa: PLW3201
+    def __rich_console__(  # ruff: ignore[bad-dunder-method-name]
         self, console: Console, options: ConsoleOptions
     ) -> RenderResult:
         border = PALETTE["border_thinking"]
@@ -520,7 +520,11 @@ else:
         # still ordinary colored text, so it lives in the cell grid and scrolls
         # without the blanking that graphics protocols hit in a scroll pane.
         try:
-            from chafa import Canvas, CanvasConfig, PixelType  # noqa: PLC0415
+            from chafa import (  # ruff: ignore[import-outside-top-level]
+                Canvas,
+                CanvasConfig,
+                PixelType,
+            )
         except Exception:
             return None
         try:
@@ -536,7 +540,7 @@ else:
             config.width = cols
             config.height = rows
             try:
-                from chafa import CanvasMode  # noqa: PLC0415
+                from chafa import CanvasMode  # ruff: ignore[import-outside-top-level]
 
                 config.canvas_mode = CanvasMode.CHAFA_CANVAS_MODE_TRUECOLOR
             except Exception:
@@ -555,7 +559,7 @@ else:
         # rich-pixels half-blocks, then a text label. Untyped optional libs stay
         # out of type-checking here.
         try:
-            from PIL import Image as PILImage  # noqa: PLC0415
+            from PIL import Image as PILImage  # ruff: ignore[import-outside-top-level]
         except ImportError:
             return Text("[image]", style=PALETTE["muted"])
         try:
@@ -572,7 +576,7 @@ else:
         if ansi is not None:
             return Text.from_ansi(ansi)
         try:
-            from rich_pixels import Pixels  # noqa: PLC0415
+            from rich_pixels import Pixels  # ruff: ignore[import-outside-top-level]
 
             thumb = pil.copy()
             thumb.thumbnail(_IMG_CELLS)
@@ -620,7 +624,7 @@ else:
         # rendering (textual-image's Image widget), or None if it can't be read.
         # PIL is an untyped optional dep, so this lives behind a runtime branch.
         try:
-            from PIL import Image as PILImage  # noqa: PLC0415
+            from PIL import Image as PILImage  # ruff: ignore[import-outside-top-level]
         except ImportError:
             return None
         try:
@@ -697,7 +701,9 @@ else:
 
     def _pygments_has(name):
         try:
-            from pygments.styles import get_style_by_name  # noqa: PLC0415
+            from pygments.styles import (
+                get_style_by_name,
+            )
 
             get_style_by_name(name)
         except Exception:
@@ -753,7 +759,7 @@ def set_markup_theme(
 class _CodeBlock(CodeBlock):
     """A Markdown code fence with a transparent (app-background) syntax box."""
 
-    def __rich_console__(  # noqa: PLW3201
+    def __rich_console__(  # ruff: ignore[bad-dunder-method-name]
         self, console: Console, options: ConsoleOptions
     ) -> RenderResult:
         code = str(self.text).rstrip()
@@ -770,7 +776,7 @@ class _CodeBlock(CodeBlock):
 class _Heading(Heading):
     """Headings left-aligned (Rich centers them by default)."""
 
-    def __rich_console__(  # noqa: PLW3201
+    def __rich_console__(  # ruff: ignore[bad-dunder-method-name]
         self, console: Console, options: ConsoleOptions
     ) -> RenderResult:
         # rich.markdown.Heading verbatim, except left-aligned: it hardcodes
@@ -793,12 +799,12 @@ class _HtmlBlock(MarkdownElement):
 
     def on_text(
         self,
-        context: MarkdownContext,  # noqa: ARG002 — MarkdownElement.on_text signature
+        context: MarkdownContext,  # ruff: ignore[unused-method-argument] — MarkdownElement.on_text signature
         text: TextType,
     ) -> None:
         self._text += text if isinstance(text, str) else text.plain
 
-    def __rich_console__(  # noqa: PLW3201
+    def __rich_console__(  # ruff: ignore[bad-dunder-method-name]
         self, console: Console, options: ConsoleOptions
     ) -> RenderResult:
         code = self._text.strip("\n")
@@ -836,7 +842,7 @@ class _Markdown(Markdown):
         "html_inline": _HtmlInline,
     }
 
-    def __rich_console__(  # noqa: PLW3201
+    def __rich_console__(  # ruff: ignore[bad-dunder-method-name]
         self, console: Console, options: ConsoleOptions
     ) -> RenderResult:
         if not _md_styles:

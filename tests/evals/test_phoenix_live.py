@@ -430,18 +430,18 @@ async def test_a_failed_trial_push_reports_the_phoenix_error(
 async def test_labels_come_back_from_human_annotations(
     base_url: str, tmp_path: Path
 ) -> None:
-    import asyncio  # noqa: PLC0415
-    import json  # noqa: PLC0415
+    import asyncio
+    import json
 
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # noqa: PLC0415
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
         OTLPSpanExporter,
     )
-    from opentelemetry.sdk.resources import Resource  # noqa: PLC0415
-    from opentelemetry.sdk.trace import TracerProvider  # noqa: PLC0415
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor  # noqa: PLC0415
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
-    from grasp_agents.evals import _execution, sample_for_labeling  # noqa: PLC0415
-    from grasp_agents.evals.cli import main  # noqa: PLC0415
+    from grasp_agents.evals import _execution, sample_for_labeling
+    from grasp_agents.evals.cli import main
 
     project = f"grasp-evals-labels-{uuid.uuid4().hex[:8]}"
     provider = TracerProvider(

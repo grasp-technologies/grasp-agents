@@ -169,7 +169,9 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
         timeout: float | None = None,
     ) -> None:
         super().__init__(timeout=timeout)
-        from .redact import DefaultSecretRedactor  # noqa: PLC0415
+        from .redact import (
+            DefaultSecretRedactor,
+        )
 
         self._redactor: SecretRedactor = redactor or DefaultSecretRedactor()
         self._max_read_chars = max_read_chars
@@ -218,7 +220,9 @@ class ReadTool(BaseTool[ReadInput, ReadResult, Any]):
         # A notebook is JSON; show its cell-structured view (never raw JSON)
         # so the model can target cells by id in a subsequent NotebookEdit.
         if resolved.suffix == ".ipynb":
-            from .notebook import read_notebook_as_text  # noqa: PLC0415
+            from .notebook import (
+                read_notebook_as_text,
+            )
 
             rendered, mtime = await read_notebook_as_text(backend, resolved)
             if state is not None:

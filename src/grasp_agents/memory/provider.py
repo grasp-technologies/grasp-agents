@@ -69,7 +69,7 @@ class MemorySnapshot:
     entries: tuple[MemoryEntry, ...] = ()
     entry_freshness_warnings: dict[str, str] = field(
         compare=False,
-        default_factory=lambda: dict[str, str](),  # noqa: PLW0108
+        default_factory=lambda: dict[str, str](),  # ruff: ignore[unnecessary-lambda]
     )
     root: Path = field(compare=False, default_factory=Path)
 
@@ -193,8 +193,8 @@ class MemoryProvider:
         the body cached on the snapshot (in-memory providers always take
         this path).
         """
-        from .loader import parse_memory_md  # noqa: PLC0415
-        from .types import MemoryNotFoundError  # noqa: PLC0415
+        from .loader import parse_memory_md  # ruff: ignore[import-outside-top-level]
+        from .types import MemoryNotFoundError  # ruff: ignore[import-outside-top-level]
 
         snapshot = await self.load()
         entry = snapshot.get(name)
@@ -307,8 +307,11 @@ class MemoryProvider:
         reads are NOT recorded here — only their body, when surfaced via
         :meth:`fetch_body`, is.
         """
-        from .loader import parse_memory_md, truncate_index  # noqa: PLC0415
-        from .types import (  # noqa: PLC0415
+        from .loader import (  # ruff: ignore[import-outside-top-level]
+            parse_memory_md,
+            truncate_index,
+        )
+        from .types import (  # ruff: ignore[import-outside-top-level]
             INDEX_FILE_NAME,
             MAX_MEMORY_FILES,
             MemoryEntry,
@@ -529,7 +532,7 @@ def _age_ms(now_ms: int, mtime_ms: int) -> int:
 
 
 def _now_ms() -> int:
-    import time  # noqa: PLC0415
+    import time  # ruff: ignore[import-outside-top-level]
 
     return int(time.time() * 1000)
 
@@ -537,7 +540,7 @@ def _now_ms() -> int:
 # Re-export the default-path resolver + memdir-name constants for the
 # common case where the host wants the standard memdir layout but the
 # provider doesn't manage filesystem I/O itself.
-from .default_path import (  # noqa: E402  re-export for back-compat
+from .default_path import (  # ruff: ignore[module-import-not-at-top-of-file]  re-export for back-compat
     GRASP_HOME_DIR_NAME,
     GRASP_MEMORY_ENV,
     MEMDIR_DIR_NAME,

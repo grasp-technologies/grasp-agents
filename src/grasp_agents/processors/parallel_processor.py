@@ -215,7 +215,7 @@ class ParallelProcessor[InT, OutT, CtxT](Processor[InT, OutT, CtxT]):
         *,
         in_args: list[InT] | None = None,
         exec_id: str,
-        step: int | None = None,  # noqa: ARG002
+        step: int | None = None,  # ruff: ignore[unused-method-argument]
     ) -> AsyncIterator[Event[Any]]:
         self._keep_failed = {}
 

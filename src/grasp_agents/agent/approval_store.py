@@ -359,7 +359,7 @@ def build_store_approval(
         *,
         tool_calls: Sequence[FunctionToolCallItem],
         ctx: SessionContext[Any],
-        exec_id: str,  # noqa: ARG001 — BeforeToolHook protocol signature
+        exec_id: str,  # ruff: ignore[unused-function-argument] — BeforeToolHook protocol signature
     ) -> Mapping[str, ToolCallDecision] | None:
         store = ctx.approval_store
         if store is None:

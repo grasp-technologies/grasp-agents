@@ -200,14 +200,20 @@ class AgentContext:
         read them from the holders' ``context_id`` before the sandbox was
         paused/snapshotted. See :class:`KernelHolder`.
         """
-        from grasp_agents.tools.bash_common import ShellState  # noqa: PLC0415
-        from grasp_agents.tools.bash_session import BashSessionHolder  # noqa: PLC0415
-        from grasp_agents.tools.file_edit.session_state import (  # noqa: PLC0415
+        from grasp_agents.tools.bash_common import (
+            ShellState,
+        )
+        from grasp_agents.tools.bash_session import (
+            BashSessionHolder,
+        )
+        from grasp_agents.tools.file_edit.session_state import (  # ruff: ignore[import-outside-top-level]
             FileEditSessionState as _FileEditSessionState,
         )
-        from grasp_agents.tools.notebook_exec import KernelHolder  # noqa: PLC0415
+        from grasp_agents.tools.notebook_exec import (
+            KernelHolder,
+        )
 
-        from .background_tasks import (  # noqa: PLC0415
+        from .background_tasks import (  # ruff: ignore[import-outside-top-level]
             BackgroundTaskManager as _BackgroundTaskManager,
         )
 
@@ -388,7 +394,9 @@ class AgentContext:
         mailbox_hw = state.mail_consumption_seq
         leased = self.inbox.drop_leases() if self.inbox is not None else []
         if committed_mail_seq > mailbox_hw or leased:
-            from grasp_agents.mailbox import void_mail_after  # noqa: PLC0415
+            from grasp_agents.mailbox import (
+                void_mail_after,
+            )
 
             transport = ctx.transport
             # Seed the counter: a cold rollback's fresh transport starts at

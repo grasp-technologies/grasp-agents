@@ -121,7 +121,7 @@ class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
         # Reject deletes on directories — :class:`DeleteTool` is for
         # files. Walking and recursively deleting trees should be an
         # explicit user-level action.
-        import stat as stat_module  # noqa: PLC0415
+        import stat as stat_module  # ruff: ignore[import-outside-top-level]
 
         if (
             current_stat.mode

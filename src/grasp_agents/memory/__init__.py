@@ -69,7 +69,7 @@ from .selectors import (
 from .types import (
     MEMORY_TYPES,
     MemoryEntry,
-    MemoryError,  # noqa: A004
+    MemoryError,  # ruff: ignore[builtin-import-shadowing]
     MemoryFormatError,
     MemoryFrontmatter,
     MemoryNotFoundError,

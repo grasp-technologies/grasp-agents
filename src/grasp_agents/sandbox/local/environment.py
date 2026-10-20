@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
-import subprocess  # noqa: S404 - trusted interpreter + literal script, no shell
+import subprocess  # ruff: ignore[suspicious-subprocess-import] - trusted interpreter + literal script, no shell
 import sys
 import time
 import warnings
@@ -301,7 +301,9 @@ def _build_exec_backend(
                 "NetworkPolicy.ALL, or confinement='srt' for a domain "
                 "allowlist."
             )
-        from .seatbelt import SeatbeltExecBackend  # noqa: PLC0415
+        from .seatbelt import (
+            SeatbeltExecBackend,
+        )
 
         return SeatbeltExecBackend(
             policy=policy,
@@ -317,7 +319,7 @@ def _build_exec_backend(
                 "confinement + domain-allowlisted network egress; otherwise use "
                 "'seatbelt' or 'none'."
             )
-        from .srt import SrtExecBackend  # noqa: PLC0415
+        from .srt import SrtExecBackend  # ruff: ignore[import-outside-top-level]
 
         return SrtExecBackend(
             policy=policy,

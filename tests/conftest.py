@@ -46,7 +46,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 # ------------------------------------------------------------------ #
 
 
-class _SecretStr(str):  # noqa: FURB189  (must BE a str: passed to SDKs as api_key)
+class _SecretStr(str):  # ruff: ignore[subclass-builtin]  (must BE a str: passed to SDKs as api_key)
     """
     A ``str`` whose ``repr`` hides the value.
 
