@@ -28,12 +28,18 @@ if TYPE_CHECKING:
 else:
 
     def _display_image(path):
-        from IPython.display import Image, display  # noqa: PLC0415
+        from IPython.display import (  # ruff: ignore[import-outside-top-level]
+            Image,
+            display,
+        )
 
         display(Image(filename=path))
 
     def _display_svg(svg):
-        from IPython.display import SVG, display  # noqa: PLC0415
+        from IPython.display import (  # ruff: ignore[import-outside-top-level]
+            SVG,
+            display,
+        )
 
         display(SVG(svg))
 
@@ -51,7 +57,7 @@ async def render_events_inline(
     context, a tool result carrying an ``image_path`` is also shown as a real
     image via ``IPython.display`` (not a half-block).
     """
-    from rich.console import Console  # noqa: PLC0415
+    from rich.console import Console  # ruff: ignore[import-outside-top-level]
 
     console = console or Console()
     in_jupyter = bool(getattr(console, "is_jupyter", False))
@@ -78,7 +84,7 @@ async def screenshot(
     Captures the current (active) pane plus the agent tree — a static layout
     preview. Requires the ``tui`` extra (Textual).
     """
-    from .app import GraspAgentsApp  # noqa: PLC0415
+    from .app import GraspAgentsApp  # ruff: ignore[import-outside-top-level]
 
     app = GraspAgentsApp(events)
     async with app.run_test(size=size) as pilot:

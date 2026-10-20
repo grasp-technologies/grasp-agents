@@ -47,7 +47,7 @@ def make_mcp_instructions_section(
     block is omitted from the prompt entirely.
     """
 
-    async def compute(  # noqa: RUF029
+    async def compute(  # ruff: ignore[unused-async]
         *,
         ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,

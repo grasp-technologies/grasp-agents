@@ -51,7 +51,7 @@ async def load_phoenix_dataset(
     Pull ``phoenix:NAME[@VERSION]`` from ``base_url`` (``$PHOENIX_BASE_URL``),
     caching it in ``cache_dir`` (default ``<evals dir>/datasets``).
     """
-    from .phoenix import (  # noqa: PLC0415
+    from .phoenix import (  # ruff: ignore[import-outside-top-level]
         PhoenixClient,
         pull_dataset,
     )

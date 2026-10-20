@@ -139,4 +139,4 @@ def _restore_init_false_fields(cls: type, restored: Any, data: Any) -> None:
         value: Any = TypeAdapter(hints.get(f.name, Any)).validate_python(  # type: ignore[arg-type]
             data_map[f.name]
         )
-        object.__setattr__(restored, f.name, value)  # noqa: PLC2801  # frozen-safe
+        object.__setattr__(restored, f.name, value)  # ruff: ignore[unnecessary-dunder-call]  # frozen-safe

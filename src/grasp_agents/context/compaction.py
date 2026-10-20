@@ -361,7 +361,7 @@ class CollapseToolOutputsProjector(Budgeted):
         self,
         messages: list[InputItem],
         *,
-        exec_id: str,  # noqa: ARG002
+        exec_id: str,  # ruff: ignore[unused-method-argument]
         input_tokens: int,
     ) -> Sequence[InputItem]:
         if not self.proactive and (
@@ -610,7 +610,7 @@ class SummarizingCompactor(Budgeted):
         *,
         input_tokens: int,
         folds: Sequence[FoldSpec],
-        exec_id: str,  # noqa: ARG002
+        exec_id: str,  # ruff: ignore[unused-method-argument]
         force: bool = False,
     ) -> FoldSpec | None:
         if not force and (

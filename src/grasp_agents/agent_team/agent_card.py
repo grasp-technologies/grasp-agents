@@ -109,7 +109,7 @@ class MemberCard(BaseModel):
         if skills is None:
             # Local import avoids a module-level dep from this data model into the
             # behavioral role helpers (which _roles already TYPE_CHECKING-imports).
-            from ._roles import is_llm_agent  # noqa: PLC0415
+            from ._roles import is_llm_agent  # ruff: ignore[import-outside-top-level]
 
             skill_filter = processor.skill_filter if is_llm_agent(processor) else None
             include = skill_filter.include if skill_filter is not None else None

@@ -232,7 +232,7 @@ class ScorerTask(_JudgeTask[list[Score]]):
 
     async def run(
         self,
-        input: JudgedOutput[Any, Any, Any],  # noqa: A002
+        input: JudgedOutput[Any, Any, Any],  # ruff: ignore[builtin-argument-shadowing]
         trial: TrialContext,
     ) -> list[Score]:
         spend = _Spend(usage=[], models={})
@@ -485,7 +485,7 @@ class ProbeTask(_JudgeTask[dict[str, list[Score] | None]]):
 
     async def run(
         self,
-        input: JudgedOutput[Any, Any, Any],  # noqa: A002
+        input: JudgedOutput[Any, Any, Any],  # ruff: ignore[builtin-argument-shadowing]
         trial: TrialContext,
     ) -> dict[str, list[Score] | None]:
         example = _source_example(trial, input)
@@ -1009,7 +1009,7 @@ class CorrectedPassRate(Metric):
         n_eff = float(judged.n)
         if se is not None and se > 0.0 and 0.0 < p < 1.0:
             n_eff = min(n_eff, p * (1.0 - p) / (se * se))
-        rng = random.Random(self.seed)  # noqa: S311
+        rng = random.Random(self.seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]
         draws: list[float] = []
         for _ in range(self.n_resamples):
             value = corrected_prevalence(

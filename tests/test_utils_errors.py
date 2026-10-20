@@ -55,7 +55,7 @@ def test_implicit_context_is_included() -> None:
             _raise_root()
         except ValueError:
             msg = "during handling"
-            raise RuntimeError(msg)  # noqa: B904 — implicit context is the point
+            raise RuntimeError(msg)  # ruff: ignore[raise-without-from-inside-except] — implicit context is the point
 
     with pytest.raises(RuntimeError) as exc_info:
         raise_during_handling()

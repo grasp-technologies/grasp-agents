@@ -161,7 +161,7 @@ def _slug(source: str) -> str:
     # Distinct sources can collapse to the same base ("worker 1" vs "worker-1");
     # append a stable digest so the derived DOM ids stay unique (Textual rejects
     # duplicate ids).
-    digest = hashlib.md5(source.encode()).hexdigest()[:6]  # noqa: S324
+    digest = hashlib.md5(source.encode()).hexdigest()[:6]  # ruff: ignore[hashlib-insecure-hash-function]
     return f"{base}-{digest}"
 
 
@@ -370,7 +370,7 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
             strip.display = False  # collapsed until something is queued
             yield strip
             with Horizontal(id="prompt-bar"):
-                yield Static("❯", id="prompt-arrow")  # noqa: RUF001
+                yield Static("❯", id="prompt-arrow")  # ruff: ignore[ambiguous-unicode-character-string]
                 yield PromptArea(id="prompt")
         yield Tabs(id="agents")
         yield Footer()

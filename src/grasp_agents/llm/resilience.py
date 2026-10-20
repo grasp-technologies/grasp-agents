@@ -53,11 +53,11 @@ class RetryPolicy:
             self.initial_delay * self.exponential_base**attempt,
             self.max_delay,
         )
-        jittered = base + random.uniform(0, base * self.jitter)  # noqa: S311
+        jittered = base + random.uniform(0, base * self.jitter)  # ruff: ignore[suspicious-non-cryptographic-random-usage]
 
         if isinstance(error, LlmRateLimitError) and error.retry_after:
             server_delay = min(error.retry_after, self.max_retry_after)
-            return max(server_delay, base) + random.uniform(  # noqa: S311
+            return max(server_delay, base) + random.uniform(  # ruff: ignore[suspicious-non-cryptographic-random-usage]
                 0, base * self.jitter
             )
 

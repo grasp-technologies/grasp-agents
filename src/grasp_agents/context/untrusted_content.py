@@ -137,7 +137,9 @@ def make_untrusted_content_section(
     cache-stable; leave ``cache_control`` None so it stays inside the single
     system-prompt cache span rather than fragmenting it.
     """
-    from .prompt_builder import SystemPromptSection  # noqa: PLC0415
+    from .prompt_builder import (
+        SystemPromptSection,
+    )
 
     def compute(**_: Any) -> str:
         return instruction

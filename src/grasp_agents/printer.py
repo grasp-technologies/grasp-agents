@@ -107,7 +107,7 @@ def get_style(
 ) -> str:
     if color_by == "agent":
         idx = int(
-            hashlib.md5(agent_name.encode()).hexdigest(),  # noqa: S324
+            hashlib.md5(agent_name.encode()).hexdigest(),  # ruff: ignore[hashlib-insecure-hash-function]
             16,
         ) % len(AVAILABLE_STYLES)
 

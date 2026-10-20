@@ -217,7 +217,9 @@ class AgentTool[CtxT](BaseTool[AgentToolInput, str, CtxT]):
         message history.
         """
         del exec_id
-        from grasp_agents.agent.llm_agent import LLMAgent as _LLMAgent  # noqa: PLC0415
+        from grasp_agents.agent.llm_agent import (
+            LLMAgent as _LLMAgent,
+        )
 
         parent_transcript = agent_ctx.cw.transcript if agent_ctx is not None else None
         parent_tools = list(agent_ctx.tools.values()) if agent_ctx is not None else []

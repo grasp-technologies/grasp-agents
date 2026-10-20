@@ -27,7 +27,7 @@ type MemoryType = Literal["user", "feedback", "project", "reference"]
 MEMORY_TYPES: tuple[MemoryType, ...] = get_args(MemoryType.__value__)
 
 
-class MemoryError(Exception):  # noqa: A001
+class MemoryError(Exception):  # ruff: ignore[builtin-variable-shadowing]
     pass
 
 

@@ -1016,7 +1016,7 @@ class TestPacketEvents:
         from grasp_agents.types.packet import Packet
 
         ec, buf = _make_console_with(show_packets=True)
-        result = "**347 × 829 = 287,663**"  # noqa: RUF001
+        result = "**347 × 829 = 287,663**"  # ruff: ignore[ambiguous-unicode-character-string]
         packet = Packet(payloads=[result], sender="calc")
         events = [ProcPacketOutEvent(data=packet, source="calc", exec_id="c1")]
         await _collect(ec, events)

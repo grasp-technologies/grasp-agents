@@ -293,7 +293,9 @@ class LLMAgent[InT, OutT, CtxT](
         # Memory authoring and discovery (read/edit/grep the memdir) route
         # through the file toolkit via ``ctx.file_backend``.
         if enable_memory:
-            from grasp_agents.tools import FileToolkit  # noqa: PLC0415
+            from grasp_agents.tools import (
+                FileToolkit,
+            )
 
             self._merge_auto_attached(
                 tools, existing_names, FileToolkit().tools(), source="memory"
@@ -304,7 +306,9 @@ class LLMAgent[InT, OutT, CtxT](
         # system prompt.
         self._skill_filter = SkillFilter.build(skill_include, skill_exclude)
         if enable_skills:
-            from grasp_agents.skills.tools import load_skill  # noqa: PLC0415
+            from grasp_agents.skills.tools import (
+                load_skill,
+            )
 
             self._merge_auto_attached(
                 tools, existing_names, [load_skill], source="skills"
@@ -313,7 +317,7 @@ class LLMAgent[InT, OutT, CtxT](
         self.mcp_clients: list[MCPClient] = []
 
         if mcp_clients:
-            from grasp_agents.mcp.spec import (  # noqa: PLC0415
+            from grasp_agents.mcp.spec import (  # ruff: ignore[import-outside-top-level]
                 MCPClientSpec as _MCPClientSpec,
             )
 
@@ -373,7 +377,7 @@ class LLMAgent[InT, OutT, CtxT](
         self._prompt_builder.add_system_prompt_section(make_background_tasks_section())
 
         if mcp_clients:
-            from grasp_agents.mcp.section import (  # noqa: PLC0415
+            from grasp_agents.mcp.section import (  # ruff: ignore[import-outside-top-level]
                 make_mcp_instructions_section,
             )
 
@@ -688,7 +692,9 @@ class LLMAgent[InT, OutT, CtxT](
         agent supplies its own mailbox address (its name); the channel is
         always the session's mailbox (``ctx.transport``).
         """
-        from grasp_agents.inbox import AgentInbox  # noqa: PLC0415
+        from grasp_agents.inbox import (
+            AgentInbox,
+        )
 
         transport = self._ctx.transport
         inbox = self._agent_ctx.inbox
@@ -1519,7 +1525,7 @@ class LLMAgent[InT, OutT, CtxT](
         in_args: list[InT] | None = None,
         exec_id: str,
         step: int | None = None,
-        ctx: SessionContext[CtxT] | None = None,  # noqa: ARG002  # deprecated; use self.ctx
+        ctx: SessionContext[CtxT] | None = None,  # ruff: ignore[unused-method-argument]  # deprecated; use self.ctx
     ) -> AsyncIterator[Event[Any]]:
         inp = in_args[0] if in_args else None
 

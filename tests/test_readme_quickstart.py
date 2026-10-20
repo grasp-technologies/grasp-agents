@@ -34,7 +34,7 @@ def test_readme_quickstart_runs() -> None:
         if not line.startswith(("asyncio.run(", "load_dotenv("))
     ]
     namespace: dict[str, object] = {}
-    exec("\n".join(lines), namespace)  # noqa: S102
+    exec("\n".join(lines), namespace)  # ruff: ignore[exec-builtin]
 
     from grasp_agents import LLMAgent
 

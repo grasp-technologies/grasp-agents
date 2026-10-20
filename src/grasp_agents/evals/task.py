@@ -261,8 +261,10 @@ def processor_code(root: Processor[Any, Any, Any]) -> list[Any]:
     and parsers, prompt sections, tool functions, converters. Code from
     grasp-agents, installed packages and the standard library is left out.
     """
-    from grasp_agents.llm.llm import LLM  # noqa: PLC0415
-    from grasp_agents.tools.base import BaseTool  # noqa: PLC0415
+    from grasp_agents.llm.llm import LLM  # ruff: ignore[import-outside-top-level]
+    from grasp_agents.tools.base import (
+        BaseTool,
+    )
 
     found: list[Any] = []
     seen: set[int] = set()

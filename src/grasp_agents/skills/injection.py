@@ -118,7 +118,7 @@ def make_skills_section(
     nothing to load, so the instructions become misleading).
     """
 
-    async def compute(  # noqa: RUF029
+    async def compute(  # ruff: ignore[unused-async]
         *,
         ctx: SessionContext[Any] | None = None,
         exec_id: str | None = None,

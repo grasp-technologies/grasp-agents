@@ -74,7 +74,7 @@ def test_call_ctx_overrides_adoption_ctx() -> None:
         tracing_enabled = True
         tracing_exclude_input_fields = None
         ctx = adopt_ctx
-        path = ["host"]  # noqa: RUF012
+        path = ["host"]  # ruff: ignore[mutable-class-default]
 
     tool.on_adopted(_HostWithCtx())  # template adopted under adopt_ctx
 

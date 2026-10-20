@@ -1,6 +1,6 @@
 """Provider LLM classes are re-exported lazily at grasp_agents.llm_providers."""
 
-import subprocess  # noqa: S404
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
 from importlib import import_module
 
@@ -61,4 +61,4 @@ def test_provider_packages_not_imported_eagerly() -> None:
         "from grasp_agents.llm_providers import AnthropicLLM\n"
         "assert 'grasp_agents.llm_providers.anthropic' in sys.modules\n"
     )
-    subprocess.run([sys.executable, "-c", script], check=True)  # noqa: S603
+    subprocess.run([sys.executable, "-c", script], check=True)  # ruff: ignore[subprocess-without-shell-equals-true]

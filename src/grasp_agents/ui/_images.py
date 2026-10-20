@@ -34,7 +34,9 @@ def _prime_cell_size() -> None:
     # while the terminal is still in normal mode — the render path then returns
     # the cached value without ever probing. Best-effort.
     try:
-        from textual_image._terminal import get_cell_size  # noqa: PLC0415, PLC2701
+        from textual_image._terminal import (
+            get_cell_size,
+        )
 
         get_cell_size()
     except Exception:
@@ -69,7 +71,9 @@ else:
         pil = image_to_pil(src)
         if pil is not None:
             try:
-                from textual_image.widget import Image as TImage  # noqa: PLC0415
+                from textual_image.widget import (
+                    Image as TImage,
+                )
 
                 return TImage(pil, classes="zoom-img")
             except Exception:

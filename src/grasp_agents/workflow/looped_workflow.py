@@ -93,7 +93,7 @@ class LoopedWorkflow[InT, OutT, CtxT](WorkflowProcessor[InT, OutT, CtxT]):
         *,
         in_args: list[InT] | None = None,
         exec_id: str,
-        step: int | None = None,  # noqa: ARG002
+        step: int | None = None,  # ruff: ignore[unused-method-argument]
     ) -> AsyncIterator[Event[Any]]:
         packet = Packet(sender=self.name, payloads=in_args) if in_args else None
         n = len(self.subprocs)

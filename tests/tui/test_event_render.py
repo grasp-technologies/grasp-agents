@@ -596,7 +596,8 @@ def test_interrupted_task_notification_has_status_line_above_box() -> None:
     assert isinstance(result, Group)
     parts = list(result.renderables)
     assert isinstance(parts[0], Text)
-    assert "✗" in parts[0].plain and "Bash interrupted" in parts[0].plain
+    assert "✗" in parts[0].plain
+    assert "Bash interrupted" in parts[0].plain
     assert "bg_1" in parts[0].plain
     assert isinstance(parts[1], Panel)
     assert "Bash → data_engineer" in str(parts[1].title)

@@ -216,7 +216,7 @@ class TemplateBase(BaseModel):
         return self
 
     def start(self) -> TemplateBuilder:
-        from e2b import Template  # noqa: PLC0415
+        from e2b import Template  # ruff: ignore[import-outside-top-level]
 
         t = Template()
         if self.python is not None:
@@ -276,7 +276,7 @@ class E2BTemplateConfig(BaseModel):
 
     def to_dockerfile(self) -> str:
         """Render the template as a Dockerfile (no build, no network)."""
-        from e2b import Template  # noqa: PLC0415
+        from e2b import Template  # ruff: ignore[import-outside-top-level]
 
         return Template.to_dockerfile(self._builder())
 
@@ -286,7 +286,7 @@ class E2BTemplateConfig(BaseModel):
         ``create(template=...)``. Idempotent: skips the build when ``alias``
         already exists (unless ``skip_cache``).
         """
-        from e2b import AsyncTemplate  # noqa: PLC0415
+        from e2b import AsyncTemplate  # ruff: ignore[import-outside-top-level]
 
         if (
             self.alias
@@ -349,7 +349,9 @@ class E2BEnvironmentConfig(BaseModel):
 
     async def build(self, *, api_key: str | None = None) -> E2BEnvironment:
         """Build the template (if inline) and construct the environment."""
-        from .environment import e2b_environment  # noqa: PLC0415
+        from .environment import (
+            e2b_environment,
+        )
 
         api: dict[str, Any] = {}
         if api_key is not None:
@@ -382,7 +384,7 @@ class E2BEnvironmentConfig(BaseModel):
 
 def load_e2b_config(path: str | Path) -> E2BEnvironmentConfig:
     """Load + validate an :class:`E2BEnvironmentConfig` from a JSON file."""
-    from pathlib import Path as _Path  # noqa: PLC0415
+    from pathlib import Path as _Path  # ruff: ignore[import-outside-top-level]
 
     return E2BEnvironmentConfig.model_validate(
         json.loads(_Path(path).read_text(encoding="utf-8"))

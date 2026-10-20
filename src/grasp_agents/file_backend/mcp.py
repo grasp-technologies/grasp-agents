@@ -104,7 +104,7 @@ class MCPFileBackend(FileBackend):
         delete_tool_name: str = DEFAULT_DELETE_TOOL,
         index: MCPResourceIndex | None = None,
     ) -> None:
-        from pathlib import Path as _Path  # noqa: PLC0415
+        from pathlib import Path as _Path  # ruff: ignore[import-outside-top-level]
 
         self._client = client
         self.name = f"mcp:{client.name}"
@@ -119,7 +119,7 @@ class MCPFileBackend(FileBackend):
         return list(self._allowed_roots)
 
     def add_allowed_root(self, root: Path) -> None:
-        from pathlib import Path as _Path  # noqa: PLC0415
+        from pathlib import Path as _Path  # ruff: ignore[import-outside-top-level]
 
         resolved = _Path(root)
         if any(resolved == r or r in resolved.parents for r in self._allowed_roots):

@@ -153,10 +153,12 @@ class LocalKernel(KernelSession):
                 client.stop_channels()
             await self._terminate()
             self._cleanup_connection_file()
-        from jupyter_client.asynchronous.client import (  # noqa: PLC0415
+        from jupyter_client.asynchronous.client import (  # ruff: ignore[import-outside-top-level]
             AsyncKernelClient,
         )
-        from jupyter_client.connect import write_connection_file  # noqa: PLC0415
+        from jupyter_client.connect import (
+            write_connection_file,
+        )
 
         connection_file, _ = write_connection_file(ip="127.0.0.1", transport="tcp")
         self._connection_file = connection_file
@@ -422,7 +424,7 @@ class LocalKernel(KernelSession):
         self._connection_file = None
         if path is not None:
             with contextlib.suppress(OSError):
-                from pathlib import Path  # noqa: PLC0415
+                from pathlib import Path  # ruff: ignore[import-outside-top-level]
 
                 Path(path).unlink()
 

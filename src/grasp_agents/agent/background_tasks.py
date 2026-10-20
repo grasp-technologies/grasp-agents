@@ -1210,7 +1210,7 @@ class BackgroundTaskManager[CtxT]:
 
         return error or result, None
 
-    async def wait_idle(self, timeout: float | None = None) -> None:  # noqa: ASYNC109
+    async def wait_idle(self, timeout: float | None = None) -> None:  # ruff: ignore[async-function-with-timeout]
         """
         Block until the next tracked task completes — the loop's idle wait.
 

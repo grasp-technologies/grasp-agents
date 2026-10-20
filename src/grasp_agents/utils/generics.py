@@ -97,7 +97,7 @@ class AutoInstanceAttributesMixin:
         if isinstance(alias, type):
             # Already a real class (e.g. a pydantic generic specialization) —
             # annotating it is safe and shared with nothing else.
-            alias._resolved_instance_attr_types = cls._compute_resolved_attrs(  # noqa: SLF001  # pyright: ignore[reportAttributeAccessIssue]
+            alias._resolved_instance_attr_types = cls._compute_resolved_attrs(  # ruff: ignore[private-member-access]  # pyright: ignore[reportAttributeAccessIssue]
                 alias
             )
             specialized = alias
@@ -137,7 +137,7 @@ class AutoInstanceAttributesMixin:
                 target_generic_base = mro_cls
                 attr_mapping = cast(
                     "dict[int, str]",
-                    mro_cls._generic_arg_to_instance_attr_map,  # type: ignore[attr-defined] # noqa: SLF001
+                    mro_cls._generic_arg_to_instance_attr_map,  # type: ignore[attr-defined] # ruff: ignore[private-member-access]
                 )
                 break
 

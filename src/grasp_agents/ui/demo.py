@@ -88,7 +88,7 @@ def _resp(model: str, items: list[Any], *, cost: float) -> Response:
 
 def _make_sample_image() -> str | None:
     try:
-        from PIL import Image, ImageDraw  # noqa: PLC0415
+        from PIL import Image, ImageDraw  # ruff: ignore[import-outside-top-level]
     except ImportError:
         return None
     path = str(Path(tempfile.gettempdir()) / "grasp_tui_demo_chart.png")
@@ -542,15 +542,15 @@ def main() -> None:
     * ``python -m grasp_agents.ui.demo --tui`` — the multi-pane Textual app
       (needs the ``tui`` extra).
     """
-    import sys  # noqa: PLC0415
+    import sys  # ruff: ignore[import-outside-top-level]
 
     if "--tui" in sys.argv:
-        from . import run_tui  # noqa: PLC0415
+        from . import run_tui  # ruff: ignore[import-outside-top-level]
 
         run_tui(build_demo_events())
         return
 
-    from .console import EventConsole  # noqa: PLC0415
+    from .console import EventConsole  # ruff: ignore[import-outside-top-level]
 
     ec = EventConsole(
         show_thinking="--thinking" in sys.argv,
@@ -560,7 +560,7 @@ def main() -> None:
     )
 
     async def _run() -> None:
-        async def _gen() -> AsyncIterator[Event[Any]]:  # noqa: RUF029
+        async def _gen() -> AsyncIterator[Event[Any]]:  # ruff: ignore[unused-async]
             for event in console_demo_events():
                 yield event
 

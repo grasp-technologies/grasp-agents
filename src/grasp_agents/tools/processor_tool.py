@@ -98,7 +98,9 @@ class ProcessorTool[InT: BaseModel, OutT, CtxT](BaseTool[InT, OutT, CtxT]):
         if self._reset_transcript_on_run:
             # Only LLM agents carry a transcript — other processors have no
             # working-state slot to reset.
-            from grasp_agents.agent.llm_agent import LLMAgent  # noqa: PLC0415
+            from grasp_agents.agent.llm_agent import (
+                LLMAgent,
+            )
 
             if isinstance(proc, LLMAgent):
                 proc.reset_transcript()

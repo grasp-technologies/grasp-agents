@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
 
 def _make_rows(n: int = 40, positive_fraction: float = 0.4) -> list[dict[str, str]]:
-    rng = random.Random(7)  # noqa: S311 - deterministic fixture data
+    rng = random.Random(7)  # ruff: ignore[suspicious-non-cryptographic-random-usage] - deterministic fixture data
     rows: list[dict[str, str]] = []
     n_pos = round(n * positive_fraction)
     for i in range(1, n + 1):

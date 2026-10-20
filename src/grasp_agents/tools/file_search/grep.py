@@ -205,7 +205,7 @@ async def _run_rg(args: list[str]) -> tuple[bytes, bytes, int]:
                 break
             total += len(chunk)
             if total > MAX_STDOUT_BYTES:
-                raise GrepError(  # noqa: TRY301
+                raise GrepError(  # ruff: ignore[raise-within-try]
                     f"rg produced more than {MAX_STDOUT_BYTES:,} bytes of "
                     "output. Narrow the search path, glob, or pattern."
                 )
@@ -460,7 +460,7 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
         # Same redaction pass Read applies — content mode returns file
         # contents, so it must not leak what Read would have redacted. Pass
         # NullRedactor to opt out.
-        from grasp_agents.tools.file_edit.redact import (  # noqa: PLC0415
+        from grasp_agents.tools.file_edit.redact import (  # ruff: ignore[import-outside-top-level]
             DefaultSecretRedactor,
         )
 

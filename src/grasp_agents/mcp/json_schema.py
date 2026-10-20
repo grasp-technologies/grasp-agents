@@ -103,7 +103,7 @@ def _resolve_type(
             )
             for i, v in enumerate(variants)
         )
-        return Union[types]  # type: ignore[valid-type]  # noqa: UP007
+        return Union[types]  # type: ignore[valid-type]  # ruff: ignore[non-pep604-annotation-union]
 
     # allOf → merge into single model
     if "allOf" in prop_schema:
@@ -252,7 +252,7 @@ def _resolve_allof(
     for sub in subschemas:
         if "$ref" in sub:
             ref_name = sub["$ref"].split("/")[-1]
-            sub = defs.get(ref_name, sub)  # noqa: PLW2901
+            sub = defs.get(ref_name, sub)  # ruff: ignore[redefined-loop-name]
         merged = _merge_schemas(merged, sub)
 
     model_name = _to_pascal(f"{parent_name}_{name}")

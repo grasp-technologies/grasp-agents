@@ -42,7 +42,7 @@ from tests._helpers import _make_agent_ctx
 if TYPE_CHECKING:
     from pathlib import Path
 
-_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="  # noqa: E501
+_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="  # ruff: ignore[line-too-long]
 
 
 def _error_message(result: Any) -> str:

@@ -611,7 +611,7 @@ def _paged_phoenix(seen_paths: list[str]) -> httpx.MockTransport:
 
 @pytest.mark.asyncio
 async def test_annotations_on_large_traces_and_odd_project_names() -> None:
-    from grasp_agents.evals.phoenix.annotations import (  # noqa: PLC0415
+    from grasp_agents.evals.phoenix.annotations import (
         PhoenixProjectNotFoundError,
     )
 

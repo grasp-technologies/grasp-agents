@@ -47,7 +47,7 @@ class _FakeResource:
     uri: str
     name: str
     description: str | None = None
-    mimeType: str | None = "text/markdown"  # noqa: N815
+    mimeType: str | None = "text/markdown"  # ruff: ignore[mixed-case-variable-in-class-scope]
     meta: dict[str, Any] | None = None
 
 

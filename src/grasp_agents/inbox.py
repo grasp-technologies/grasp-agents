@@ -215,7 +215,7 @@ class AgentInbox:
         finally:
             self._waiting = False
 
-    async def wait(self, timeout: float) -> None:  # noqa: ASYNC109
+    async def wait(self, timeout: float) -> None:  # ruff: ignore[async-function-with-timeout]
         """
         Sleep up to ``timeout`` between mailbox polls (a plain mailbox has no
         arrival signal). The resident loop re-checks :meth:`has_pending` and its

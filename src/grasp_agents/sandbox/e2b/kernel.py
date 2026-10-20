@@ -153,7 +153,9 @@ class E2BKernel(KernelSession):
     async def _bind_context(self, sandbox: CodeInterpreterSandbox) -> Context:
         """Re-attach to a persisted context id (resume), else create a fresh one."""
         if self._context_id is not None:
-            from e2b_code_interpreter.models import Context  # noqa: PLC0415
+            from e2b_code_interpreter.models import (
+                Context,
+            )
 
             return Context(
                 context_id=self._context_id, language="python", cwd=self._cwd

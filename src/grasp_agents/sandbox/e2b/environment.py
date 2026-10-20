@@ -58,7 +58,9 @@ def _sandbox_cls(code_interpreter: bool) -> type[AsyncSandbox]:
     if not code_interpreter:
         return AsyncSandbox
     try:
-        from e2b_code_interpreter import AsyncSandbox as CISandbox  # noqa: PLC0415
+        from e2b_code_interpreter import (
+            AsyncSandbox as CISandbox,
+        )
     except ImportError as exc:  # pragma: no cover - the e2b extra installs both
         raise RuntimeError(
             "code_interpreter=True needs the e2b-code-interpreter package "
