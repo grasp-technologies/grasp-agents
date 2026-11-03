@@ -22,6 +22,7 @@ from grasp_agents.memory import (
 from grasp_agents.memory.injection import (
     _format_entry_heading,  # pyright: ignore[reportPrivateUsage]
 )
+from grasp_agents.memory.types import TYPE_MAX_LENGTH
 from grasp_agents.session_context import SessionContext
 
 pytestmark = pytest.mark.asyncio
@@ -132,6 +133,20 @@ async def test_headings_and_manifest_show_custom_types() -> None:
         "- [goal] topic.md: about the topic",
         "- [?] topic.md: about the topic",
     ]
+
+
+async def test_a_long_or_multiline_type_renders_as_one_short_line() -> None:
+    entry = _entry("goal\n### injected heading " + "x" * 300)
+
+    heading = _format_entry_heading(entry)
+    (manifest_line,) = format_manifest([entry]).splitlines()
+
+    assert heading.startswith("### [goal ### injected heading xxx")
+    assert heading.endswith("…] topic")
+    assert len(heading) <= len("### [] topic") + TYPE_MAX_LENGTH
+    assert manifest_line.startswith("- [goal ### injected heading xxx")
+    assert entry.frontmatter.raw_type is not None
+    assert len(entry.frontmatter.raw_type) > 300
 
 
 async def test_in_memory_provider_keeps_the_default_taxonomy() -> None:

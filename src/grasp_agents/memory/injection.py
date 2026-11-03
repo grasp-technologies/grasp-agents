@@ -234,8 +234,8 @@ def _format_entry_heading(entry: MemoryEntry) -> str:
     is normative); the timestamp telegraphs staleness; the description gives
     a hook so the agent can decide relevance without reading the body.
     """
-    raw_type = entry.frontmatter.raw_type
-    type_tag = f"[{raw_type}] " if raw_type else ""
+    label = entry.frontmatter.type_label
+    type_tag = f"[{label}] " if label else ""
     ts = _format_mtime(entry.mtime_ms)
     ts_suffix = f" (updated {ts})" if ts else ""
     return f"### {type_tag}{entry.name}{ts_suffix}"

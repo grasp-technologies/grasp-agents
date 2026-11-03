@@ -96,8 +96,8 @@ def format_manifest(entries: Iterable[MemoryEntry]) -> str:
     """
     lines: list[str] = []
     for e in entries:
-        raw_type = e.frontmatter.raw_type
-        type_tag = f"[{raw_type}]" if raw_type else "[?]"
+        label = e.frontmatter.type_label
+        type_tag = f"[{label}]" if label else "[?]"
         ts = _format_mtime(e.mtime_ms)
         ts_part = f" ({ts})" if ts else ""
         lines.append(f"- {type_tag} {e.name}.md{ts_part}: {e.description}")
