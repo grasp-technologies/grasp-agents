@@ -200,16 +200,16 @@ class AgentContext:
         read them from the holders' ``context_id`` before the sandbox was
         paused/snapshotted. See :class:`KernelHolder`.
         """
-        from grasp_agents.tools.bash_common import (
+        from grasp_agents.tools.bash_common import (  # ruff: ignore[import-outside-top-level]
             ShellState,
         )
-        from grasp_agents.tools.bash_session import (
+        from grasp_agents.tools.bash_session import (  # ruff: ignore[import-outside-top-level]
             BashSessionHolder,
         )
         from grasp_agents.tools.file_edit.session_state import (  # ruff: ignore[import-outside-top-level]
             FileEditSessionState as _FileEditSessionState,
         )
-        from grasp_agents.tools.notebook_exec import (
+        from grasp_agents.tools.notebook_exec import (  # ruff: ignore[import-outside-top-level]
             KernelHolder,
         )
 
@@ -283,7 +283,9 @@ class AgentContext:
 
         ``rebind_kernels`` (step rollback paired with a restored filesystem
         snapshot) re-attaches the kernels' execution contexts inside the
-        restored sandbox; a failed-run settle leaves the live kernels alone.
+        restored sandbox, and forgets the ones ``state`` has none for, so the
+        next call opens a fresh kernel there; a failed-run settle leaves the
+        live kernels alone.
         """
         self.file_edit_state.import_state(
             state.read_file_state, state.dotfile_overrides
@@ -323,10 +325,9 @@ class AgentContext:
             self.inbox.seed_consumption_seq(state.mail_consumption_seq)
 
         if rebind_kernels:
-            if state.ipy_exec_context_id is not None and self.ipy_kernel_holder:
+            if self.ipy_kernel_holder is not None:
                 self.ipy_kernel_holder.rebind(state.ipy_exec_context_id)
-            if state.nb_exec_context_id is not None:
-                self.nb_kernel_holder.rebind(state.nb_exec_context_id)
+            self.nb_kernel_holder.rebind(state.nb_exec_context_id)
 
     def deliver_task_notes(self, notes: Sequence[TaskNote]) -> None:
         """
@@ -394,7 +395,7 @@ class AgentContext:
         mailbox_hw = state.mail_consumption_seq
         leased = self.inbox.drop_leases() if self.inbox is not None else []
         if committed_mail_seq > mailbox_hw or leased:
-            from grasp_agents.mailbox import (
+            from grasp_agents.mailbox import (  # ruff: ignore[import-outside-top-level]
                 void_mail_after,
             )
 
