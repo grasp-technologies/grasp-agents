@@ -115,6 +115,15 @@ class FileBackend(ABC):
     Read-before-write enforcement lives on the *agent*: tools consult
     the active :class:`FileEditSessionState` via the call's ``AgentContext``
     and record reads/writes there directly. Backends are pure I/O.
+
+    Changed in 1.1.0: :meth:`write_bytes` and :meth:`delete` take a
+    keyword-only ``expected_mtime``, and the file tools (``Write``, ``Edit``,
+    ``Delete``, ``NotebookEdit``, ``RunCell``, ``Copy``) always pass it, as
+    ``None`` when they have no read record. A backend written for 1.0 fails
+    each of those calls with :class:`TypeError` until it accepts the argument.
+    Implement the check, raising :class:`StaleFileError` when the file
+    changed, rather than ignoring the value: the tools rely on it to refuse a
+    write that would overwrite someone else's change.
     """
 
     name: str  # a class attr or a property both satisfy this
@@ -222,7 +231,8 @@ class FileBackend(ABC):
         and the file is missing or its current mtime differs, raise
         :class:`StaleFileError` without writing. Backends that can check
         and write atomically (a database) do so; the others check right
-        before writing and document the remaining race.
+        before writing and document the remaining race. Required since
+        1.1.0 (see the class docstring).
         """
         ...
 
@@ -247,7 +257,7 @@ class FileBackend(ABC):
         Remove ``path``. Callers clear their read record separately.
 
         ``expected_mtime`` makes the delete conditional, with the same
-        contract as :meth:`write_bytes`.
+        contract as :meth:`write_bytes`. Required since 1.1.0.
         """
         ...
 
