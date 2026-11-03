@@ -126,6 +126,22 @@ async def test_write_creates_no_parents_outside_its_roots(
     assert not outside.parent.exists()
 
 
+async def test_write_creates_the_sensitive_parent_of_an_approved_file(
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    state: FileEditSessionState,
+    write_tool: WriteTool,
+) -> None:
+    target = tmp_path / ".aws" / "config"
+    state.add_dotfile_override(target.resolve())
+    result = await write_tool.run(
+        WriteInput(path=str(target), content="x"), ctx=ctx, agent_ctx=agent_ctx
+    )
+    assert result.created
+    assert target.read_text() == "x"
+
+
 # ---------------------------------------------------------------------------
 # Overwrite-existing branch — read-before-write
 # ---------------------------------------------------------------------------

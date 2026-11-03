@@ -10,8 +10,8 @@ filesystem at ``<first allowed root>/.grasp/tasks/<call_id>.<ext>``:
   result, or a backgrounded task's outcome when it finishes. The streamed log
   holds text; this holds the structured result (e.g. a ``BashResult`` with split
   stdout / stderr / exit code) — what the inline excerpt points at. A result
-  with several parts (text and images) spills each oversized text part, the
-  second and later as ``<call_id>-<n>.result``.
+  with several parts (text and images) is capped as a whole: see
+  :func:`spill_parts_if_large`.
 
 A backgrounded task's ``TaskRecord`` indexes its log via ``log_path``.
 """
@@ -168,26 +168,36 @@ async def spill_parts_if_large(
     file_kind: str = "full output",
 ) -> list[InputText | InputImage | InputFile]:
     """
-    :func:`spill_if_large` for a result with several parts: each text part over
-    ``cap`` is spilled to its own ``.result`` file and replaced by an excerpt that
-    points at it; images and files stay inline.
+    :func:`spill_if_large` for a result with several parts. ``cap`` bounds the
+    text of all parts together. When they exceed it, one limit applies to every
+    text part, the largest that keeps the total within ``cap``. A part within the
+    limit stays whole; a longer one is spilled to its own ``.result`` file (the
+    second and later as ``<name>-<n>.result``) and replaced by an excerpt of that
+    length pointing at it. Images and files stay inline.
     """
     out = list(parts)
-    if cap is None or file_backend is None:
+    texts = [part for part in out if isinstance(part, InputText)]
+    if cap is None or file_backend is None or sum(len(t.text) for t in texts) <= cap:
         return out
-    large = [
-        i
-        for i, part in enumerate(out)
-        if isinstance(part, InputText) and len(part.text) > cap
-    ]
-    for n, i in enumerate(large):
-        part = out[i]
-        assert isinstance(part, InputText)
+    # Parts shorter than an equal share keep their length, and the rest share
+    # what they leave.
+    budget, left = cap, len(texts)
+    for length in sorted(len(t.text) for t in texts):
+        if length > budget // left:
+            break
+        budget -= length
+        left -= 1
+    share = max(1, budget // left)
+    spilled = 0
+    for i, part in enumerate(out):
+        if not isinstance(part, InputText) or len(part.text) <= share:
+            continue
+        spilled += 1
         text, _ = await spill_if_large(
             file_backend,
-            name=name if n == 0 else f"{name}-{n + 1}",
+            name=name if spilled == 1 else f"{name}-{spilled}",
             text=part.text,
-            cap=cap,
+            cap=share,
             file_kind=file_kind,
         )
         out[i] = part.model_copy(update={"text": text})

@@ -113,7 +113,6 @@ if TYPE_CHECKING:
 
 logger = getLogger(__name__)
 
-# How often a lone agent waiting on background work re-emits the tasks' progress.
 # What a stopped run tells the model, and its unfinished tool calls, by reason.
 _STOP_NOTICE: Final[dict[StopReason, str]] = {
     StopReason.MAX_TURNS: "Exceeded the maximum number of turns: provide a final "
@@ -125,6 +124,7 @@ _CANCELLED_CALL: Final[dict[StopReason, str]] = {
     StopReason.TIMEOUT: "[Tool call cancelled: agent ran out of time]",
 }
 
+# How often a lone agent waiting on background work re-emits the tasks' progress.
 _BG_PROGRESS_INTERVAL = 0.25
 
 
@@ -433,16 +433,15 @@ class AgentLoop[CtxT]:
                 call_id=call.call_id, output=output
             ).output
             cap = tool.max_inline_result_chars if tool is not None else None
-            if is_error:
-                pass
-            elif isinstance(parts, str):
-                parts, _ = await spill_if_large(
-                    self.ctx.file_backend, name=call.call_id, text=parts, cap=cap
-                )
-            else:
-                parts = await spill_parts_if_large(
-                    self.ctx.file_backend, name=call.call_id, parts=parts, cap=cap
-                )
+            if not is_error:
+                if isinstance(parts, str):
+                    parts, _ = await spill_if_large(
+                        self.ctx.file_backend, name=call.call_id, text=parts, cap=cap
+                    )
+                else:
+                    parts = await spill_parts_if_large(
+                        self.ctx.file_backend, name=call.call_id, parts=parts, cap=cap
+                    )
 
         # Fence external content so the model reads it as data, not instructions
         # (paired with the ``untrusted_content`` system-prompt section).
@@ -1518,13 +1517,19 @@ class AgentLoop[CtxT]:
         # NOTE: inbox.has_pending can be a property?
 
         # Mark the inbox parked ("waiting") so a team supervisor can read this loop
-        # as idle while it blocks here (the per-actor quiescence signal).
-        while not (
-            await self.inbox.has_pending() or self.bg_tasks.has_undelivered_completions
-        ):
+        # as idle while it checks and blocks here (the per-actor quiescence
+        # signal). Progress is gathered while waiting and passed on after: an
+        # async generator mustn't yield inside a context manager.
+        while True:
             with self.inbox.waiting():
+                if (
+                    await self.inbox.has_pending()
+                    or self.bg_tasks.has_undelivered_completions
+                ):
+                    return
                 await self.inbox.wait(timeout=self._inbox_poll_interval)
-            async for event in self.bg_tasks.bubble_events():
+                progress = [event async for event in self.bg_tasks.bubble_events()]
+            for event in progress:
                 yield event
 
     async def _await_bg_tasks(self) -> AsyncIterator[Event[Any]]:

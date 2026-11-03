@@ -174,7 +174,7 @@ class AgentBackground(Protocol):
 
     @property
     def finished(self) -> bool:
-        """A finished task awaits delivery to the agent."""
+        """A finished task awaits delivery, and a turn can deliver it now."""
         ...
 
     def progress(self) -> AsyncIterator[Event[Any]]:
@@ -319,6 +319,9 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
         # the worker driving the current interactive turn; cancelled by Esc
         self._ga_run_worker: Worker[None] | None = None
         self._ga_running = False
+        # Whether that worker's body has begun: a worker cancelled before then
+        # never runs, so neither does the cleanup in its ``finally``.
+        self._ga_turn_began = False
         # The agent's background tasks (``on_submit`` mode): they never hold the
         # prompt. Between runs a worker streams their progress, and a finished
         # one starts a turn that delivers its result (see _watch_background).
@@ -604,6 +607,7 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
         # Marked here, not in the worker, so a background wake-up can't start a
         # second run in between.
         self._ga_running = True
+        self._ga_turn_began = False
         self._ga_run_worker = self._run_turn(text)
 
     # ── background tasks between runs (on_submit mode) ──
@@ -649,6 +653,7 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
             # Keeps any draft the user is typing.
             self.query_one("#prompt", PromptArea).disabled = True
         self._ga_running = True
+        self._ga_turn_began = False
         self._ga_run_worker = self._run_turn(None)
 
     # ── fire-and-forget input (on_post mode) ──
@@ -718,6 +723,7 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
     @work
     async def _run_turn(self, text: str | None) -> None:
         # ``None``: a turn that delivers finished background tasks.
+        self._ga_turn_began = True
         if text is not None and self._ga_on_submit is None:
             self._ga_running = False
             return
@@ -733,14 +739,15 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
             async for event in stream:
                 await self._feed(event)
             completed = True
+        except Exception as exc:
+            # Nobody asked for a delivery turn, so its failure is shown, not raised.
+            if text is not None:
+                raise
+            await self._mount_interrupt_note(
+                f"⊘ delivering a finished task failed: {exc}"
+            )
         finally:
-            self._ga_running = False
-            # Re-enable the prompt (suppress NoMatches: the app may be tearing
-            # down — e.g. quit pressed mid-run — and the widget already gone).
-            with contextlib.suppress(NoMatches):
-                prompt = self.query_one("#prompt", PromptArea)
-                prompt.disabled = False
-                prompt.focus()
+            self._release_prompt()
             # Close the agent generator so its per-run cleanup runs even when
             # the turn was interrupted — Esc cancels this worker, raising
             # CancelledError out of the loop above. Re-enable the prompt first,
@@ -752,6 +759,16 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
             # After an interrupted or failed turn, a finished task waits for the
             # user's next message rather than starting a turn of its own.
             self._watch_background(deliver=completed)
+
+    def _release_prompt(self) -> None:
+        """End the running state and give the prompt back."""
+        self._ga_running = False
+        # Suppress NoMatches: the app may be tearing down (e.g. quit pressed
+        # mid-run) and the widget already gone.
+        with contextlib.suppress(NoMatches):
+            prompt = self.query_one("#prompt", PromptArea)
+            prompt.disabled = False
+            prompt.focus()
 
     # ── approval gate ──
 
@@ -1550,6 +1567,9 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
         if self._ga_running and worker is not None:
             if worker.state in {WorkerState.PENDING, WorkerState.RUNNING}:
                 worker.cancel()
+            if not self._ga_turn_began:
+                self._release_prompt()
+                self._watch_background(deliver=False)
             await self._mount_interrupt_note("⊘ interrupted")
             return
         stream_worker = self._ga_worker
@@ -1624,7 +1644,11 @@ class _AgentTurns:
 
     @property
     def finished(self) -> bool:
-        return self._agent.agent_ctx.bg_tasks.has_undelivered_completions
+        # A session parked by a rollback takes its step's input first.
+        return (
+            self._agent.agent_ctx.bg_tasks.has_undelivered_completions
+            and not self._agent.parked_after_rollback
+        )
 
     def progress(self) -> AsyncIterator[Event[Any]]:
         return self._agent.agent_ctx.bg_tasks.bubble_events()

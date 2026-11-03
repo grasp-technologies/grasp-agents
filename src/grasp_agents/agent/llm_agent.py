@@ -657,6 +657,14 @@ class LLMAgent[InT, OutT, CtxT](
         """
         return sorted(wm.step for wm in self._step_watermarks if wm.step is not None)
 
+    @property
+    def parked_after_rollback(self) -> bool:
+        """
+        True from a rollback until a run re-delivers the step it rewound to. A run
+        with no input is refused meanwhile.
+        """
+        return self._parked_after_rollback
+
     async def read_rollback_anchors(self) -> list[StepWatermark]:
         """
         The recorded rollback boundaries, without rehydrating the session.
@@ -1648,6 +1656,10 @@ class LLMAgent[InT, OutT, CtxT](
             messages_to_expose.extend(
                 await self._start_step(chat_inputs, inp=inp, exec_id=exec_id)
             )
+        elif pure_resume and not resident and not self.transcript.owes_response:
+            # The last run finished, so this one only delivers finished
+            # background tasks: it gets the full turn budget.
+            self._loop.turn = 0
 
         # Surface initial context + input message for a fresh delivery
         for event in self._expose_messages(

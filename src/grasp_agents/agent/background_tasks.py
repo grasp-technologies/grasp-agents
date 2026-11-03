@@ -787,7 +787,20 @@ class BackgroundTaskManager[CtxT]:
         runs can read it to know a finished task's result is pending delivery, and run
         another turn so the turn boundary delivers it.
         """
+        self._drop_stale_completions()
         return not self._completions.empty()
+
+    def _drop_stale_completions(self) -> None:
+        """
+        Forget queued ids of tasks no longer tracked: a killed or rolled-back task's
+        done-callback still queues its id, though there is nothing to deliver.
+        """
+        queued = [
+            self._completions.get_nowait() for _ in range(self._completions.qsize())
+        ]
+        for task_id in queued:
+            if task_id in self._tasks:
+                self._completions.put_nowait(task_id)
 
     def _check_capacity(self) -> None:
         if len(self._tasks) >= self._max_background:
@@ -1230,13 +1243,15 @@ class BackgroundTaskManager[CtxT]:
         ``run_timeout`` — on expiry it returns and the loop's next deadline check
         stops the run.
         """
+        self._drop_stale_completions()
         if not self._completions.empty() or not self._tasks:
             return
         try:
             task_id = await asyncio.wait_for(self._completions.get(), timeout)
         except TimeoutError:
             return
-        self._completions.put_nowait(task_id)
+        if task_id in self._tasks:
+            self._completions.put_nowait(task_id)
 
     # --- Turn-boundary delivery ---
 

@@ -171,10 +171,6 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
         else:
             mode = self._new_file_mode
 
-        # The path is validated, so its missing parents are inside an allowed root.
-        if not await backend.parent_exists(resolved):
-            await backend.mkdir(resolved.parent)
-
         data = inp.content.encode("utf-8")
         new_mtime = await backend.write_bytes(
             resolved,

@@ -166,3 +166,75 @@ async def test_roster_pre_creates_idle_panes() -> None:
         await pilot.pause()
         assert app._ga_status["lead"] == "working"
         assert app._ga_status["researcher"] == "idle"
+
+
+class _FailingDelivery:
+    """Background work that has finished, and whose delivery turn fails."""
+
+    def __init__(self) -> None:
+        self.delivered = False
+
+    @property
+    def outstanding(self) -> bool:
+        return not self.delivered
+
+    @property
+    def finished(self) -> bool:
+        return not self.delivered
+
+    async def progress(self):
+        return
+        yield
+
+    async def deliver(self):
+        self.delivered = True
+        raise RuntimeError("model unavailable")
+        yield
+
+
+@pytest.mark.asyncio
+async def test_a_failed_delivery_turn_is_noted_and_the_app_stays() -> None:
+    app = GraspAgentsApp(
+        on_submit=_fake_agent, main_agent="analyst", background=_FailingDelivery()
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#prompt", PromptArea).text = "hello"
+        await pilot.press("enter")
+        # The turn, then the background watcher, then the delivery turn it starts.
+        for _ in range(3):
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert app.is_running
+        notes = [str(note.render()) for note in app.query(".ga-msg")]
+        assert any(
+            "delivering a finished task failed: model unavailable" in n for n in notes
+        )
+        assert not app.query_one("#prompt", PromptArea).disabled
+
+
+@pytest.mark.asyncio
+async def test_interrupting_a_turn_before_it_starts_gives_the_prompt_back() -> None:
+    app = GraspAgentsApp(on_submit=_fake_agent, main_agent="analyst")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._dispatch("hello")  # pyright: ignore[reportPrivateUsage]
+        await app.action_interrupt()
+        await pilot.pause()
+        assert not app._ga_running  # pyright: ignore[reportPrivateUsage]
+        assert not app.query_one("#prompt", PromptArea).disabled
+
+
+def test_a_parked_agent_takes_input_before_a_delivery() -> None:
+    from types import SimpleNamespace
+
+    from grasp_agents.ui.app import _AgentTurns  # pyright: ignore[reportPrivateUsage]
+
+    bg_tasks = SimpleNamespace(has_undelivered_completions=True)
+    agent = SimpleNamespace(
+        agent_ctx=SimpleNamespace(bg_tasks=bg_tasks), parked_after_rollback=True
+    )
+    turns = _AgentTurns(agent)  # type: ignore[arg-type]
+    assert not turns.finished
+    agent.parked_after_rollback = False
+    assert turns.finished

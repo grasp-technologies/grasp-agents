@@ -37,6 +37,7 @@ from grasp_agents.types.items import (
 )
 from grasp_agents.types.response import Response
 from tests._helpers import (
+    AddTool,
     MockLLM,
     _make_agent_ctx,
     _make_agent_loop,
@@ -1490,6 +1491,72 @@ class TestDeliveryBetweenRuns:
                 name="lone", llm=MockLLM(responses_queue=[])
             )
 
+        with pytest.raises(ProcRunError) as failure:
+            await agent.run()
+        assert isinstance(failure.value.__cause__, ProcInputValidationError)
+
+    @pytest.mark.asyncio
+    async def test_a_delivery_run_gets_the_full_turn_budget(self):
+        from grasp_agents.agent.llm_agent import LLMAgent
+
+        gate = asyncio.Event()
+        ctx = SessionContext[None](state=None)
+        with ctx:
+            agent = LLMAgent[str, str, None](
+                name="lone",
+                llm=MockLLM(
+                    responses_queue=[
+                        _tool_call_response("unheld", '{"text": "x"}', "c1"),
+                        _text_response("started it"),
+                        _tool_call_response("add", '{"a": 1, "b": 2}', "c2"),
+                        _text_response("acted on it"),
+                    ]
+                ),
+                tools=[_UnheldTool(gate), AddTool()],
+                max_turns=1,
+            )
+
+        await asyncio.wait_for(agent.run("go"), timeout=10)
+        bg = agent.agent_ctx.bg_tasks
+        gate.set()
+        async with asyncio.timeout(10):
+            while not bg.has_undelivered_completions:  # ruff: ignore[async-busy-wait]
+                await asyncio.sleep(0.01)
+
+        second = await asyncio.wait_for(agent.run(), timeout=10)
+
+        # The first run spent its one turn on a tool call. The delivery run gets
+        # its own, so it can call a tool on the result without being cut short.
+        assert second.payloads[0] == "acted on it"
+        notes = [i.text for i in agent.transcript if isinstance(i, InputMessageItem)]
+        assert not any("maximum number of turns" in note for note in notes)
+
+    @pytest.mark.asyncio
+    async def test_a_killed_task_leaves_nothing_to_deliver(self):
+        from grasp_agents.agent.llm_agent import LLMAgent
+        from grasp_agents.types.errors import ProcInputValidationError, ProcRunError
+
+        ctx = SessionContext[None](state=None)
+        with ctx:
+            agent = LLMAgent[str, str, None](
+                name="lone",
+                llm=MockLLM(
+                    responses_queue=[
+                        _tool_call_response("unheld", '{"text": "x"}', "c1"),
+                        _text_response("started it"),
+                    ]
+                ),
+                tools=[_UnheldTool(asyncio.Event())],
+            )
+
+        await asyncio.wait_for(agent.run("go"), timeout=10)
+        bg = agent.agent_ctx.bg_tasks
+        (task_id,) = bg._tasks  # pyright: ignore[reportPrivateUsage]
+
+        await bg.kill_task(task_id)
+
+        # Its done-callback still queued the id, with nothing left to deliver.
+        assert not bg.has_undelivered_completions
         with pytest.raises(ProcRunError) as failure:
             await agent.run()
         assert isinstance(failure.value.__cause__, ProcInputValidationError)
