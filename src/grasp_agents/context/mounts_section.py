@@ -87,7 +87,7 @@ def make_mounts_section(
                 )
         if agent_ctx is not None and _COPY_TOOL_NAME in agent_ctx.tools:
             lines.append(
-                "Use Copy to move files between mounts; their content stays "
+                "Use Copy to copy files between mounts; their content stays "
                 "out of the conversation."
             )
         return "<mounts>\n" + "\n".join(lines) + "\n</mounts>"

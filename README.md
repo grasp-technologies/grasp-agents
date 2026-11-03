@@ -72,7 +72,7 @@ First-class integrations.
   `Copy`) over a pluggable backend (local filesystem, MCP, E2B, in-memory), with
   fuzzy-match edits and read-before-write mtime guards that the backend enforces
   on write. A `CompositeFileBackend` mounts several backends as one tree (say,
-  database-backed memory beside a sandbox workspace), and `Copy` moves files
+  database-backed memory beside a sandbox workspace), and `Copy` copies files
   between mounts without passing them through the model.
 - Terminal (`Bash`, persistent `BashSession`), REPL code execution (`RunPython`),
   and notebook tools (`RunCell` / `NotebookRead` / `NotebookEdit`).
@@ -350,7 +350,7 @@ src/grasp_agents/
   llm/              LLM / CloudLLM / FallbackLLM / RetryPolicy / model metadata
   llm_providers/    OpenAI Responses, OpenAI Completions, Anthropic, Gemini, LiteLLM
   tools/            BaseTool, @function_tool, .as_tool(), Bash, RunPython, file tools
-  file_backend/     FileBackend ABC + local / MCP backends
+  file_backend/     FileBackend ABC + local / MCP / in-memory / composite backends
   sandbox/          SandboxPolicy, ExecBackend, environments (local / Seatbelt / E2B)
   memory/           cross-session memory provider + relevance selection
   skills/           skills registry + injection + load_skill

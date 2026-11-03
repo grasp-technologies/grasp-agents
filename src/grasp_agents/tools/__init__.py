@@ -1,7 +1,8 @@
 """
 Built-in tool packages for grasp-agents.
 
-- :mod:`.file_edit` — ``Read`` / ``Write`` / ``Edit`` / ``Delete`` / ``Copy`` file tools.
+- :mod:`.file_edit` — ``Read`` / ``Write`` / ``Edit`` / ``Delete`` / ``Copy``
+  file tools.
 - :mod:`.file_search` — ``Glob`` / ``Grep`` read-only search tools.
 - :class:`FileToolkit` — one factory bundling all of the above.
 - :class:`Bash` — run a shell command (fresh process) via ``ctx.exec_backend``.

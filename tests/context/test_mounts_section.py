@@ -72,7 +72,7 @@ async def test_mentions_copy_when_the_agent_has_it() -> None:
     text = await _render(ctx, agent_ctx=agent_ctx)
 
     assert text is not None
-    assert "Use Copy to move files between mounts" in text
+    assert "Use Copy to copy files between mounts" in text
 
 
 async def test_marks_the_mount_bash_can_see(tmp_path: Path) -> None:

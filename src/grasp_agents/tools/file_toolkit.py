@@ -89,7 +89,7 @@ class FileToolkit:
                 vision-capable agents need it.
             include_copy: Add ``Copy`` to :meth:`tools`, which copies files
                 and directory trees without passing their content through
-                the model — the way to move files between the mounts of a
+                the model — the way to copy files between the mounts of a
                 ``CompositeFileBackend``. Off by default.
             max_image_bytes: Whole-file size ceiling for ``ReadImage``; larger
                 images are refused. Default ``5_000_000``.
