@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.selector import Selector
 
-from .types import DEFAULT_STALE_AFTER
+from .types import DEFAULT_STALE_AFTER, MEMORY_TYPES
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Sequence
@@ -100,6 +100,15 @@ class MemoryProvider:
             ``Path("/memdir")``).
         stale_after: Age threshold past which a per-entry freshness
             warning is computed at snapshot time.
+        memory_types: The type taxonomy the instructions offer the agent.
+            Defaults to :data:`MEMORY_TYPES` (user, feedback, project,
+            reference). Frontmatter keeps any type the agent writes; entries
+            with a type outside the defaults show it verbatim.
+        instructions_template: Replaces the built-in memory instructions
+            (``memory_instructions.md``). It is formatted with the same
+            fields: ``{memdir}``, ``{index_file}``, ``{index_path}``,
+            ``{memory_types}``, ``{max_lines}``, ``{max_bytes}`` and
+            ``{selector_instructions}``; literal braces must be doubled.
         auto_create_index: When True (default) and ``MEMORY.md`` is absent,
             bootstrap an empty index (creating the memdir if needed) on first
             load so the agent has a file to append topic pointers to. Best-
@@ -122,7 +131,13 @@ class MemoryProvider:
         backend: FileBackend | None = None,
         stale_after: timedelta = DEFAULT_STALE_AFTER,
         auto_create_index: bool = True,
+        memory_types: Sequence[str] | None = None,
+        instructions_template: str | None = None,
     ) -> None:
+        self._memory_types: tuple[str, ...] = (
+            tuple(memory_types) if memory_types is not None else MEMORY_TYPES
+        )
+        self._instructions_template = instructions_template
         self._root: Path = (
             Path(root).expanduser() if root is not None else default_memdir_path()
         )
@@ -136,6 +151,16 @@ class MemoryProvider:
     @property
     def root(self) -> Path:
         return self._root
+
+    @property
+    def memory_types(self) -> tuple[str, ...]:
+        """The type taxonomy offered in the instructions."""
+        return self._memory_types
+
+    @property
+    def instructions_template(self) -> str | None:
+        """The host's instructions template, or None for the built-in one."""
+        return self._instructions_template
 
     def bind_backend(self, backend: FileBackend) -> None:
         """
@@ -455,6 +480,8 @@ class InMemoryMemoryProvider(MemoryProvider):
     ) -> None:
         # Bypass MemoryProvider's default-memdir resolution; nothing on
         # disk is touched and the snapshot is provided up-front.
+        self._memory_types = MEMORY_TYPES
+        self._instructions_template = None
         self._root: Path = Path()
         self._backend = None
         self._stale_after = stale_after
