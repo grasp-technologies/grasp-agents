@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         GrepRawResult,
         StaleFileError,
     )
+    from .composite import CompositeFileBackend, Mount
     from .local import LocalFileBackend
     from .mcp import MCPFileBackend
     from .memory import InMemoryFileBackend
@@ -53,6 +54,8 @@ _LAZY: dict[str, str] = {
     "FileStat": "base",
     "GrepRawResult": "base",
     "StaleFileError": "base",
+    "CompositeFileBackend": "composite",
+    "Mount": "composite",
     "LocalFileBackend": "local",
     "MCPFileBackend": "mcp",
     "InMemoryFileBackend": "memory",
@@ -78,6 +81,7 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "CompositeFileBackend",
     "FileBackend",
     "FileEntry",
     "FileStat",
@@ -85,6 +89,7 @@ __all__ = [
     "InMemoryFileBackend",
     "LocalFileBackend",
     "MCPFileBackend",
+    "Mount",
     "PathAccessError",
     "SensitivePathRules",
     "StaleFileError",

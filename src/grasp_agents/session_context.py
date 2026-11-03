@@ -521,7 +521,7 @@ class SessionContext[CtxT](BaseModel):
         # durability fate: consumed mail's handling lives only in transcripts,
         # and pending mail lives only in the mailbox. A caller-supplied
         # transport can break that pairing — the built default never does.
-        from .mailbox import (
+        from .mailbox import (  # ruff: ignore[import-outside-top-level]
             CheckpointMailboxTransport,
         )
 
@@ -553,14 +553,15 @@ class SessionContext[CtxT](BaseModel):
         env_file_backend = self.environment.file_backend
         if self.file_backend is None:
             self.file_backend = env_file_backend
-        elif self.file_backend is not env_file_backend:
+        elif not self.file_backend.includes(env_file_backend):
             raise ValueError(
-                "SessionContext was given both an environment and a different "
-                "file_backend. The environment's file_backend is co-located "
-                "with its exec_backend under one SandboxPolicy; a divergent "
-                "standalone file_backend would break that guarantee. Pass only "
-                "the environment, or set file_backend to "
-                "environment.file_backend."
+                "SessionContext was given both an environment and a file_backend "
+                "that does not include it. The environment's file_backend is "
+                "co-located with its exec_backend under one SandboxPolicy; a "
+                "divergent standalone file_backend would break that guarantee. "
+                "Pass only the environment, set file_backend to "
+                "environment.file_backend, or mount environment.file_backend "
+                "in a CompositeFileBackend."
             )
         return self
 

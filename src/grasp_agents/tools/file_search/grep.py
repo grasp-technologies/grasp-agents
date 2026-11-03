@@ -413,6 +413,14 @@ async def local_backend_grep(
 # ---------------------------------------------------------------------------
 
 
+def _with_notes(output: str, notes: list[str]) -> str:
+    """Append backend notes (e.g. mounts that could not be searched)."""
+    if not notes:
+        return output
+    rendered = "\n".join(f"Note: {note}" for note in notes)
+    return f"{output}\n\n{rendered}" if output else rendered
+
+
 def _slice[T](
     entries: list[T], *, offset: int, head_limit: int | None
 ) -> tuple[list[T], bool]:
@@ -529,7 +537,7 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
                 raw.files, offset=offset, head_limit=inp.head_limit
             )
             return GrepResult(
-                output="\n".join(str(p) for p in sliced_paths),
+                output=_with_notes("\n".join(str(p) for p in sliced_paths), raw.notes),
                 output_mode=inp.output_mode,
                 num_matches=raw.num_matches,
                 num_files_matched=raw.num_files_matched,
@@ -542,7 +550,7 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
                 rendered, offset=offset, head_limit=inp.head_limit
             )
             return GrepResult(
-                output="\n".join(sliced),
+                output=_with_notes("\n".join(sliced), raw.notes),
                 output_mode=inp.output_mode,
                 num_matches=raw.num_matches,
                 num_files_matched=raw.num_files_matched,
@@ -551,7 +559,7 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
 
         sliced, truncated = _slice(raw.lines, offset=offset, head_limit=inp.head_limit)
         return GrepResult(
-            output=self._redactor("\n".join(sliced)),
+            output=_with_notes(self._redactor("\n".join(sliced)), raw.notes),
             output_mode=inp.output_mode,
             num_matches=raw.num_matches,
             num_files_matched=raw.num_files_matched,
