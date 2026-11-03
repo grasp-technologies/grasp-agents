@@ -23,6 +23,7 @@ from grasp_agents.sandbox import local_environment
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools import FileToolkit
 from grasp_agents.tools.file_edit import (
+    DeleteInput,
     EditInput,
     EditResult,
     FileEditSessionState,
@@ -37,6 +38,7 @@ from tests._helpers import _make_agent_ctx
 
 if TYPE_CHECKING:
     from grasp_agents.file_backend.base import GrepOutputMode
+    from grasp_agents.file_backend.paths import AccessMode
 
 pytestmark = pytest.mark.asyncio
 
@@ -433,6 +435,70 @@ async def test_local_child_shares_its_real_paths(tmp_path: Path) -> None:
     assert (await backend.read_text(root / "a.txt"))[0] == "disk"
     with pytest.raises(PathAccessError):
         await backend.validate_path(root / ".." / "outside.txt", must_exist=False)
+
+
+@pytest.mark.parametrize("access", ["read", "write"])
+async def test_a_symlink_into_another_mount_is_refused(
+    tmp_path: Path, access: AccessMode
+) -> None:
+    base = tmp_path.resolve()
+    work, docs = base / "work", base / "docs"
+    work.mkdir()
+    docs.mkdir()
+    (docs / "secret.md").write_text("read-only data")
+    (work / "link.md").symlink_to(docs / "secret.md")
+    backend = CompositeFileBackend(
+        [
+            # The child's roots are wider than its mount, so it accepts the
+            # link's target; only the composite's own check refuses it.
+            Mount(work, LocalFileBackend(allowed_roots=[base])),
+            Mount(docs, LocalFileBackend(allowed_roots=[docs]), read_only=True),
+        ]
+    )
+
+    with pytest.raises(PathAccessError, match="outside its mount"):
+        await backend.validate_path(work / "link.md", must_exist=True, access=access)
+
+
+async def test_read_only_mounts_refuse_every_change() -> None:
+    backend = _composite(notes_read_only=True)
+    target = NOTES / "inbox/a.md"
+
+    with pytest.raises(PathAccessError, match="read-only"):
+        await backend.write_bytes(target, b"x", mode=0o644)
+    with pytest.raises(PathAccessError, match="read-only"):
+        await backend.append_bytes(target, b"x", mode=0o644)
+    with pytest.raises(PathAccessError, match="read-only"):
+        await backend.delete(target)
+    with pytest.raises(PathAccessError, match="read-only"):
+        await backend.mkdir(NOTES / "new")
+    assert (await backend.read_text(target))[0] == "TODO read the paper\n"
+
+
+async def test_file_tools_cannot_change_a_read_only_mount() -> None:
+    backend = _composite(notes_read_only=True)
+    ctx: SessionContext[Any] = SessionContext(file_backend=backend, session_key="s")
+    tk = FileToolkit(redactor=NullRedactor())
+    agent_ctx = _make_agent_ctx(file_edit_state=FileEditSessionState())
+    target = str(NOTES / "inbox/a.md")
+    await tk.read.run(ReadInput(path=target), ctx=ctx, agent_ctx=agent_ctx)
+
+    results = [
+        await tk.write.run(
+            WriteInput(path=target, content="x"), ctx=ctx, agent_ctx=agent_ctx
+        ),
+        await tk.edit.run(
+            EditInput(path=target, old_string="TODO", new_string="DONE"),
+            ctx=ctx,
+            agent_ctx=agent_ctx,
+        ),
+        await tk.delete.run(DeleteInput(path=target), ctx=ctx, agent_ctx=agent_ctx),
+    ]
+
+    for result in results:
+        assert isinstance(result, ToolErrorInfo), result
+        assert "read-only" in result.error
+    assert (await backend.read_text(Path(target)))[0] == "TODO read the paper\n"
 
 
 # ---- SessionContext and tools ----------------------------------------------

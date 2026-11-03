@@ -381,8 +381,8 @@ async def test_a_directory_copy_skips_what_it_may_not_read(tmp_path: Path) -> No
     (src / "secrets/key.txt").write_text("denied")
     (src / "notes.md").write_text("ok")
     (src / ".env").write_text("TOKEN=1")
-    Path(src / "outside_link.txt").symlink_to(outside / "id_rsa")
-    Path(src / "inside_link.md").symlink_to(src / "notes.md")
+    (src / "outside_link.txt").symlink_to(outside / "id_rsa")
+    (src / "inside_link.md").symlink_to(src / "notes.md")
 
     result = await _copy(ctx, agent_ctx, source=str(src), destination="/scratch/x")
 
@@ -426,7 +426,7 @@ async def test_skipped_entries_are_listed_up_to_a_limit(tmp_path: Path) -> None:
     work, _, ctx, agent_ctx = _local_setup(tmp_path)
     (work / "src/real.txt").write_text("x")
     for i in range(25):
-        Path(work / f"src/link{i:02}.txt").symlink_to(work / "src/real.txt")
+        (work / f"src/link{i:02}.txt").symlink_to(work / "src/real.txt")
 
     result = await _copy(
         ctx, agent_ctx, source=str(work / "src"), destination="/scratch/x"
