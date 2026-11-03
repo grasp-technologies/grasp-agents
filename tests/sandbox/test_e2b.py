@@ -655,8 +655,8 @@ async def test_resume_reconnects_to_sandbox(
 
     class _FakeAsyncSandbox:
         @staticmethod
-        async def connect(sandbox_id: str) -> _FakeSandbox:
-            connected["id"] = sandbox_id
+        async def connect(sandbox_id: str, **opts: Any) -> _FakeSandbox:
+            connected.update(opts, id=sandbox_id)
             return resumed
 
     monkeypatch.setattr(e2b_env, "AsyncSandbox", _FakeAsyncSandbox)
@@ -666,7 +666,44 @@ async def test_resume_reconnects_to_sandbox(
         policy=SandboxPolicy(allowed_roots=(Path(_WS),)),
     )
     await env.resume()  # defaults to the currently-bound id
-    assert connected["id"] == "sbx_orig"
+    # No create params: the SDK defaults apply.
+    assert connected == {"id": "sbx_orig", "timeout": None}
+
+
+async def test_resume_keeps_sandbox_class_and_api_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    code_interpreter = pytest.importorskip("e2b_code_interpreter")
+    connected: dict[str, Any] = {}
+    resumed = _FakeSandbox(sandbox_id="sbx_paused")
+
+    async def _connect(sandbox_id: str, **opts: Any) -> _FakeSandbox:
+        connected.update(opts, sandbox_id=sandbox_id)
+        return resumed
+
+    async def _base_connect(*args: Any, **opts: Any) -> _FakeSandbox:
+        raise AssertionError("resumed as a base sandbox, without run_code")
+
+    monkeypatch.setattr(code_interpreter.AsyncSandbox, "connect", _connect)
+    monkeypatch.setattr(AsyncSandbox, "connect", _base_connect)
+
+    env = e2b_environment(
+        allowed_roots=[_WS],
+        code_interpreter=True,
+        api_key="key-123",
+        domain="sandbox.example.com",
+        sandbox_timeout=900,
+    )
+    await env.resume("sbx_paused")
+
+    assert connected == {
+        "sandbox_id": "sbx_paused",
+        "api_key": "key-123",
+        "domain": "sandbox.example.com",
+        "timeout": 900,
+    }
+    await env.file_backend.mkdir(Path(f"{_WS}/probe"))
+    assert f"{_WS}/probe" in resumed.files.made_dirs
 
 
 # --- factory + create path ---------------------------------------------------
