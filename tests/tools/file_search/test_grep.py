@@ -8,12 +8,15 @@ parsing and slicing paths).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import os
+from pathlib import Path
+from typing import Any
 
 import pytest
 
 from grasp_agents.file_backend import LocalFileBackend
 from grasp_agents.session_context import SessionContext
+from grasp_agents.tools.file_edit import NullRedactor
 from grasp_agents.tools.file_search import (
     GrepInput,
     GrepResult,
@@ -21,9 +24,6 @@ from grasp_agents.tools.file_search import (
     rg_available,
 )
 from grasp_agents.types.events import ToolErrorInfo
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -121,6 +121,18 @@ async def test_count_mode(
     assert result.num_files_matched == 3
     for line in result.output.splitlines():
         assert line.endswith(":1")
+
+
+async def test_count_mode_on_a_single_file(
+    repo: Path, ctx: SessionContext[Any], grep_tool: GrepTool
+) -> None:
+    result = await grep_tool.run(
+        GrepInput(pattern=r"def \w+", path=str(repo / "a.py"), output_mode="count"),
+        ctx=ctx,
+    )
+    assert isinstance(result, GrepResult)
+    assert result.output == f"{repo / 'a.py'}:1"
+    assert (result.num_matches, result.num_files_matched) == (1, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -274,3 +286,90 @@ async def test_nonexistent_path_refused(
         GrepInput(pattern=r"x", path=str(tmp_path / "nope")), ctx=ctx
     )
     assert "does not exist" in _error_message(result)
+
+
+# ---------------------------------------------------------------------------
+# Read access: results the backend refuses to Read are dropped
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def guarded(tmp_path: Path) -> SessionContext[Any]:
+    """``private/`` is read-denied, except ``private/shared/``."""
+    (tmp_path / "a.txt").write_text("needle public\n")
+    private = tmp_path / "private"
+    (private / "shared").mkdir(parents=True)
+    (private / "key.txt").write_text("needle SECRET\n")
+    (private / "shared" / "ok.txt").write_text("needle shared\n")
+    # A readable directory whose name starts with the denied one's.
+    (tmp_path / "private-notes").mkdir()
+    (tmp_path / "private-notes" / "n.txt").write_text("needle notes\n")
+    backend = LocalFileBackend(
+        allowed_roots=[tmp_path],
+        deny_read=[private],
+        allow_read=[private / "shared"],
+    )
+    return SessionContext[Any](file_backend=backend)
+
+
+def _readable_files(root: Path) -> list[str]:
+    return sorted(
+        str(root / name)
+        for name in ("a.txt", "private/shared/ok.txt", "private-notes/n.txt")
+    )
+
+
+async def test_files_mode_drops_unreadable_files(
+    tmp_path: Path, guarded: SessionContext[Any], grep_tool: GrepTool
+) -> None:
+    result = await grep_tool.run(GrepInput(pattern="needle"), ctx=guarded)
+    assert isinstance(result, GrepResult)
+    assert sorted(result.output.splitlines()) == _readable_files(tmp_path)
+    assert (result.num_matches, result.num_files_matched) == (3, 3)
+
+
+async def test_count_mode_drops_unreadable_files(
+    tmp_path: Path, guarded: SessionContext[Any], grep_tool: GrepTool
+) -> None:
+    result = await grep_tool.run(
+        GrepInput(pattern="needle", output_mode="count"), ctx=guarded
+    )
+    assert isinstance(result, GrepResult)
+    assert sorted(result.output.splitlines()) == [
+        f"{path}:1" for path in _readable_files(tmp_path)
+    ]
+    assert (result.num_matches, result.num_files_matched) == (3, 3)
+
+
+async def test_content_mode_drops_unreadable_lines(
+    guarded: SessionContext[Any],
+) -> None:
+    tool = GrepTool(redactor=NullRedactor())
+    result = await tool.run(
+        GrepInput(pattern="needle", output_mode="content", context=1), ctx=guarded
+    )
+    assert isinstance(result, GrepResult)
+    assert "SECRET" not in result.output
+    for word in ("public", "shared", "notes"):
+        assert f"needle {word}" in result.output
+    assert (result.num_matches, result.num_files_matched) == (3, 3)
+
+
+async def test_content_mode_drops_unreadable_non_utf8_names(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("needle public\n")
+    private = tmp_path / "private"
+    private.mkdir()
+    try:
+        (private / os.fsdecode(bytes([0xFF]) + b"key.txt")).write_bytes(
+            b"needle SECRET\n"
+        )
+    except OSError:
+        pytest.skip("the filesystem refuses non-UTF-8 file names")
+    backend = LocalFileBackend(allowed_roots=[tmp_path], deny_read=[private])
+    ctx = SessionContext[Any](file_backend=backend)
+    result = await GrepTool(redactor=NullRedactor()).run(
+        GrepInput(pattern="needle", output_mode="content"), ctx=ctx
+    )
+    assert isinstance(result, GrepResult)
+    assert "SECRET" not in result.output
+    assert "needle public" in result.output

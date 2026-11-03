@@ -25,9 +25,13 @@ class SnapshotCapable(Protocol):
     The framework delegates filesystem-state durability to whoever implements
     this — an MCP server's append-only versioning, a sandbox provider's native
     snapshot, or a local shadow-git / tar store. :meth:`snapshot` returns an
-    opaque ref (DB version, blob id, git sha) recorded in the checkpoint
-    manifest; :meth:`restore` rewinds to it. Backends that do not implement it
-    fall back to the per-edit transcript pre-image.
+    opaque ref (DB version, blob id, git sha) recorded with the checkpoints;
+    :meth:`restore` rewinds to it.
+
+    There is no fallback for environments that do not implement it:
+    ``SessionContext.fs_snapshot_policy`` must stay ``"off"``, checkpoints
+    record no filesystem state, and resuming or rolling back a session leaves
+    the files as they are.
     """
 
     async def snapshot(self) -> str: ...

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import posixpath
+import stat as stat_module
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
@@ -191,12 +192,25 @@ class MCPFileBackend(FileBackend):
         return resolved
 
     async def stat(self, path: Path) -> FileStat:
+        """
+        Stat ``path`` from the resource index, with POSIX file-type bits.
+
+        A path with no resource of its own but resources under it is an
+        implicit directory. A path with neither reports ``mode=0`` and
+        ``size=-1``.
+        """
         entry = await self._index.get(self._to_uri(path))
         if entry is None:
+            if await self._index.list_under(self._posix(path)):
+                return FileStat(mtime=0.0, mode=stat_module.S_IFDIR | 0o755)
             return FileStat(mtime=0.0, mode=0, size=-1)
         return FileStat(
             mtime=entry.mtime_seconds,
-            mode=0o644,
+            mode=(
+                stat_module.S_IFDIR | 0o755
+                if entry.is_dir
+                else stat_module.S_IFREG | 0o644
+            ),
             size=max(entry.size, 0),
         )
 
@@ -218,6 +232,13 @@ class MCPFileBackend(FileBackend):
 
     async def read_text(self, path: Path) -> tuple[str, float]:
         uri = self._to_uri(path)
+        # Report the mtime from the SAME surface the staleness guard later
+        # consults via ``stat`` (the list index) — mixing it with the
+        # read-meta surface causes spurious edit refusals whenever the two
+        # disagree. Read-meta is the fallback for files the index doesn't
+        # know yet. Look the entry up before reading, so a listing fetched
+        # now cannot carry an mtime newer than the content.
+        entry = await self._index.get(uri)
         session = self._client.session
         try:
             result = await session.read_resource(AnyUrl(uri))
@@ -225,12 +246,6 @@ class MCPFileBackend(FileBackend):
             raise OSError(f"MCP resources/read for {uri!r} failed: {exc}") from exc
         for content in result.contents:
             if isinstance(content, TextResourceContents):
-                # Report the mtime from the SAME surface the staleness guard
-                # later consults via ``stat`` (the list index) — mixing it
-                # with the read-meta surface causes spurious edit refusals
-                # whenever the two disagree. Read-meta is the fallback for
-                # files the index doesn't know yet.
-                entry = await self._index.get(uri)
                 if entry is not None:
                     mtime = entry.mtime_seconds
                 else:

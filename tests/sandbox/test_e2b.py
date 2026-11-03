@@ -24,6 +24,8 @@ import datetime as dt
 import importlib.util
 import os
 import re
+import shlex
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -44,9 +46,18 @@ from grasp_agents.sandbox import (
 )
 from grasp_agents.sandbox.e2b import _handle as e2b_handle
 from grasp_agents.sandbox.e2b import environment as e2b_env
-from grasp_agents.sandbox.e2b import file_backend as e2b_file_backend
 from grasp_agents.sandbox.exec_backend import ExecChunk, ExecResult, TerminationReason
 from grasp_agents.session_context import SessionContext
+from grasp_agents.tools.file_edit import DeleteInput, DeleteTool, NullRedactor
+from grasp_agents.tools.file_search import (
+    GlobInput,
+    GlobResult,
+    GlobTool,
+    GrepInput,
+    GrepResult,
+    GrepTool,
+)
+from grasp_agents.types.events import ToolErrorInfo
 
 from ._bg_harness import (
     background,
@@ -315,39 +326,6 @@ async def test_wrap_stdin() -> None:
     assert base64.b64encode(b"hello").decode() in wrapped
 
 
-async def test_build_grep_cmd_content_mode() -> None:
-    cmd = e2b_file_backend._build_grep_cmd(
-        Path(_WS),
-        "foo",
-        glob=None,
-        file_type="py",
-        case_insensitive=True,
-        output_mode="content",
-        show_line_numbers=True,
-        before_context=None,
-        after_context=None,
-        context=2,
-    )
-    assert cmd.startswith("grep -r -E -i -n -C2")
-    assert "--include=*.py" in cmd
-    assert "-e foo" in cmd
-    assert cmd.endswith(_WS)
-
-
-async def test_parse_grep_modes() -> None:
-    files = e2b_file_backend._parse_grep("/w/a.py\n/w/b.py\n", "files_with_matches")
-    assert files.files == [Path("/w/a.py"), Path("/w/b.py")]
-
-    counts = e2b_file_backend._parse_grep("/w/a.py:3\n/w/b.py:1\n", "count")
-    assert counts.counts == [(Path("/w/a.py"), 3), (Path("/w/b.py"), 1)]
-    assert counts.num_matches == 4
-
-    content = e2b_file_backend._parse_grep(
-        "/w/a.py:1:foo\n--\n/w/a.py:9:foo\n", "content"
-    )
-    assert content.lines == ["/w/a.py:1:foo", "/w/a.py:9:foo"]  # `--` dropped
-
-
 # --- file backend ------------------------------------------------------------
 
 
@@ -377,8 +355,32 @@ async def test_stat_maps_fields_and_mtime() -> None:
     )
     st = await _env(fake).file_backend.stat(Path(f"{_WS}/f"))
     assert st.size == 42
-    assert st.mode == 0o600
-    assert st.mtime == 999.0  # datetime -> epoch float
+    assert stat.S_IMODE(st.mode) == 0o600
+    assert st.mtime == pytest.approx(999.0)  # datetime -> epoch float
+
+
+async def test_stat_adds_file_type_bits() -> None:
+    # The sandbox reports permission bits only; the entry type adds the rest.
+    fake = _FakeSandbox()
+    fake.files.infos[f"{_WS}/pkg"] = _FakeEntry(
+        name="pkg", path=f"{_WS}/pkg", type_value="dir", mode=0o755
+    )
+    fake.files.infos[f"{_WS}/f"] = _FakeEntry(name="f", path=f"{_WS}/f", mode=0o600)
+    backend = _env(fake).file_backend
+    assert (await backend.stat(Path(f"{_WS}/pkg"))).mode == stat.S_IFDIR | 0o755
+    assert (await backend.stat(Path(f"{_WS}/f"))).mode == stat.S_IFREG | 0o600
+
+
+async def test_delete_tool_refuses_a_directory() -> None:
+    fake = _FakeSandbox()
+    fake.files.infos[f"{_WS}/pkg"] = _FakeEntry(
+        name="pkg", path=f"{_WS}/pkg", type_value="dir", mode=0o755
+    )
+    ctx = SessionContext[Any](file_backend=_env(fake).file_backend)
+    result = await DeleteTool().run(DeleteInput(path=f"{_WS}/pkg"), ctx=ctx)
+    assert isinstance(result, ToolErrorInfo)
+    assert "refuses directories" in result.error
+    assert fake.files.removed == []
 
 
 async def test_read_text_and_bytes() -> None:
@@ -390,9 +392,33 @@ async def test_read_text_and_bytes() -> None:
     backend = _env(fake).file_backend
     text, mtime = await backend.read_text(Path(f"{_WS}/f"))
     assert text == "body"
-    assert mtime == 777.0
+    assert mtime == pytest.approx(777.0)
     data, _ = await backend.read_bytes(Path(f"{_WS}/f"))
     assert data == b"body"
+
+
+class _WriteAfterReadFiles(_FakeFiles):
+    """Another writer replaces each file right after its content is served."""
+
+    async def read(self, path: str, fmt: str = "text") -> Any:
+        data = await super().read(path, fmt)
+        self.reads[path] = "theirs"
+        self.infos[path] = _FakeEntry(
+            name=Path(path).name, path=path, mtime_epoch=3000.0
+        )
+        return data
+
+
+@pytest.mark.parametrize("method", ["read_text", "read_bytes"])
+async def test_read_mtime_is_never_newer_than_content(method: str) -> None:
+    files = _WriteAfterReadFiles()
+    files.reads[f"{_WS}/f"] = "ours"
+    files.infos[f"{_WS}/f"] = _FakeEntry(name="f", path=f"{_WS}/f", mtime_epoch=1000.0)
+    backend = _env(_FakeSandbox(files=files)).file_backend
+    content, mtime = await getattr(backend, method)(Path(f"{_WS}/f"))
+    assert content in {"ours", b"ours"}
+    # A newer mtime would let a conditional write pass over "theirs".
+    assert mtime == pytest.approx(1000.0)
 
 
 async def test_write_bytes_returns_post_write_mtime() -> None:
@@ -400,7 +426,8 @@ async def test_write_bytes_returns_post_write_mtime() -> None:
     backend = _env(fake).file_backend
     mtime = await backend.write_bytes(Path(f"{_WS}/new.txt"), b"data", mode=0o644)
     assert fake.files.written[f"{_WS}/new.txt"] == b"data"
-    assert mtime == 2000.0  # _FakeFiles.write stamps a fresh get_info mtime
+    # _FakeFiles.write stamps a fresh get_info mtime
+    assert mtime == pytest.approx(2000.0)
 
 
 async def test_delete_and_mkdir() -> None:
@@ -453,15 +480,105 @@ async def test_find_files_globs_over_listing() -> None:
 # --- grep (shelled out through the co-located exec) -------------------------
 
 
+def _grep_backend(stdout: str) -> tuple[FileBackend, _FakeCommands]:
+    cmds = _FakeCommands(fg_stdout=stdout, fg_exit_code=0)
+    return _env(_FakeSandbox(commands=cmds)).file_backend, cmds
+
+
 async def test_grep_files_mode_builds_command_and_parses() -> None:
-    cmds = _FakeCommands(fg_stdout=f"{_WS}/a.py\n{_WS}/b.py\n", fg_exit_code=0)
-    backend = _env(_FakeSandbox(commands=cmds)).file_backend
+    backend, cmds = _grep_backend(f"{_WS}/a.py\0{_WS}/b.py\0")
     res = await backend.grep(Path(_WS), "needle", glob="*.py")
     assert res.files == [Path(f"{_WS}/a.py"), Path(f"{_WS}/b.py")]
+    assert (res.num_matches, res.num_files_matched) == (2, 2)
     grep_cmd = cmds.calls[0]["cmd"]
-    assert grep_cmd.startswith("grep -r -E -l")
+    # -H names the file even for a single-file root; -Z ends names with NUL.
+    assert grep_cmd.startswith("grep -r -E -H -Z -l")
     assert "--include=*.py" in grep_cmd
     assert "-e needle" in grep_cmd
+
+
+@pytest.mark.parametrize(
+    ("file_type", "include"),
+    [
+        ("rust", "*.rs"),
+        ("ruby", "*.rb"),
+        ("markdown", "*.md"),
+        ("js", "*.mjs"),
+        ("ts", "*.tsx"),
+        ("c", "*.[chH]"),
+        ("cpp", "*.cc"),
+    ],
+)
+async def test_grep_maps_file_types_to_globs(file_type: str, include: str) -> None:
+    backend, cmds = _grep_backend("")
+    await backend.grep(Path(_WS), "x", file_type=file_type)
+    assert f"--include={include}" in shlex.split(cmds.calls[0]["cmd"])
+
+
+async def test_grep_rejects_unknown_file_type() -> None:
+    backend, cmds = _grep_backend("")
+    with pytest.raises(ValueError, match="unrecognized file type"):
+        await backend.grep(Path(_WS), "x", file_type="nope")
+    assert cmds.calls == []
+
+
+async def test_grep_glob_and_type_both_apply() -> None:
+    # grep ORs its --include filters, so the type is applied to the results.
+    backend, cmds = _grep_backend(f"{_WS}/test_a.py\0{_WS}/test_b.txt\0")
+    res = await backend.grep(Path(_WS), "x", glob="test_*", file_type="py")
+    assert res.files == [Path(f"{_WS}/test_a.py")]
+    assert "--include=*.py" not in shlex.split(cmds.calls[0]["cmd"])
+
+
+async def test_grep_count_mode_drops_files_without_matches() -> None:
+    backend, cmds = _grep_backend(
+        f"{_WS}/a.py\x002\n{_WS}/b.py\x000\n{_WS}/c:1.py\x001\n"
+    )
+    res = await backend.grep(Path(_WS), "x", output_mode="count")
+    assert res.counts == [(Path(f"{_WS}/a.py"), 2), (Path(f"{_WS}/c:1.py"), 1)]
+    assert (res.num_matches, res.num_files_matched) == (3, 2)
+    assert cmds.calls[0]["cmd"].startswith("grep -r -E -H -Z -c")
+
+
+_CONTENT_STDOUT = (
+    f"{_WS}/notes-1-a.md\x001-intro\n"
+    f"{_WS}/notes-1-a.md\x002:TODO one\n"
+    "--\n"
+    f"{_WS}/src/lib.rs\x007:TODO two\n"
+    f"{_WS}/src/lib.rs\x008-after\n"
+)
+
+
+async def test_grep_content_mode_counts_match_lines_only() -> None:
+    backend, cmds = _grep_backend(_CONTENT_STDOUT)
+    res = await backend.grep(Path(_WS), "TODO", output_mode="content", context=1)
+    assert res.lines == [
+        f"{_WS}/notes-1-a.md-1-intro",
+        f"{_WS}/notes-1-a.md:2:TODO one",
+        f"{_WS}/src/lib.rs:7:TODO two",
+        f"{_WS}/src/lib.rs-8-after",
+    ]
+    assert (res.num_matches, res.num_files_matched) == (2, 2)
+    assert cmds.calls[0]["cmd"].startswith("grep -r -E -H -Z -n -C1")
+
+
+async def test_grep_content_mode_without_line_numbers() -> None:
+    backend, cmds = _grep_backend(_CONTENT_STDOUT)
+    res = await backend.grep(
+        Path(_WS),
+        "TODO",
+        output_mode="content",
+        context=1,
+        show_line_numbers=False,
+    )
+    assert res.lines == [
+        f"{_WS}/notes-1-a.md-intro",
+        f"{_WS}/notes-1-a.md:TODO one",
+        f"{_WS}/src/lib.rs:TODO two",
+        f"{_WS}/src/lib.rs-after",
+    ]
+    # Line numbers are still requested: they tell matches from context.
+    assert " -n " in cmds.calls[0]["cmd"]
 
 
 async def test_grep_no_match_returns_empty() -> None:
@@ -470,6 +587,61 @@ async def test_grep_no_match_returns_empty() -> None:
     backend = _env(_FakeSandbox(commands=cmds)).file_backend
     res = await backend.grep(Path(_WS), "needle")
     assert res.files == []
+
+
+class _GrepCommands:
+    """Answers ``grep -l`` with ``files`` and any other grep with ``stdout``."""
+
+    def __init__(self, *, files: list[str], stdout: str) -> None:
+        self._files = files
+        self._stdout = stdout
+
+    async def run(self, cmd: str, **kwargs: Any) -> _FakeResult:
+        del kwargs
+        if "-l" in shlex.split(cmd):
+            return _FakeResult("".join(f"{name}\0" for name in self._files), 0)
+        return _FakeResult(self._stdout, 0)
+
+
+def _read_guarded_ctx(fake: _FakeSandbox) -> SessionContext[Any]:
+    fake.files.infos[_WS] = _FakeEntry(name="workspace", path=_WS, type_value="dir")
+    policy = SandboxPolicy(
+        allowed_roots=(Path(_WS),), deny_read=(Path(f"{_WS}/private"),)
+    )
+    env = E2BEnvironment.from_sandbox(cast("AsyncSandbox", fake), policy=policy)
+    return SessionContext[Any](file_backend=env.file_backend)
+
+
+async def test_grep_tool_drops_unreadable_results() -> None:
+    commands = _GrepCommands(
+        files=[f"{_WS}/a.py", f"{_WS}/private/key.py"],
+        stdout=(
+            f"{_WS}/a.py\x001:needle public\n{_WS}/private/key.py\x001:needle SECRET\n"
+        ),
+    )
+    ctx = _read_guarded_ctx(_FakeSandbox(commands=commands))
+    tool = GrepTool(redactor=NullRedactor())
+    listed = await tool.run(GrepInput(pattern="needle"), ctx=ctx)
+    content = await tool.run(
+        GrepInput(pattern="needle", output_mode="content"), ctx=ctx
+    )
+    assert isinstance(listed, GrepResult)
+    assert isinstance(content, GrepResult)
+    assert listed.output == f"{_WS}/a.py"
+    assert content.output == f"{_WS}/a.py:1:needle public"
+
+
+async def test_glob_tool_drops_unreadable_files() -> None:
+    fake = _FakeSandbox()
+    fake.files.listing[_WS] = [
+        _FakeEntry(name="a.py", path=f"{_WS}/a.py"),
+        _FakeEntry(name="key.py", path=f"{_WS}/private/key.py"),
+    ]
+    result = await GlobTool().run(
+        GlobInput(pattern="**/*.py"), ctx=_read_guarded_ctx(fake)
+    )
+    assert isinstance(result, GlobResult)
+    assert result.files == [f"{_WS}/a.py"]
 
 
 async def test_grep_multiline_unsupported() -> None:
@@ -630,8 +802,8 @@ async def test_resume_reconnects_to_sandbox(
 
     class _FakeAsyncSandbox:
         @staticmethod
-        async def connect(sandbox_id: str) -> _FakeSandbox:
-            connected["id"] = sandbox_id
+        async def connect(sandbox_id: str, **opts: Any) -> _FakeSandbox:
+            connected.update(opts, id=sandbox_id)
             return resumed
 
     monkeypatch.setattr(e2b_env, "AsyncSandbox", _FakeAsyncSandbox)
@@ -641,7 +813,44 @@ async def test_resume_reconnects_to_sandbox(
         policy=SandboxPolicy(allowed_roots=(Path(_WS),)),
     )
     await env.resume()  # defaults to the currently-bound id
-    assert connected["id"] == "sbx_orig"
+    # No create params: the SDK defaults apply.
+    assert connected == {"id": "sbx_orig", "timeout": None}
+
+
+async def test_resume_keeps_sandbox_class_and_api_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    code_interpreter = pytest.importorskip("e2b_code_interpreter")
+    connected: dict[str, Any] = {}
+    resumed = _FakeSandbox(sandbox_id="sbx_paused")
+
+    async def _connect(sandbox_id: str, **opts: Any) -> _FakeSandbox:
+        connected.update(opts, sandbox_id=sandbox_id)
+        return resumed
+
+    async def _base_connect(*args: Any, **opts: Any) -> _FakeSandbox:
+        raise AssertionError("resumed as a base sandbox, without run_code")
+
+    monkeypatch.setattr(code_interpreter.AsyncSandbox, "connect", _connect)
+    monkeypatch.setattr(AsyncSandbox, "connect", _base_connect)
+
+    env = e2b_environment(
+        allowed_roots=[_WS],
+        code_interpreter=True,
+        api_key="key-123",
+        domain="sandbox.example.com",
+        sandbox_timeout=900,
+    )
+    await env.resume("sbx_paused")
+
+    assert connected == {
+        "sandbox_id": "sbx_paused",
+        "api_key": "key-123",
+        "domain": "sandbox.example.com",
+        "timeout": 900,
+    }
+    await env.file_backend.mkdir(Path(f"{_WS}/probe"))
+    assert f"{_WS}/probe" in resumed.files.made_dirs
 
 
 # --- factory + create path ---------------------------------------------------

@@ -148,6 +148,24 @@ async def test_truncation_flag(tmp_path: Path, ctx: SessionContext[Any]) -> None
     assert result.num_files == 3
 
 
+async def test_drops_unreadable_files(tmp_path: Path, glob_tool: GlobTool) -> None:
+    (tmp_path / "a.py").write_text("")
+    private = tmp_path / "private"
+    (private / "shared").mkdir(parents=True)
+    (private / "key.py").write_text("")
+    (private / "shared" / "ok.py").write_text("")
+    backend = LocalFileBackend(
+        allowed_roots=[tmp_path],
+        deny_read=[private],
+        allow_read=[private / "shared"],
+    )
+    ctx = SessionContext[Any](file_backend=backend)
+    result = await glob_tool.run(GlobInput(pattern="**/*.py"), ctx=ctx)
+    assert isinstance(result, GlobResult)
+    assert sorted(Path(p).name for p in result.files) == ["a.py", "ok.py"]
+    assert result.num_files == 2
+
+
 async def test_explicit_path_subdir(
     tmp_path: Path, ctx: SessionContext[Any], glob_tool: GlobTool
 ) -> None:

@@ -17,6 +17,8 @@ Tests for the filesystem half of agent checkpoints:
   resume and the rollback restore.
 """
 
+# cspell:ignore rctx
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -70,6 +72,27 @@ class EchoTool(BaseTool[EchoInput, str, Any]):
         path: Any = None,
         agent_ctx: Any = None,
     ) -> str:
+        return inp.text
+
+
+class _OpenKernelsTool(BaseTool[EchoInput, str, Any]):
+    """Stands in for RunPython / RunCell opening kernels with context ids."""
+
+    def __init__(self) -> None:
+        super().__init__(name="open_kernels", description="Opens kernels")
+
+    async def _run(
+        self,
+        inp: EchoInput,
+        *,
+        ctx: Any = None,
+        exec_id: str | None = None,
+        progress_callback: Any = None,
+        path: Any = None,
+        agent_ctx: Any = None,
+    ) -> str:
+        agent_ctx.ipy_kernel_holder.rebind("ctx-abc")
+        agent_ctx.nb_kernel_holder.rebind("nb-ctx-xyz")
         return inp.text
 
 
@@ -161,7 +184,7 @@ async def test_ledger_round_trips_through_checkpoint(tmp_path: Path) -> None:
     assert loaded is not None
     record = resumed._loop.agent_ctx.file_edit_state.get_read_record(target)
     assert record is not None
-    assert record.mtime == 123.5
+    assert record.mtime == pytest.approx(123.5)
     assert resumed._loop.agent_ctx.file_edit_state.dotfile_overrides == {
         tmp_path / ".env"
     }
@@ -877,6 +900,45 @@ async def test_ipy_exec_context_id_not_captured_without_fs_snapshot(
     assert (
         await _stored_checkpoint(store)
     ).current.agent_ctx_state.ipy_exec_context_id is None
+
+
+async def test_rollback_forgets_kernels_the_boundary_predates(
+    tmp_path: Path,
+) -> None:
+    """
+    A cold instance resumes with the head's kernel context ids, then rolls
+    back to a boundary from before any kernel existed. The restored sandbox
+    has no such contexts, so the holders must forget them and open fresh
+    kernels instead of failing on every call.
+    """
+    store = InMemoryCheckpointStore()
+    env = _FakeSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [
+            _text_response("a0"),
+            _tool_call_response("open_kernels", '{"text": "go"}', "c1"),
+            _text_response("a1"),
+        ],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
+        tools=[_OpenKernelsTool()],
+    )
+    await agent.run("q0", step=0)
+    await agent.run("q1", step=1)  # the step-1 boundary predates the kernels
+
+    resumed, rctx = _make_agent([], store=store, environment=_FakeSnapshotEnv(tmp_path))
+    await rctx.load_checkpoint()
+    assert await resumed.load_checkpoint() is not None
+    agent_ctx = resumed._loop.agent_ctx
+    assert agent_ctx.ipy_kernel_holder is not None
+    assert agent_ctx.ipy_kernel_holder.context_id == "ctx-abc"
+    assert agent_ctx.nb_kernel_holder.context_id == "nb-ctx-xyz"
+
+    await resumed.rollback_to_step(1)
+
+    assert agent_ctx.ipy_kernel_holder.context_id is None
+    assert agent_ctx.nb_kernel_holder.context_id is None
 
 
 # ---------- Session writers ----------

@@ -114,6 +114,18 @@ class TestMemoryProviderLocal:
         assert {e.name for e in second.entries} == {"alpha", "beta"}
 
     @pytest.mark.asyncio
+    async def test_deeply_nested_frontmatter_skipped(self, tmp_path: Path) -> None:
+        _topic_file(tmp_path / "alpha.md", "alpha")
+        nested = "[" * 1500 + "]" * 1500
+        (tmp_path / "deep.md").write_text(
+            f"---\nname: {nested}\ndescription: D\n---\nB\n", encoding="utf-8"
+        )
+        ctx = _make_ctx(tmp_path)
+        assert ctx.memory is not None
+        snap = await ctx.memory.load()
+        assert {e.name for e in snap.entries} == {"alpha"}
+
+    @pytest.mark.asyncio
     async def test_missing_root(self, tmp_path: Path) -> None:
         missing = tmp_path / "missing"
         # Use the parent dir for allowed_roots so validation accepts the

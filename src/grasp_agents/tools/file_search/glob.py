@@ -9,10 +9,13 @@ Guards:
 
 1. ``allowed_roots`` — the search root must be under one of the configured
    roots on the backend; the backend resolves and enforces containment.
-2. Result cap — large result sets are truncated to ``head_limit`` (default
+2. Read access — matches the backend would refuse to ``Read`` (its
+   ``deny_read`` carve-outs, credential files) are dropped, so their names
+   do not leak.
+3. Result cap — large result sets are truncated to ``head_limit`` (default
    250) and ``truncated=True`` is returned so the model can narrow the
    pattern instead of parsing an unbounded list.
-3. Hidden directories (``.git``, ``.venv``, ``node_modules``, ...) are
+4. Hidden directories (``.git``, ``.venv``, ``node_modules``, ...) are
    skipped by default; opt in with ``include_hidden=True`` on the
    :class:`GlobTool` constructor.
 """
@@ -28,6 +31,8 @@ from pydantic import BaseModel, Field
 from grasp_agents.file_backend.paths import PathAccessError
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
+from ._read_access import readable_paths
+
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.file_backend.base import FileStat
@@ -38,17 +43,12 @@ def _is_directory(stat: FileStat) -> bool:
     """
     Best-effort isdir check.
 
-    POSIX ``S_ISDIR`` works on local-FS stat results. MCP backends that
-    don't ship a true ``S_IFDIR`` mode bit should still return non-zero
-    sizes / valid mtimes for directories; fall back to "non-empty mtime
-    treated as directory" only when ``mode`` carries no type bits.
+    The built-in backends report POSIX file-type bits, so ``S_ISDIR``
+    decides. A backend whose ``mode`` carries no type bits gets the benefit
+    of the doubt: rooting Glob at a non-directory is the unusual case.
     """
     if stat.mode and stat_module.S_IFMT(stat.mode):
         return stat_module.S_ISDIR(stat.mode)
-    # Backend didn't populate the file-type bits — accept anything that
-    # validate_path returned. Most MCP servers stat individual files
-    # explicitly via stat_file (which returns ``is_dir``); rooting Glob
-    # at a non-dir is the unusual case.
     return True
 
 
@@ -172,6 +172,10 @@ class GlobTool(BaseTool[GlobInput, GlobResult, Any]):
             include_hidden=self._include_hidden,
             head_limit=self._head_limit,
         )
+        readable = await readable_paths(
+            backend, (m.path for m in matched), dotfile_overrides=overrides
+        )
+        matched = [m for m in matched if m.path in readable]
 
         # Sort newest-first by mtime.
         matched.sort(key=lambda m: m.mtime, reverse=True)

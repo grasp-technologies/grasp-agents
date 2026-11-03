@@ -267,6 +267,12 @@ class FileBackend(ABC):
         Regex search over file contents under ``root``. Returns the raw
         result; the tool slices + paginates per ``head_limit`` /
         ``offset``. Default raises :class:`NotImplementedError`.
+
+        In ``content`` mode each line must start with its file's path
+        exactly as ``files_with_matches`` mode reports it, then ``:`` for a
+        match or ``-`` for a context line. The ``Grep`` tool attributes
+        lines to files that way to drop the ones the agent may not read,
+        and drops any line it cannot attribute.
         """
         ...
 

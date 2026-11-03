@@ -24,11 +24,17 @@ Three output modes, chosen via ``output_mode``:
 ``head_limit`` / ``offset`` slice the output after the backend returns.
 The tool reports ``truncated=True`` when ``head_limit`` cut results so
 the model can narrow the query instead of paging blindly.
+
+Results the backend would refuse to ``Read`` (its ``deny_read`` carve-outs,
+credential files) are dropped before slicing, and the totals count only
+what is left.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import shutil
 from pathlib import Path
@@ -39,6 +45,8 @@ from pydantic import BaseModel, Field
 from grasp_agents.file_backend.base import GrepRawResult
 from grasp_agents.file_backend.paths import PathAccessError
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
+
+from ._read_access import filter_content_lines, readable_paths
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
@@ -251,7 +259,8 @@ def _build_args(
     if mode == "files_with_matches":
         args.append("--files-with-matches")
     elif mode == "count":
-        args.append("--count")
+        # rg leaves the file name off when searching a single file.
+        args.extend(["--count", "--with-filename"])
     else:
         args.append("--json")
         if context is not None:
@@ -286,12 +295,29 @@ def _parse_count(stdout: bytes) -> list[tuple[Path, int]]:
 
 
 def _get_text(obj: dict[str, Any], key: str) -> str | None:
-    """Extract ``obj[key]["text"]`` as a string, or None if the shape differs."""
+    """
+    Extract ``obj[key]`` as a string, or None if the shape differs.
+
+    rg sends ``{"text": ...}`` for UTF-8 data and ``{"bytes": <base64>}``
+    otherwise (e.g. a non-UTF-8 file name). Bytes are decoded with
+    replacement characters, as the plain-text output modes decode them.
+    """
     nested = obj.get(key)
     if not isinstance(nested, dict):
         return None
-    text = cast("dict[str, Any]", nested).get("text")
-    return text if isinstance(text, str) else None
+    data = cast("dict[str, Any]", nested)
+    text = data.get("text")
+    if isinstance(text, str):
+        return text
+    encoded = data.get("bytes")
+    if not isinstance(encoded, str):
+        return None
+    try:
+        return base64.b64decode(encoded, validate=True).decode(
+            "utf-8", errors="replace"
+        )
+    except binascii.Error:
+        return None
 
 
 def _parse_json_content(
@@ -322,10 +348,11 @@ def _parse_json_content(
         )
 
         if msg_type == "begin":
-            path_text = _get_text(data, "path")
-            if path_text is not None:
-                current_path = path_text
-                paths.add(path_text)
+            # Reset even when the path is unreadable, so this file's lines
+            # are never rendered under the previous file's path.
+            current_path = _get_text(data, "path")
+            if current_path is not None:
+                paths.add(current_path)
             continue
 
         if msg_type in {"match", "context"}:
@@ -525,36 +552,64 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
         offset = inp.offset or 0
 
         if inp.output_mode == "files_with_matches":
+            readable = await readable_paths(
+                backend, raw.files, dotfile_overrides=overrides
+            )
+            files = [p for p in raw.files if p in readable]
             sliced_paths, truncated = _slice(
-                raw.files, offset=offset, head_limit=inp.head_limit
+                files, offset=offset, head_limit=inp.head_limit
             )
             return GrepResult(
                 output="\n".join(str(p) for p in sliced_paths),
                 output_mode=inp.output_mode,
-                num_matches=raw.num_matches,
-                num_files_matched=raw.num_files_matched,
+                num_matches=len(files),
+                num_files_matched=len(files),
                 truncated=truncated,
             )
 
         if inp.output_mode == "count":
-            rendered = [f"{p}:{n}" for p, n in raw.counts]
+            readable = await readable_paths(
+                backend, (p for p, _ in raw.counts), dotfile_overrides=overrides
+            )
+            counts = [(p, n) for p, n in raw.counts if p in readable]
+            rendered = [f"{p}:{n}" for p, n in counts]
             sliced, truncated = _slice(
                 rendered, offset=offset, head_limit=inp.head_limit
             )
             return GrepResult(
                 output="\n".join(sliced),
                 output_mode=inp.output_mode,
-                num_matches=raw.num_matches,
-                num_files_matched=raw.num_files_matched,
+                num_matches=sum(n for _, n in counts),
+                num_files_matched=len(counts),
                 truncated=truncated,
             )
 
-        sliced, truncated = _slice(raw.lines, offset=offset, head_limit=inp.head_limit)
+        lines: list[str] = []
+        num_matches = num_files_matched = 0
+        if raw.lines:
+            # Content lines carry their path only as text: list the files the
+            # same search matches to tell which file each line comes from.
+            listing = await backend.grep(
+                root=resolved,
+                pattern=inp.pattern,
+                glob=inp.glob,
+                file_type=inp.type,
+                case_insensitive=inp.case_insensitive,
+                multiline=inp.multiline,
+                output_mode="files_with_matches",
+            )
+            readable = await readable_paths(
+                backend, listing.files, dotfile_overrides=overrides
+            )
+            lines, num_matches, num_files_matched = filter_content_lines(
+                raw.lines, files=listing.files, readable=readable
+            )
+        sliced, truncated = _slice(lines, offset=offset, head_limit=inp.head_limit)
         return GrepResult(
             output=self._redactor("\n".join(sliced)),
             output_mode=inp.output_mode,
-            num_matches=raw.num_matches,
-            num_files_matched=raw.num_files_matched,
+            num_matches=num_matches,
+            num_files_matched=num_files_matched,
             truncated=truncated,
         )
 

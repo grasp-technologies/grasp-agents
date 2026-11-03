@@ -84,26 +84,22 @@ class TestMemoryFrontmatter:
     @pytest.mark.parametrize(
         "bad",
         [
-            "User",                # uppercase
-            "-leading",            # leading hyphen
-            "trailing-",           # trailing hyphen
-            "double--hyphen",      # consecutive separators
-            "double__under",       # consecutive separators
-            "spaced name",         # space
-            "",                    # empty
+            "User",  # uppercase
+            "-leading",  # leading hyphen
+            "trailing-",  # trailing hyphen
+            "double--hyphen",  # consecutive separators
+            "double__under",  # consecutive separators
+            "spaced name",  # space
+            "",  # empty
         ],
     )
     def test_name_regex_rejects(self, bad: str) -> None:
         with pytest.raises(ValidationError):
-            MemoryFrontmatter.model_validate(
-                {"name": bad, "description": "ok"}
-            )
+            MemoryFrontmatter.model_validate({"name": bad, "description": "ok"})
 
     def test_name_max_length(self) -> None:
         with pytest.raises(ValidationError):
-            MemoryFrontmatter.model_validate(
-                {"name": "a" * 65, "description": "ok"}
-            )
+            MemoryFrontmatter.model_validate({"name": "a" * 65, "description": "ok"})
 
     def test_description_required(self) -> None:
         with pytest.raises(ValidationError):
@@ -111,20 +107,18 @@ class TestMemoryFrontmatter:
 
     def test_description_max_length(self) -> None:
         with pytest.raises(ValidationError):
-            MemoryFrontmatter.model_validate(
-                {"name": "x", "description": "a" * 2049}
-            )
+            MemoryFrontmatter.model_validate({"name": "x", "description": "a" * 2049})
 
     def test_extra_fields_preserved(self) -> None:
         fm = MemoryFrontmatter.model_validate(
             {
                 "name": "x",
                 "description": "y",
-                "metadata": {"app": "mentor"},
+                "metadata": {"app": "notes"},
                 "future_field": "ignored",
             }
         )
-        assert fm.metadata == {"app": "mentor"}
+        assert fm.metadata == {"app": "notes"}
         # extra="allow" preserves unknown fields silently
         assert fm.model_dump().get("future_field") == "ignored"
 
@@ -162,6 +156,65 @@ class TestParseMemoryMd:
         text = "---\nname: x\ndescription: y\n---\n\n\nactual body\n\n"
         _, body = parse_memory_md(text)
         assert body == "actual body"
+
+
+# ---------- frontmatter from untrusted writers ----------
+
+
+def _deeply_nested(levels: int = 1500) -> str:
+    nested = "[" * levels + "]" * levels
+    return f"---\nname: {nested}\ndescription: d\n---\nbody\n"
+
+
+class TestHostileFrontmatter:
+    def test_alias_refused(self) -> None:
+        text = '---\nshared: &d "A description"\nname: x\ndescription: *d\n---\nb\n'
+        with pytest.raises(MemoryFormatError, match="anchors and aliases"):
+            parse_memory_md(text)
+
+    def test_anchor_refused(self) -> None:
+        text = "---\nname: &n x\ndescription: d\n---\nbody\n"
+        with pytest.raises(MemoryFormatError, match="anchors and aliases"):
+            parse_memory_md(text)
+
+    def test_alias_bomb_refused(self) -> None:
+        # Each level repeats the previous one nine times; deeper documents
+        # of this shape expand to gigabytes when aliases are resolved.
+        lines = ["---", 'l0: &l0 ["x", "x", "x", "x", "x", "x", "x", "x", "x"]']
+        for level in range(1, 6):
+            refs = ", ".join([f"*l{level - 1}"] * 9)
+            lines.append(f"l{level}: &l{level} [{refs}]")
+        lines += ["name: *l5", "description: d", "---", "body"]
+        with pytest.raises(MemoryFormatError, match="anchors and aliases"):
+            parse_memory_md("\n".join(lines) + "\n")
+
+    def test_oversized_frontmatter_refused(self) -> None:
+        text = f"---\nname: x\ndescription: d\nnotes: {'a' * 5000}\n---\nbody\n"
+        with pytest.raises(MemoryFormatError, match="exceeds"):
+            parse_memory_md(text)
+
+    def test_deep_nesting_is_a_format_error(self) -> None:
+        with pytest.raises(MemoryFormatError, match="nested too deeply"):
+            parse_memory_md(_deeply_nested())
+
+    def test_validation_error_omits_input(self) -> None:
+        values = ", ".join(f"value-{i}" for i in range(50))
+        text = f"---\nname: [{values}]\ndescription: d\n---\nbody\n"
+        with pytest.raises(MemoryFormatError, match="name") as info:
+            parse_memory_md(text)
+        assert "value-0" not in str(info.value)
+
+    def test_yaml_error_omits_input(self) -> None:
+        text = "---\nname: x\ndescription: [private-value\n---\nbody\n"
+        with pytest.raises(MemoryFormatError, match="line") as info:
+            parse_memory_md(text)
+        assert "private-value" not in str(info.value)
+
+    def test_scan_memdir_skips_deeply_nested_file(self, tmp_path: Path) -> None:
+        _write(tmp_path / "good.md", _topic("good", "g"))
+        _write(tmp_path / "deep.md", _deeply_nested())
+        _, _, _, entries = scan_memdir(tmp_path)
+        assert [e.name for e in entries] == ["good"]
 
 
 # ---------- load_memory_entry ----------
