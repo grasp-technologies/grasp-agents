@@ -113,7 +113,8 @@ class E2BFileBackend(FileBackend):
         return resolved
 
     async def stat(self, path: Path) -> FileStat:
-        info = await self._holder.require().files.get_info(wire(path))
+        sb = await self._holder.ensure()
+        info = await sb.files.get_info(wire(path))
         return FileStat(
             mtime=mtime(info),
             mode=int(getattr(info, "mode", 0o644) or 0o644),
@@ -121,22 +122,24 @@ class E2BFileBackend(FileBackend):
         )
 
     async def exists(self, path: Path) -> bool:
-        return bool(await self._holder.require().files.exists(wire(path)))
+        sb = await self._holder.ensure()
+        return bool(await sb.files.exists(wire(path)))
 
     async def parent_exists(self, path: Path) -> bool:
         parent = PurePosixPath(path).parent
         if str(parent) == wire(path):
             return True
-        return bool(await self._holder.require().files.exists(str(parent)))
+        sb = await self._holder.ensure()
+        return bool(await sb.files.exists(str(parent)))
 
     async def read_text(self, path: Path) -> tuple[str, float]:
-        sb = self._holder.require()
+        sb = await self._holder.ensure()
         content = await sb.files.read(wire(path), "text")
         info = await sb.files.get_info(wire(path))
         return str(content), mtime(info)
 
     async def read_bytes(self, path: Path) -> tuple[bytes, float]:
-        sb = self._holder.require()
+        sb = await self._holder.ensure()
         content = await sb.files.read(wire(path), "bytes")
         info = await sb.files.get_info(wire(path))
         return bytes(content), mtime(info)
@@ -150,21 +153,24 @@ class E2BFileBackend(FileBackend):
         overwrite: bool = True,
     ) -> float:
         del mode, overwrite  # E2B writes always overwrite; no mode on the API
-        sb = self._holder.require()
+        sb = await self._holder.ensure()
         # e2b types write()'s data param as a bare ``IO`` (-> ``IO[Unknown]``).
         await sb.files.write(wire(path), data)  # pyright: ignore[reportUnknownMemberType]
         info = await sb.files.get_info(wire(path))
         return mtime(info)
 
     async def delete(self, path: Path) -> None:
-        await self._holder.require().files.remove(wire(path))
+        sb = await self._holder.ensure()
+        await sb.files.remove(wire(path))
 
     async def mkdir(self, path: Path) -> None:
-        await self._holder.require().files.make_dir(wire(path))
+        sb = await self._holder.ensure()
+        await sb.files.make_dir(wire(path))
 
     async def list_dir(self, path: Path, *, recursive: bool = False) -> list[FileEntry]:
         depth = RECURSIVE_DEPTH if recursive else 1
-        entries = await self._holder.require().files.list(wire(path), depth)
+        sb = await self._holder.ensure()
+        entries = await sb.files.list(wire(path), depth)
         out: list[FileEntry] = []
         for e in entries:
             p = type(path)(str(e.path))
@@ -229,7 +235,7 @@ class E2BFileBackend(FileBackend):
             context=context,
         )
         stdout, code = await _run_capture(
-            self._holder.require(), cmd, cwd=wire(self._allowed_roots[0])
+            await self._holder.ensure(), cmd, cwd=wire(self._allowed_roots[0])
         )
         if code >= 2:
             raise OSError(f"remote grep failed (exit {code}) for pattern {pattern!r}")

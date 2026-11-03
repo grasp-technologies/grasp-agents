@@ -109,7 +109,7 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
         stdin: bytes | None = None,
         env: Mapping[str, str] | None = None,
     ) -> AsyncIterator[ExecChunk | ExecResult]:
-        sb = self._holder.require()
+        sb = await self._holder.ensure()
 
         wrapped = wrap_stdin(command, stdin)
         eff_timeout = timeout if timeout is not None else self._default_timeout
@@ -278,6 +278,7 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
         self, *, cwd: Path | None = None, env: Mapping[str, str] | None = None
     ) -> E2BExecSession:
         """Open a persistent shell on the sandbox (see :class:`E2BExecSession`)."""
+        await self._holder.ensure()
         return E2BExecSession(
             self._holder.require,
             cwd=self._resolve_cwd(cwd),
@@ -304,7 +305,7 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
         context instead of creating a fresh one — e.g. when resuming a session
         whose sandbox was paused/snapshotted, so the kernel's variables persist.
         """
-        sandbox = self._holder.require()
+        sandbox = await self._holder.ensure()
         if not hasattr(sandbox, "run_code"):
             raise ValueError(
                 "RunCell on E2B needs a code-interpreter sandbox. Build the "

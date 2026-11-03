@@ -31,6 +31,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+FRESH_SNAPSHOT_REF = "e2b-fresh"
+"""Snapshot ref of a sandbox that never started: restoring it starts over."""
+
 
 class E2BCreateParams(TypedDict, total=False):
     """
@@ -58,7 +61,7 @@ def _sandbox_cls(code_interpreter: bool) -> type[AsyncSandbox]:
     if not code_interpreter:
         return AsyncSandbox
     try:
-        from e2b_code_interpreter import (
+        from e2b_code_interpreter import (  # ruff: ignore[import-outside-top-level]
             AsyncSandbox as CISandbox,
         )
     except ImportError as exc:  # pragma: no cover - the e2b extra installs both
@@ -93,7 +96,9 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         owns_sandbox: bool = True,
         pause_on_exit: bool = False,
         code_interpreter: bool = False,
+        lazy: bool = False,
     ) -> None:
+        self._lazy = lazy
         self._policy = policy
         self._holder = holder
         self._file_backend = file_backend
@@ -143,28 +148,49 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
             pause_on_exit=pause_on_exit,
         )
 
+    @property
+    def started(self) -> bool:
+        """True once a sandbox exists (always, unless built with ``lazy=True``)."""
+        return self._holder.sandbox is not None
+
     async def __aenter__(self) -> Self:
-        created_here = False
-        if self._holder.sandbox is None:
-            if self._create_params is None:
-                raise RuntimeError(
-                    "E2BEnvironment has no sandbox and no create params; build "
-                    "it via e2b_environment(...) or E2BEnvironment.from_sandbox(...)."
-                )
-            sandbox_cls = _sandbox_cls(self._code_interpreter)
-            logger.info("creating E2B sandbox (%s)", sandbox_cls.__name__)
-            t0 = time.monotonic()
-            self._holder.sandbox = await sandbox_cls.create(**self._create_params)
-            logger.info("E2B sandbox ready in %.1fs", time.monotonic() - t0)
-            created_here = True
-        sandbox = self._holder.require()
+        if self._holder.sandbox is not None:
+            await self._prepare(self._holder.sandbox, created_here=False)
+            return self
+        if self._create_params is None:
+            raise RuntimeError(
+                "E2BEnvironment has no sandbox and no create params; build "
+                "it via e2b_environment(...) or E2BEnvironment.from_sandbox(...)."
+            )
+        if self._lazy:
+            self._holder.arm(self._start)
+            return self
+        self._holder.sandbox = await self._start()
+        return self
+
+    async def _start(self) -> AsyncSandbox:
+        """Create a sandbox from the create params and prepare its roots."""
+        sandbox_cls = _sandbox_cls(self._code_interpreter)
+        logger.info("creating E2B sandbox (%s)", sandbox_cls.__name__)
+        t0 = time.monotonic()
+        params: E2BCreateParams = (
+            self._create_params if self._create_params is not None else {}
+        )
+        sandbox = await sandbox_cls.create(**params)
+        logger.info("E2B sandbox ready in %.1fs", time.monotonic() - t0)
+        await self._prepare(sandbox, created_here=True)
+        return sandbox
+
+    async def _prepare(self, sandbox: AsyncSandbox, *, created_here: bool) -> None:
+        """Make the allowed roots; kill a sandbox created here if that fails."""
         try:
             for root in self._file_backend.allowed_roots:
                 await sandbox.files.make_dir(wire(root))
         except BaseException:
             # Don't orphan a just-created (billed) sandbox when setup fails.
             if created_here:
-                self._holder.sandbox = None
+                if self._holder.sandbox is sandbox:
+                    self._holder.sandbox = None
                 try:
                     await sandbox.kill()
                 except Exception:
@@ -174,9 +200,9 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
                         exc_info=True,
                     )
             raise
-        return self
 
     async def __aexit__(self, *exc: object) -> None:
+        self._holder.disarm()
         sandbox = self._holder.sandbox
         if sandbox is None or not self._owns_sandbox:
             return
@@ -197,7 +223,12 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         sandbox briefly pauses during creation, then keeps running. :meth:`restore`
         spawns a *fresh* sandbox from it — a true rewind. (To suspend/resume the
         same sandbox instead, use :meth:`pause` / :meth:`resume`.)
+
+        A lazy environment whose sandbox has not started yet returns
+        :data:`FRESH_SNAPSHOT_REF` without starting one.
         """
+        if self._holder.sandbox is None and self._holder.armed:
+            return FRESH_SNAPSHOT_REF
         snap = await self._holder.require().create_snapshot()
         return str(snap.snapshot_id)
 
@@ -206,12 +237,22 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         Rewind to a snapshot: spawn a fresh sandbox from ``ref`` (its filesystem
         + memory at snapshot time) and swap the live handle under both backends.
         The previous sandbox, if owned, is killed.
+
+        :data:`FRESH_SNAPSHOT_REF` rewinds to a sandbox that never ran: a lazy
+        environment drops its sandbox and starts a new one on next use; an
+        eager one starts a new one from the base template now.
         """
         previous = self._holder.sandbox
-        # Create from the snapshot, not a base template.
-        params: E2BCreateParams = {**(self._create_params or {}), "template": ref}
-        sandbox_cls = _sandbox_cls(self._code_interpreter)
-        self._holder.sandbox = await sandbox_cls.create(**params)
+        if ref == FRESH_SNAPSHOT_REF:
+            if self._holder.armed:
+                self._holder.sandbox = None
+            else:
+                self._holder.sandbox = await self._start()
+        else:
+            # Create from the snapshot, not a base template.
+            params: E2BCreateParams = {**(self._create_params or {}), "template": ref}
+            sandbox_cls = _sandbox_cls(self._code_interpreter)
+            self._holder.sandbox = await sandbox_cls.create(**params)
         if previous is not None and self._owns_sandbox:
             with contextlib.suppress(Exception):
                 await previous.kill()
@@ -224,6 +265,8 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         :meth:`snapshot`: pause is suspend/resume (no rewind), whereas a snapshot
         is a persistent point-in-time copy you spawn fresh sandboxes from.
         """
+        if self._holder.sandbox is None and self._holder.armed:
+            raise RuntimeError("Nothing to pause: the sandbox was never started.")
         sandbox = self._holder.require()
         await sandbox.pause()
         return str(sandbox.sandbox_id)
@@ -261,10 +304,11 @@ def e2b_environment(
     pause_on_exit: bool = False,
     code_interpreter: bool = False,
     default_timeout: float = DEFAULT_EXEC_TIMEOUT,
+    lazy: bool = False,
 ) -> E2BEnvironment:
     """
     Build a deferred-create E2B environment; the sandbox is created on
-    ``async with``.
+    ``async with``, or on first use with ``lazy=True``.
 
     Args:
         allowed_roots: POSIX paths *inside* the sandbox the file tools may
@@ -295,6 +339,10 @@ def e2b_environment(
             only. Files + commands behave identically either way.
         default_timeout: Per-command wall-clock ceiling when a call passes no
             ``timeout`` (E2B would otherwise impose its own 60 s).
+        lazy: Start the sandbox on the first file or exec call instead of on
+            ``async with``, so a session that never needs it never pays for
+            one. Concurrent first calls share one sandbox; ``snapshot()``
+            before the start returns :data:`FRESH_SNAPSHOT_REF`.
 
     Returns:
         An :class:`E2BEnvironment` to use as ``async with``.
@@ -342,4 +390,5 @@ def e2b_environment(
         owns_sandbox=True,
         pause_on_exit=pause_on_exit,
         code_interpreter=code_interpreter,
+        lazy=lazy,
     )
