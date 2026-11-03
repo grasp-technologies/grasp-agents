@@ -21,6 +21,7 @@ from ._handle import (
     DEFAULT_EXEC_TIMEOUT,
     DEFAULT_WORKSPACE,
     SandboxHandle,
+    kill_quietly,
     wire,
 )
 from .exec import E2BExecBackend
@@ -150,7 +151,12 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
 
     @property
     def started(self) -> bool:
-        """True once a sandbox exists (always, unless built with ``lazy=True``)."""
+        """
+        True while the environment holds a sandbox: from entry until exit, or,
+        with ``lazy=True``, from the first file or exec call. Restoring
+        :data:`FRESH_SNAPSHOT_REF` on a lazy environment drops it until the
+        next call.
+        """
         return self._holder.sandbox is not None
 
     async def __aenter__(self) -> Self:
@@ -170,13 +176,15 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
 
     async def _start(self) -> AsyncSandbox:
         """Create a sandbox from the create params and prepare its roots."""
+        if self._create_params is None:
+            raise RuntimeError(
+                "E2BEnvironment has no create params to start a fresh sandbox "
+                "from; it wraps an existing one (from_sandbox)."
+            )
         sandbox_cls = _sandbox_cls(self._code_interpreter)
         logger.info("creating E2B sandbox (%s)", sandbox_cls.__name__)
         t0 = time.monotonic()
-        params: E2BCreateParams = (
-            self._create_params if self._create_params is not None else {}
-        )
-        sandbox = await sandbox_cls.create(**params)
+        sandbox = await sandbox_cls.create(**self._create_params)
         logger.info("E2B sandbox ready in %.1fs", time.monotonic() - t0)
         await self._prepare(sandbox, created_here=True)
         return sandbox
@@ -189,16 +197,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         except BaseException:
             # Don't orphan a just-created (billed) sandbox when setup fails.
             if created_here:
-                if self._holder.sandbox is sandbox:
-                    self._holder.sandbox = None
-                try:
-                    await sandbox.kill()
-                except Exception:
-                    logger.warning(
-                        "Failed to kill E2B sandbox after setup failure; "
-                        "it may keep running (and billing) until its timeout.",
-                        exc_info=True,
-                    )
+                await kill_quietly(sandbox)
             raise
 
     async def __aexit__(self, *exc: object) -> None:
@@ -242,18 +241,23 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         The previous sandbox, if owned, is killed.
 
         :data:`FRESH_SNAPSHOT_REF` rewinds to a sandbox that never ran: a lazy
-        environment drops its sandbox and starts a new one on next use; an
-        eager one starts a new one from the base template now.
+        environment drops its sandbox and starts a new one on next use, even
+        after a failed start; an eager one starts a new one from its create
+        params (its configured template) now. An environment that wraps an
+        existing sandbox (:meth:`from_sandbox`) has no create params, so it
+        refuses this ref.
         """
         async with self._holder.lock:
             previous = self._holder.sandbox
             if ref == FRESH_SNAPSHOT_REF:
                 if self._holder.armed:
                     self._holder.sandbox = None
+                    # Re-arming forgets a failed start: the next call retries.
+                    self._holder.arm(self._start)
                 else:
                     self._holder.sandbox = await self._start()
             else:
-                # Create from the snapshot, not a base template.
+                # Create from the snapshot instead of the configured template.
                 params: E2BCreateParams = {
                     **(self._create_params or {}),
                     "template": ref,
@@ -351,7 +355,10 @@ def e2b_environment(
         lazy: Start the sandbox on the first file or exec call instead of on
             ``async with``, so a session that never needs it never pays for
             one. Concurrent first calls share one sandbox; ``snapshot()``
-            before the start returns :data:`FRESH_SNAPSHOT_REF`.
+            before the start returns :data:`FRESH_SNAPSHOT_REF`. A failed
+            start fails like a failed entry: later calls raise without
+            creating another sandbox until the environment is re-entered (or
+            restored to :data:`FRESH_SNAPSHOT_REF`).
 
     Returns:
         An :class:`E2BEnvironment` to use as ``async with``.

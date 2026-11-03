@@ -337,6 +337,7 @@ class E2BEnvironmentConfig(BaseModel):
     pause_on_exit: bool = False
     code_interpreter: bool = False
     default_timeout: float = DEFAULT_EXEC_TIMEOUT
+    lazy: bool = False
 
     @model_validator(mode="after")
     def _one_template_source(self) -> E2BEnvironmentConfig:
@@ -349,7 +350,7 @@ class E2BEnvironmentConfig(BaseModel):
 
     async def build(self, *, api_key: str | None = None) -> E2BEnvironment:
         """Build the template (if inline) and construct the environment."""
-        from .environment import (
+        from .environment import (  # ruff: ignore[import-outside-top-level]
             e2b_environment,
         )
 
@@ -379,6 +380,7 @@ class E2BEnvironmentConfig(BaseModel):
             pause_on_exit=self.pause_on_exit,
             code_interpreter=self.code_interpreter,
             default_timeout=self.default_timeout,
+            lazy=self.lazy,
         )
 
 

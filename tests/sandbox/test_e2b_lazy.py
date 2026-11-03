@@ -18,12 +18,15 @@ import pytest
 pytest.importorskip("e2b")
 
 from grasp_agents.sandbox.e2b import environment as e2b_env
+from grasp_agents.sandbox.e2b.config import E2BEnvironmentConfig
 from grasp_agents.sandbox.e2b.environment import (
     FRESH_SNAPSHOT_REF,
+    E2BEnvironment,
     e2b_environment,
 )
 from grasp_agents.sandbox.exec_backend import ExecResult
 from grasp_agents.sandbox.kernel import CellResult
+from grasp_agents.sandbox.policy import SandboxPolicy
 from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.notebook_exec import KernelHolder
 from tests.sandbox.test_e2b import _WS, _FakeCommands, _FakeFiles, _FakeSandbox
@@ -205,21 +208,70 @@ class _FailingFiles(_FakeFiles):
         raise OSError("disk full")
 
 
-async def test_failed_setup_kills_the_sandbox_and_retries_later(
-    creator: _Creator,
-) -> None:
+async def test_failed_setup_fails_fast_until_reentered(creator: _Creator) -> None:
     broken = _FakeSandbox(files=_FailingFiles())
-    creator._queue.extend([broken, _FakeSandbox()])
+    creator._queue.append(broken)
+    env = e2b_environment(allowed_roots=[_WS], lazy=True)
 
-    async with e2b_environment(allowed_roots=[_WS], lazy=True) as env:
+    async with env:
         with pytest.raises(OSError, match="disk full"):
             await env.file_backend.mkdir(Path(f"{_WS}/x"))
         assert broken.killed
         assert not env.started
+        # No new (billed) sandbox per call while the setup keeps failing.
+        with pytest.raises(RuntimeError, match="failed to start") as failed:
+            await env.file_backend.mkdir(Path(f"{_WS}/x"))
+        assert isinstance(failed.value.__cause__, OSError)
+        assert len(creator.created) == 1
+
+    async with env:
         await env.file_backend.mkdir(Path(f"{_WS}/x"))
         assert env.started
 
     assert len(creator.created) == 2
+
+
+async def test_restoring_fresh_retries_a_failed_start(creator: _Creator) -> None:
+    creator._queue.append(_FakeSandbox(files=_FailingFiles()))
+
+    async with e2b_environment(allowed_roots=[_WS], lazy=True) as env:
+        with pytest.raises(OSError, match="disk full"):
+            await env.file_backend.mkdir(Path(f"{_WS}/x"))
+        await env.restore(FRESH_SNAPSHOT_REF)
+        await env.file_backend.mkdir(Path(f"{_WS}/x"))
+        assert env.started
+
+    assert len(creator.created) == 2
+
+
+async def test_restoring_fresh_over_a_wrapped_sandbox_is_refused(
+    creator: _Creator,
+) -> None:
+    wrapped = _FakeSandbox(sandbox_id="wrapped")
+    env = E2BEnvironment.from_sandbox(
+        cast("AsyncSandbox", wrapped),
+        policy=SandboxPolicy(allowed_roots=(Path(_WS),)),
+    )
+
+    async with env:
+        # It has no create params to start one from, and would not own it.
+        with pytest.raises(RuntimeError, match="from_sandbox"):
+            await env.restore(FRESH_SNAPSHOT_REF)
+        assert env.started
+
+    assert creator.created == []
+    assert not wrapped.killed
+
+
+async def test_config_lazy_defers_the_start(creator: _Creator) -> None:
+    env = await E2BEnvironmentConfig(lazy=True).build()
+
+    async with env:
+        assert not env.started
+        await env.file_backend.mkdir(Path(f"{_WS}/x"))
+        assert env.started
+
+    assert len(creator.created) == 1
 
 
 # --- lifecycle changes while a start is in flight ---------------------------
