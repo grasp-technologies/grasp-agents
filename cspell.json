@@ -46,6 +46,7 @@
         "fsize",
         "getpgid",
         "Ghostty",
+        "greppable",
         "halfcell",
         "Includable",
         "iopub",
