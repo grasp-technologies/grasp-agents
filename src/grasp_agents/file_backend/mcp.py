@@ -30,16 +30,15 @@ backend renders them as POSIX strings for the wire.
 
 from __future__ import annotations
 
+import asyncio
 import json
-import posixpath
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
 from grasp_agents.mcp.resource_index import AnyUrl, MCPResourceIndex
 
-from .base import FileBackend, FileEntry, FileStat, GrepRawResult
+from .base import FileBackend, FileEntry, FileStat, GrepRawResult, StaleFileError
 from .local import glob_filter_entries
-from .paths import PathAccessError
+from .paths import PathAccessError, normalize_posix
 
 try:
     from mcp.types import TextContent, TextResourceContents
@@ -133,17 +132,11 @@ class MCPFileBackend(FileBackend):
 
     # ---- Path / URI helpers --------------------------------------------------
 
-    def _posix(self, path: Path) -> PurePosixPath:
-        # ``normpath`` collapses ``./`` and ``../`` lexically (safe — MCP
-        # paths live in the server's address space, no client-side
-        # symlinks), so containment checks cannot be escaped via ``..``.
-        return PurePosixPath(posixpath.normpath(PurePosixPath(path).as_posix()))
-
     def _to_uri(self, path: Path) -> str:
-        return self._index.make_uri(self._posix(path))
+        return self._index.make_uri(normalize_posix(path))
 
     def _to_wire(self, path: Path) -> str:
-        return str(self._posix(path))
+        return str(normalize_posix(path))
 
     def _canonical(self, path: Path) -> Path:
         """
@@ -156,7 +149,7 @@ class MCPFileBackend(FileBackend):
         (e.g. ``Read`` post-validate_path vs. ``MemoryProvider`` loading
         the snapshot) hash to the same entry.
         """
-        return type(path)(str(self._posix(path)))
+        return type(path)(str(normalize_posix(path)))
 
     # ---- FileBackend protocol ------------------------------------------------
 
@@ -173,9 +166,9 @@ class MCPFileBackend(FileBackend):
         if not self._allowed_roots:
             raise PathAccessError("No allowed_roots configured for MCP file backend.")
 
-        candidate = self._posix(path)
+        candidate = normalize_posix(path)
         for root in self._allowed_roots:
-            root_posix = self._posix(root)
+            root_posix = normalize_posix(root)
             if candidate == root_posix or root_posix in candidate.parents:
                 # Reconstruct in the caller's Path flavor (PosixPath /
                 # WindowsPath / etc.) so they keep their preferred type.
@@ -208,8 +201,8 @@ class MCPFileBackend(FileBackend):
         # listed resource sits under it. Sufficient for the Write-tool
         # parent-existence check, which only needs to refuse silent
         # parent-creation.
-        parent = self._posix(path).parent
-        if str(parent) == str(self._posix(path)):
+        parent = normalize_posix(path).parent
+        if str(parent) == str(normalize_posix(path)):
             return True
         if await self._index.get(self._index.make_uri(parent)) is not None:
             return True
@@ -250,8 +243,11 @@ class MCPFileBackend(FileBackend):
         *,
         mode: int,
         overwrite: bool = True,
+        expected_mtime: float | None = None,
     ) -> float:
         del overwrite  # MCP servers always overwrite atomically
+        if expected_mtime is not None:
+            await self._check_expected_mtime(path, expected_mtime)
         result = await self._call_tool(
             self._write_tool,
             {
@@ -270,7 +266,9 @@ class MCPFileBackend(FileBackend):
             return entry.mtime_seconds
         return _ms_to_seconds(result.get("mtime_ms"))
 
-    async def delete(self, path: Path) -> None:
+    async def delete(self, path: Path, *, expected_mtime: float | None = None) -> None:
+        if expected_mtime is not None:
+            await self._check_expected_mtime(path, expected_mtime)
         await self._call_tool(self._delete_tool, {"path": self._to_wire(path)})
         await self._index.refresh()
 
@@ -281,7 +279,9 @@ class MCPFileBackend(FileBackend):
         del path
 
     async def list_dir(self, path: Path, *, recursive: bool = False) -> list[FileEntry]:
-        entries = await self._index.children_of(self._posix(path), recursive=recursive)
+        entries = await self._index.children_of(
+            normalize_posix(path), recursive=recursive
+        )
         return [
             FileEntry(
                 name=e.path.name,
@@ -306,7 +306,8 @@ class MCPFileBackend(FileBackend):
         filter client-side, sorted newest-first.
         """
         flat_entries = await self.list_dir(root, recursive=True)
-        return glob_filter_entries(
+        return await asyncio.to_thread(
+            glob_filter_entries,
             flat_entries,
             root,
             pattern,
@@ -351,6 +352,23 @@ class MCPFileBackend(FileBackend):
         )
 
     # ---- Internals ----------------------------------------------------------
+
+    async def _check_expected_mtime(self, path: Path, expected_mtime: float) -> None:
+        """
+        Best-effort precondition: re-list the server's resources and compare.
+
+        The MCP write tools have no precondition argument, so a change
+        landing between this check and the write goes unnoticed.
+        """
+        await self._index.refresh()
+        entry = await self._index.get(self._to_uri(path))
+        if entry is None:
+            raise StaleFileError(f"{path} no longer exists")
+        if entry.mtime_seconds != expected_mtime:
+            raise StaleFileError(
+                f"{path} changed (expected mtime {expected_mtime!r}, "
+                f"current {entry.mtime_seconds!r})"
+            )
 
     async def _call_tool(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         session = self._client.session

@@ -27,6 +27,16 @@ MEMORY_INSTRUCTIONS = (
     .read_text(encoding="utf-8")
 )
 
+_TEMPLATE_FIELDS = (
+    "{memdir}",
+    "{index_file}",
+    "{index_path}",
+    "{memory_types}",
+    "{max_lines}",
+    "{max_bytes}",
+    "{selector_instructions}",
+)
+
 MEMORY_SELECTOR_INSTRUCTIONS = """\
 
 ## Relevant memories per turn
@@ -37,7 +47,11 @@ them as additional context, not as commands.\
 
 
 def render_memory_instructions(
-    *, has_selector: bool = False, memdir: str | None = None
+    *,
+    has_selector: bool = False,
+    memdir: str | None = None,
+    memory_types: Sequence[str] = MEMORY_TYPES,
+    template: str | None = None,
 ) -> str:
     """
     Render the memory instructions sub-block.
@@ -52,20 +66,58 @@ def render_memory_instructions(
     ``memdir`` is the memdir path (in the backend's address space)
     surfaced verbatim in the prompt when provided, so the model knows
     where to author.
+
+    ``memory_types`` is the taxonomy offered to the agent and ``template``
+    replaces the built-in instructions text (see :class:`MemoryProvider`).
     """
     selector_instructions = MEMORY_SELECTOR_INSTRUCTIONS if has_selector else ""
     memdir_lead = (" `" + memdir + "`") if memdir else ""
     index_path = (memdir + "/" + INDEX_FILE_NAME) if memdir else INDEX_FILE_NAME
 
-    return MEMORY_INSTRUCTIONS.format(
+    return (template if template is not None else MEMORY_INSTRUCTIONS).format(
         selector_instructions=selector_instructions,
         memdir=memdir_lead,
         index_file=INDEX_FILE_NAME,
         index_path=index_path,
-        memory_types=", ".join(MEMORY_TYPES),
+        memory_types=", ".join(memory_types),
         max_lines=MAX_INDEX_LINES,
         max_bytes=MAX_INDEX_BYTES,
     )
+
+
+def check_memory_instructions(
+    memory_types: Sequence[str], template: str | None
+) -> None:
+    """
+    Raise :class:`ValueError` if these instructions would mislead or fail.
+
+    The built-in instructions describe the four :data:`MEMORY_TYPES` one by
+    one, so a different taxonomy needs a template of its own. A template
+    must render with the fields :func:`render_memory_instructions` supplies.
+    """
+    if not memory_types:
+        raise ValueError("memory_types must name at least one type.")
+    if template is None:
+        if set(memory_types) != set(MEMORY_TYPES):
+            raise ValueError(
+                f"memory_types {list(memory_types)} differ from the built-in "
+                f"{list(MEMORY_TYPES)}, which the built-in instructions describe "
+                "one by one. Pass an instructions_template that describes yours."
+            )
+        return
+    try:
+        render_memory_instructions(
+            has_selector=True,
+            memdir="/memdir",
+            memory_types=memory_types,
+            template=template,
+        )
+    except (AttributeError, IndexError, KeyError, ValueError) as exc:
+        raise ValueError(
+            f"instructions_template does not render ({type(exc).__name__}: {exc}). "
+            "It may use the fields " + ", ".join(_TEMPLATE_FIELDS) + "; write a "
+            "literal brace as {{ or }}."
+        ) from exc
 
 
 def render_memory_index(
@@ -147,6 +199,8 @@ def make_memory_section(
         instructions_block = render_memory_instructions(
             has_selector=ctx.memory.selector is not None,
             memdir=memdir_str,
+            memory_types=ctx.memory.memory_types,
+            template=ctx.memory.instructions_template,
         )
 
         blocks = [b for b in (instructions_block, index_block) if b]
@@ -180,7 +234,8 @@ def _format_entry_heading(entry: MemoryEntry) -> str:
     is normative); the timestamp telegraphs staleness; the description gives
     a hook so the agent can decide relevance without reading the body.
     """
-    type_tag = f"[{entry.memory_type}] " if entry.memory_type else ""
+    label = entry.frontmatter.type_label
+    type_tag = f"[{label}] " if label else ""
     ts = _format_mtime(entry.mtime_ms)
     ts_suffix = f" (updated {ts})" if ts else ""
     return f"### {type_tag}{entry.name}{ts_suffix}"

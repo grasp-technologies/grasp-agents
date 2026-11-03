@@ -27,6 +27,7 @@ from grasp_agents.context.env_section import (
     make_current_time_attachment,
     make_env_info_section,
 )
+from grasp_agents.context.mounts_section import make_mounts_section
 from grasp_agents.context.prompt_builder import PromptBuilder
 from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.context.untrusted_content import make_untrusted_content_section
@@ -293,7 +294,7 @@ class LLMAgent[InT, OutT, CtxT](
         # Memory authoring and discovery (read/edit/grep the memdir) route
         # through the file toolkit via ``ctx.file_backend``.
         if enable_memory:
-            from grasp_agents.tools import (
+            from grasp_agents.tools import (  # ruff: ignore[import-outside-top-level]
                 FileToolkit,
             )
 
@@ -306,7 +307,7 @@ class LLMAgent[InT, OutT, CtxT](
         # system prompt.
         self._skill_filter = SkillFilter.build(skill_include, skill_exclude)
         if enable_skills:
-            from grasp_agents.skills.tools import (
+            from grasp_agents.skills.tools import (  # ruff: ignore[import-outside-top-level]
                 load_skill,
             )
 
@@ -369,6 +370,10 @@ class LLMAgent[InT, OutT, CtxT](
             )
         if enable_skills:
             self._prompt_builder.add_system_prompt_section(make_skills_section())
+
+        # Always registered: renders only when ``ctx.file_backend`` is a
+        # ``CompositeFileBackend``, describing its mounts to the agent.
+        self._prompt_builder.add_system_prompt_section(make_mounts_section())
 
         # Always registered: the compute reads the toolset live off the call's
         # agent_ctx and renders nothing while no backgroundable tool is
@@ -700,7 +705,7 @@ class LLMAgent[InT, OutT, CtxT](
         agent supplies its own mailbox address (its name); the channel is
         always the session's mailbox (``ctx.transport``).
         """
-        from grasp_agents.inbox import (
+        from grasp_agents.inbox import (  # ruff: ignore[import-outside-top-level]
             AgentInbox,
         )
 

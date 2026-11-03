@@ -37,6 +37,7 @@ from grasp_agents.file_backend.paths import PathAccessError, has_binary_extensio
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
 from .fuzzy_match import apply_replacements, fuzzy_find, preserve_quote_style
+from .session_state import refuse_if_stale
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
@@ -168,6 +169,7 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
         except PathAccessError as exc:
             raise ValueError(str(exc)) from exc
 
+        expected_mtime: float | None = None
         if state is not None:
             record = state.get_read_record(resolved)
             if record is None:
@@ -185,6 +187,7 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
                     f"current {current_stat.mtime!r}). "
                     "Re-Read before editing."
                 )
+            expected_mtime = record.mtime
         else:
             current_stat = await backend.stat(resolved)
 
@@ -228,12 +231,14 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
         new_content = apply_replacements(content, matches, adjusted_new)
         data = new_content.encode("utf-8")
 
-        new_mtime = await backend.write_bytes(
-            resolved,
-            data,
-            mode=mode,
-            overwrite=True,
-        )
+        with refuse_if_stale(resolved, action="editing"):
+            new_mtime = await backend.write_bytes(
+                resolved,
+                data,
+                mode=mode,
+                overwrite=True,
+                expected_mtime=expected_mtime,
+            )
         if state is not None:
             state.record_write(resolved, new_mtime)
 

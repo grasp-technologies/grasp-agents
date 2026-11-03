@@ -16,12 +16,21 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import heapq
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .atomic_write import atomic_write_bytes
-from .base import FileBackend, FileEntry, FileStat, GrepOutputMode, GrepRawResult
+from .base import (
+    FileBackend,
+    FileEntry,
+    FileStat,
+    GrepOutputMode,
+    GrepRawResult,
+    StaleFileError,
+)
+from .glob_match import match_segments
 from .paths import (
     PathAccessError,
     check_access_path,
@@ -31,7 +40,7 @@ from .paths import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator
 
     from .paths import AccessMode
 
@@ -62,25 +71,7 @@ def _glob_matches(pattern: str, rel_path: str) -> bool:
     norm = rel_path.replace(os.sep, "/")
     if "**" not in pattern:
         return fnmatch.fnmatchcase(norm, pattern)
-    return _match_segments(pattern.split("/"), norm.split("/"))
-
-
-def _match_segments(pattern_parts: list[str], path_parts: list[str]) -> bool:
-    if not pattern_parts:
-        return not path_parts
-    head, *tail = pattern_parts
-    if head == "**":
-        if not tail:
-            return True
-        for i in range(len(path_parts) + 1):
-            if _match_segments(tail, path_parts[i:]):
-                return True
-        return False
-    if not path_parts:
-        return False
-    if fnmatch.fnmatchcase(path_parts[0], head):
-        return _match_segments(tail, path_parts[1:])
-    return False
+    return match_segments(pattern.split("/"), norm.split("/"))
 
 
 class LocalFileBackend(FileBackend):
@@ -210,8 +201,13 @@ class LocalFileBackend(FileBackend):
         *,
         mode: int,
         overwrite: bool = True,
+        expected_mtime: float | None = None,
     ) -> float:
+        # The expected-mtime check runs in the same thread right before the
+        # atomic rename; a writer landing between the two goes unnoticed.
         def _write() -> float:
+            if expected_mtime is not None:
+                _check_expected_mtime(path, expected_mtime)
             path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_bytes(path, data, mode=mode, overwrite=overwrite)
             # ``resolve`` after the write so a brand-new file's parent
@@ -228,6 +224,7 @@ class LocalFileBackend(FileBackend):
             # contract as ``write_bytes``). O_APPEND makes each write land at
             # EOF atomically w.r.t. other writers — fine for our single writer
             # per task, and O(len(data)) instead of rewriting the file.
+            # cspell:ignore WRONLY CREAT
             fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, mode)
             try:
                 os.write(fd, data)
@@ -237,8 +234,13 @@ class LocalFileBackend(FileBackend):
 
         return await asyncio.to_thread(_append)
 
-    async def delete(self, path: Path) -> None:
-        await asyncio.to_thread(path.unlink)
+    async def delete(self, path: Path, *, expected_mtime: float | None = None) -> None:
+        def _delete() -> None:
+            if expected_mtime is not None:
+                _check_expected_mtime(path, expected_mtime)
+            path.unlink()
+
+        await asyncio.to_thread(_delete)
 
     async def mkdir(self, path: Path) -> None:
         resolved = await self.validate_path(path, must_exist=False, access="write")
@@ -275,12 +277,8 @@ class LocalFileBackend(FileBackend):
         include_hidden: bool = False,
         head_limit: int = 250,
     ) -> tuple[list[FileEntry], bool]:
-        def _walk() -> tuple[list[FileEntry], bool]:
-            matched: list[FileEntry] = []
-            collect_budget = head_limit + 1
-            truncated = False
-            root_str = str(root)
-            for dirpath, dirnames, filenames in os.walk(root_str):
+        def _matches() -> Iterator[FileEntry]:
+            for dirpath, dirnames, filenames in os.walk(root):
                 dirnames[:] = [
                     d
                     for d in dirnames
@@ -291,24 +289,18 @@ class LocalFileBackend(FileBackend):
                     if not include_hidden and fname.startswith("."):
                         continue
                     abs_path = Path(dirpath) / fname
-                    rel_path = str(abs_path.relative_to(root))
-                    if _glob_matches(pattern, rel_path):
-                        try:
-                            mtime = abs_path.stat().st_mtime
-                        except OSError:
-                            continue
-                        matched.append(
-                            FileEntry(
-                                name=fname,
-                                path=abs_path,
-                                is_dir=False,
-                                mtime=mtime,
-                            )
-                        )
-                        if len(matched) >= collect_budget:
-                            truncated = True
-                            return matched, truncated
-            return matched, truncated
+                    if not _glob_matches(pattern, str(abs_path.relative_to(root))):
+                        continue
+                    try:
+                        mtime = abs_path.stat().st_mtime
+                    except OSError:
+                        continue
+                    yield FileEntry(
+                        name=fname, path=abs_path, is_dir=False, mtime=mtime
+                    )
+
+        def _walk() -> tuple[list[FileEntry], bool]:
+            return _newest_first(_matches(), head_limit)
 
         return await asyncio.to_thread(_walk)
 
@@ -348,6 +340,17 @@ class LocalFileBackend(FileBackend):
         )
 
 
+def _check_expected_mtime(path: Path, expected_mtime: float) -> None:
+    try:
+        current = path.stat().st_mtime
+    except FileNotFoundError:
+        raise StaleFileError(f"{path} no longer exists") from None
+    if current != expected_mtime:
+        raise StaleFileError(
+            f"{path} changed (expected mtime {expected_mtime!r}, current {current!r})"
+        )
+
+
 def glob_filter_entries(
     entries: Iterable[FileEntry],
     root: Path,
@@ -360,30 +363,44 @@ def glob_filter_entries(
     Filter a ``list_dir(recursive=True)`` result by glob pattern.
 
     Shared between any backend that falls back to ``list_dir`` instead
-    of providing its own fast path. Sorts newest-first by mtime and
-    caps at ``head_limit``.
+    of providing its own fast path, with the same rules as
+    :meth:`LocalFileBackend.find_files`: hidden paths are dropped unless
+    ``include_hidden``, and so is everything inside a directory below
+    ``root`` that the local walk always skips (``node_modules``,
+    ``__pycache__``, ``dist``, ...). Returns the ``head_limit`` newest
+    matches, newest first, and whether more matched. CPU-bound on a large
+    listing; async callers run it in a worker thread.
     """
-    matched: list[FileEntry] = []
-    truncated = False
-    collect_budget = head_limit + 1
-    for entry in entries:
-        if entry.is_dir:
-            continue
-        try:
-            rel = entry.path.relative_to(root)
-        except ValueError:
-            continue
-        rel_str = str(rel)
-        if not include_hidden and any(part.startswith(".") for part in rel.parts):
-            continue
-        if not _glob_matches(pattern, rel_str):
-            continue
-        matched.append(entry)
-        if len(matched) >= collect_budget:
-            truncated = True
-            break
-    matched.sort(key=lambda e: e.mtime, reverse=True)
-    if len(matched) > head_limit:
-        matched = matched[:head_limit]
-        truncated = True
-    return matched, truncated
+
+    def _matches() -> Iterator[FileEntry]:
+        for entry in entries:
+            if entry.is_dir:
+                continue
+            try:
+                rel = entry.path.relative_to(root)
+            except ValueError:
+                continue
+            if not include_hidden and any(part.startswith(".") for part in rel.parts):
+                continue
+            if any(part in _ALWAYS_SKIP_DIRS for part in rel.parts[:-1]):
+                continue
+            if _glob_matches(pattern, str(rel)):
+                yield entry
+
+    return _newest_first(_matches(), head_limit)
+
+
+def _newest_first(
+    matches: Iterable[FileEntry], head_limit: int
+) -> tuple[list[FileEntry], bool]:
+    """The ``head_limit`` newest ``matches``, newest first, and whether more exist."""
+    total = 0
+
+    def counted() -> Iterator[FileEntry]:
+        nonlocal total
+        for entry in matches:
+            total += 1
+            yield entry
+
+    newest = heapq.nlargest(head_limit, counted(), key=lambda e: e.mtime)
+    return newest, total > head_limit

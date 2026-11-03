@@ -4,7 +4,8 @@ Prompt / context construction.
 Everything that shapes what the model sees: the :class:`PromptBuilder` and its
 section/attachment vocabulary (:class:`SystemPromptSection`,
 :class:`InputAttachment`), plus the built-in section providers
-(:func:`make_env_info_section`, :func:`make_untrusted_content_section`).
+(:func:`make_env_info_section`, :func:`make_mounts_section`,
+:func:`make_untrusted_content_section`).
 Future context-window management (compaction) lands here too.
 """
 
@@ -23,6 +24,7 @@ from .env_section import (
     make_current_time_attachment,
     make_env_info_section,
 )
+from .mounts_section import MOUNTS_SECTION_NAME, make_mounts_section
 from .prompt_builder import (
     InputAttachment,
     InputAttachmentCompute,
@@ -43,6 +45,7 @@ from .untrusted_content import (
 __all__ = [
     "CURRENT_TIME_ATTACHMENT_NAME",
     "ENV_INFO_SECTION_NAME",
+    "MOUNTS_SECTION_NAME",
     "SYSTEM_REMINDER_TAG",
     "UNTRUSTED_CONTENT_INSTRUCTION",
     "UNTRUSTED_CONTENT_SECTION_NAME",
@@ -61,6 +64,7 @@ __all__ = [
     "collapse_tool_outputs",
     "make_current_time_attachment",
     "make_env_info_section",
+    "make_mounts_section",
     "make_untrusted_content_section",
     "unwrap_untrusted",
     "wrap_in_system_reminder",

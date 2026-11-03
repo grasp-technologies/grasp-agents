@@ -34,6 +34,7 @@ from .default_path import (
 from .injection import (
     MEMORY_SECTION_NAME,
     RELEVANT_MEMORIES_ATTACHMENT_NAME,
+    check_memory_instructions,
     make_memory_section,
     memory_system_prompt_section,
     relevant_memories_attachment,
@@ -102,6 +103,7 @@ __all__ = [
     "MemorySelector",
     "MemorySnapshot",
     "MemoryType",
+    "check_memory_instructions",
     "default_memdir_path",
     "extract_latest_user_message",
     "extract_latest_user_text",

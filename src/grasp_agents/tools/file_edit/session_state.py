@@ -32,12 +32,15 @@ What is **deliberately absent** — and why:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from grasp_agents.file_backend.base import StaleFileError
+
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Generator, Iterable, Mapping
 
 # Cap on ``read_file_state`` to bound memory growth on long sessions.
 # Eviction policy: oldest-first (dict insertion order in Python 3.7+).
@@ -125,3 +128,21 @@ class FileEditSessionState:
             except StopIteration:  # pragma: no cover — dict was empty mid-evict
                 break
             self.read_file_state.pop(oldest, None)
+
+
+@contextmanager
+def refuse_if_stale(path: Path, *, action: str, note: str = "") -> Generator[None]:
+    """
+    Turn a backend's :class:`StaleFileError` into the file tools' error.
+
+    Wrap a ``write_bytes`` / ``delete`` call that passes ``expected_mtime``.
+    The message ends "Re-Read before {action}."; ``note`` goes just before
+    that sentence.
+    """
+    try:
+        yield
+    except StaleFileError as exc:
+        raise ValueError(
+            f"{path} was modified since you last read it ({exc}). "
+            f"{note}Re-Read before {action}."
+        ) from exc

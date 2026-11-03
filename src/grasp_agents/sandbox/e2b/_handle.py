@@ -9,12 +9,12 @@ translate paths, detect command timeouts, and read entry metadata.
 from __future__ import annotations
 
 import base64
-import posixpath
 import shlex
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from e2b import TimeoutException
+
+from grasp_agents.file_backend.paths import normalize_posix
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -70,18 +70,6 @@ def mtime(entry: EntryInfo) -> float:
 def is_dir(entry: EntryInfo) -> bool:
     """True if an e2b entry is a directory (``entry.type`` is a ``FileType``)."""
     return str(getattr(entry.type, "value", entry.type)) == "dir"
-
-
-def normalize_posix(path: Path | str) -> PurePosixPath:
-    """
-    Lexically normalize a sandbox path (collapse ``.`` / ``..`` segments).
-
-    Containment checks compare path prefixes; a literal ``..`` segment would
-    pass them and escape ``allowed_roots`` when the VM resolves it. Lexical
-    only — remote symlinks cannot be resolved from the host; the VM remains
-    the hard boundary.
-    """
-    return PurePosixPath(posixpath.normpath(str(PurePosixPath(path))))
 
 
 def wire(path: Path) -> str:
