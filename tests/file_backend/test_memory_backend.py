@@ -162,6 +162,53 @@ async def test_expected_mtime_guards_deletes() -> None:
     assert not await backend.exists(ROOT / "a.md")
 
 
+async def test_a_conditional_delete_of_a_vanished_file_is_stale() -> None:
+    backend = _backend(**{"a.md": "v1"})
+    _, mtime = await backend.read_text(ROOT / "a.md")
+    await backend.delete(ROOT / "a.md")
+
+    with pytest.raises(StaleFileError):
+        await backend.delete(ROOT / "a.md", expected_mtime=mtime)
+    with pytest.raises(FileNotFoundError):
+        await backend.delete(ROOT / "a.md")
+
+
+@pytest.mark.parametrize(
+    ("files", "message"),
+    [
+        ({"notes.md": "x"}, "absolute"),
+        ({"/elsewhere/x.md": "x"}, "outside"),
+        ({"/mem/../elsewhere/x.md": "x"}, "outside"),
+        ({"/mem": "x"}, "root"),
+        ({"/mem/a": "x", "/mem/a/b.md": "y"}, "inside the file"),
+    ],
+)
+async def test_seed_paths_are_validated(files: dict[str, str], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        InMemoryFileBackend([ROOT], files=files)
+
+
+async def test_seed_paths_are_normalized() -> None:
+    backend = InMemoryFileBackend([ROOT], files={"/mem/x/../a.md": "x"})
+
+    assert await backend.exists(ROOT / "a.md")
+    assert not await backend.exists(ROOT / "x")
+
+
+async def test_nothing_is_created_inside_a_file() -> None:
+    backend = _backend(a="x")
+
+    with pytest.raises(NotADirectoryError):
+        await backend.write_bytes(ROOT / "a/b.md", b"y", mode=0o644)
+    with pytest.raises(NotADirectoryError):
+        await backend.append_bytes(ROOT / "a/b.md", b"y", mode=0o644)
+    with pytest.raises(NotADirectoryError):
+        await backend.mkdir(ROOT / "a/sub")
+    assert [str(e.path) for e in await backend.list_dir(ROOT, recursive=True)] == [
+        "/mem/a"
+    ]
+
+
 async def test_directories_cannot_be_read_or_deleted() -> None:
     backend = _backend(**{"notes/a.md": "1"})
 

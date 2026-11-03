@@ -50,7 +50,8 @@ class InMemoryFileBackend(FileBackend):
     Args:
         allowed_roots: Absolute POSIX directories the backend accepts paths
             under. Each root exists as an empty directory from the start.
-        files: Optional seed content, path → text or bytes.
+        files: Optional seed content, absolute path → text or bytes. Each
+            path must lie under an allowed root and not inside another seed.
         grep_time_budget: Seconds one :meth:`grep` may search before it
             returns what it found so far with a note (see :func:`grep_texts`).
 
@@ -81,9 +82,13 @@ class InMemoryFileBackend(FileBackend):
         self._last_mtime = 0.0
         for raw_path, content in (files or {}).items():
             data = content.encode("utf-8") if isinstance(content, str) else content
-            self._files[normalize_posix(raw_path)] = _File(
+            self._files[self._seed_key(raw_path)] = _File(
                 data, self._next_mtime(), 0o644
             )
+        for key in self._files:
+            for parent in key.parents:
+                if parent in self._files:
+                    raise ValueError(f"Seed file {key} is inside the file {parent}.")
 
     # ---- address space ----------------------------------------------------
 
@@ -112,10 +117,7 @@ class InMemoryFileBackend(FileBackend):
         if not raw.is_absolute():
             raw = PurePosixPath(self._allowed_roots[0]) / raw
         candidate = normalize_posix(raw)
-        if not any(
-            candidate == PurePosixPath(r) or PurePosixPath(r) in candidate.parents
-            for r in self._allowed_roots
-        ):
+        if not self._within_roots(candidate):
             roots = ", ".join(str(r) for r in self._allowed_roots)
             raise PathAccessError(f"Path {path} is outside allowed roots [{roots}]")
         resolved = Path(candidate)
@@ -167,6 +169,7 @@ class InMemoryFileBackend(FileBackend):
         key = normalize_posix(path)
         if self._is_dir(key):
             raise IsADirectoryError(f"Is a directory: {path}")
+        self._refuse_inside_a_file(key)
         current = self._files.get(key)
         if current is not None and not overwrite:
             raise FileExistsError(f"File exists: {path}")
@@ -177,6 +180,9 @@ class InMemoryFileBackend(FileBackend):
 
     async def append_bytes(self, path: Path, data: bytes, *, mode: int) -> float:
         key = normalize_posix(path)
+        if self._is_dir(key):
+            raise IsADirectoryError(f"Is a directory: {path}")
+        self._refuse_inside_a_file(key)
         current = self._files.get(key)
         existing = current.data if current is not None else b""
         file_mode = current.mode if current is not None else mode & 0o7777
@@ -186,6 +192,12 @@ class InMemoryFileBackend(FileBackend):
 
     async def delete(self, path: Path, *, expected_mtime: float | None = None) -> None:
         key = normalize_posix(path)
+        if (
+            key not in self._files
+            and expected_mtime is not None
+            and not self._is_dir(key)
+        ):
+            raise StaleFileError(f"{path} no longer exists")
         current = self._require_file(key)
         self._check_expected(path, current, expected_mtime)
         del self._files[key]
@@ -194,6 +206,7 @@ class InMemoryFileBackend(FileBackend):
         key = normalize_posix(path)
         if key in self._files:
             raise FileExistsError(f"A file exists at {path}")
+        self._refuse_inside_a_file(key)
         self._dirs.add(key)
 
     # ---- listing and search -------------------------------------------------
@@ -303,6 +316,27 @@ class InMemoryFileBackend(FileBackend):
 
     def _roots(self) -> set[PurePosixPath]:
         return {PurePosixPath(r) for r in self._allowed_roots}
+
+    def _within_roots(self, key: PurePosixPath) -> bool:
+        return any(key == r or r in key.parents for r in self._roots())
+
+    def _seed_key(self, raw_path: str | Path) -> PurePosixPath:
+        if not PurePosixPath(raw_path).is_absolute():
+            raise ValueError(f"Seed path must be absolute: {raw_path}")
+        key = normalize_posix(raw_path)
+        if key in self._roots():
+            raise ValueError(f"Seed path {raw_path} is a root, which is a directory.")
+        if not self._within_roots(key):
+            roots = ", ".join(str(r) for r in self._allowed_roots)
+            raise ValueError(
+                f"Seed path {raw_path} is outside allowed roots [{roots}]."
+            )
+        return key
+
+    def _refuse_inside_a_file(self, key: PurePosixPath) -> None:
+        for parent in key.parents:
+            if parent in self._files:
+                raise NotADirectoryError(f"Not a directory: {parent}")
 
     def _all_dirs(self) -> set[PurePosixPath]:
         dirs = set(self._dirs)
