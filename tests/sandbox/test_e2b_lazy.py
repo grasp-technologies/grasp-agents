@@ -8,7 +8,9 @@ in the environment module the same way those tests do.
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -20,10 +22,17 @@ from grasp_agents.sandbox.e2b.environment import (
     FRESH_SNAPSHOT_REF,
     e2b_environment,
 )
-from tests.sandbox.test_e2b import _WS, _FakeFiles, _FakeSandbox
+from grasp_agents.sandbox.exec_backend import ExecResult
+from grasp_agents.sandbox.kernel import CellResult
+from grasp_agents.tools.bash_session import BashSessionHolder
+from grasp_agents.tools.notebook_exec import KernelHolder
+from tests.sandbox.test_e2b import _WS, _FakeCommands, _FakeFiles, _FakeSandbox
 
 if TYPE_CHECKING:
     from e2b import AsyncSandbox
+
+    from grasp_agents.sandbox.exec_backend import ExecSession
+    from grasp_agents.sandbox.kernel import KernelSession
 
 pytestmark = pytest.mark.asyncio
 
@@ -37,6 +46,7 @@ class _Creator:
         self.created: list[dict[str, Any]] = []
         self.made: list[_FakeSandbox] = []
         self.connected: list[_FakeSandbox] = []
+        self.reconnects: dict[str, _FakeSandbox] = {}
 
     async def create(self, **kwargs: Any) -> _FakeSandbox:
         self.created.append(kwargs)
@@ -50,7 +60,7 @@ class _Creator:
         return sandbox
 
     async def connect(self, sandbox_id: str) -> _FakeSandbox:
-        sandbox = _FakeSandbox(sandbox_id=sandbox_id)
+        sandbox = self.reconnects.get(sandbox_id) or _FakeSandbox(sandbox_id=sandbox_id)
         self.connected.append(sandbox)
         return sandbox
 
@@ -328,3 +338,184 @@ async def test_cancelling_one_first_call_leaves_the_others_their_sandbox(
         (started,) = slow_creator.made
         assert not started.killed
         assert f"{_WS}/b" in started.files.made_dirs
+
+
+# --- sessions and kernels across a sandbox swap ------------------------------
+
+
+class _ShellCommands(_FakeCommands):
+    """
+    Fake persistent shells, numbered per sandbox from pid 1: a stdin payload
+    echoes its end markers on both streams, as ``/bin/sh`` would. A pid only
+    reaches a shell started on the same sandbox.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._shells: dict[int, tuple[Any, Any]] = {}
+
+    async def run(self, cmd: str, **kwargs: Any) -> Any:
+        if not kwargs.get("stdin"):
+            return await super().run(cmd, **kwargs)
+        pid = len(self._shells) + 1
+        self._shells[pid] = (kwargs["on_stdout"], kwargs["on_stderr"])
+        return SimpleNamespace(pid=pid)
+
+    async def send_stdin(self, pid: int, data: str) -> Any:
+        await super().send_stdin(pid, data)
+        on_stdout, on_stderr = self._shells[pid]
+        found = re.search(r"__GRASP_[0-9a-f]+__", data)
+        assert found is not None
+        on_stdout(f"{found.group(0)} 0\n")
+        on_stderr(f"{found.group(0)}\n")
+
+
+class _CodeSandbox(_FakeSandbox):
+    """Code-interpreter double: a context exists only in the sandbox it was made in."""
+
+    def __init__(self, *, sandbox_id: str, contexts: tuple[str, ...] = ()) -> None:
+        super().__init__(sandbox_id=sandbox_id)
+        self.contexts = set(contexts)
+        self.ran: list[tuple[str, str]] = []
+
+    async def create_code_context(self, cwd: str | None = None) -> Any:
+        context = SimpleNamespace(id=f"{self.sandbox_id}-ctx{len(self.contexts)}")
+        self.contexts.add(context.id)
+        return context
+
+    async def run_code(self, code: str, *, context: Any, **kwargs: Any) -> Any:
+        if context.id not in self.contexts:
+            raise RuntimeError(f"no context {context.id} on {self.sandbox_id}")
+        self.ran.append((context.id, code))
+        logs = SimpleNamespace(stdout=[], stderr=[])
+        return SimpleNamespace(logs=logs, results=[], error=None, execution_count=1)
+
+
+async def _run(session: ExecSession, command: str, **kwargs: float) -> ExecResult:
+    result: ExecResult | None = None
+    async for item in session.run(command, **kwargs):
+        if isinstance(item, ExecResult):
+            result = item
+    assert result is not None
+    return result
+
+
+async def _execute(kernel: KernelSession, code: str) -> CellResult:
+    result: CellResult | None = None
+    async for item in kernel.execute(code):
+        if isinstance(item, CellResult):
+            result = item
+    assert result is not None
+    return result
+
+
+async def test_session_reopens_on_the_next_sandbox_after_a_fresh_restore(
+    creator: _Creator,
+) -> None:
+    first = _FakeSandbox(sandbox_id="first", commands=_ShellCommands())
+    second = _FakeSandbox(sandbox_id="second", commands=_ShellCommands())
+    creator._queue.extend([first, second])
+    holder = BashSessionHolder()
+
+    async with e2b_environment(allowed_roots=[_WS], lazy=True) as env:
+        session = await holder.get(env.exec_backend)
+        await _run(session, "cd /tmp")
+        await env.restore(FRESH_SNAPSHOT_REF)
+        assert session.closed
+
+        reopened = await holder.get(env.exec_backend)
+        assert holder.take_reset()  # BashSession tells the model its shell reset
+        assert (await _run(reopened, "pwd")).returncode == 0
+
+    assert len(first.commands.stdin_writes) == 1
+    assert len(second.commands.stdin_writes) == 1
+
+
+async def test_stale_session_never_touches_the_next_sandbox(
+    creator: _Creator,
+) -> None:
+    first = _FakeSandbox(sandbox_id="first", commands=_ShellCommands())
+    second = _FakeSandbox(sandbox_id="second", commands=_ShellCommands())
+    creator._queue.extend([first, second])
+
+    async with e2b_environment(allowed_roots=[_WS], lazy=True) as env:
+        stale = await env.exec_backend.open_session()
+        await _run(stale, "cd /tmp")
+        await env.restore(FRESH_SNAPSHOT_REF)
+        # Another loop's shell starts first on the next sandbox, so it gets
+        # the pid the stale shell had on the old one.
+        other = await env.exec_backend.open_session()
+        await _run(other, "true")
+
+        with pytest.raises(RuntimeError, match="closed"):
+            await _run(stale, "rm -rf build", timeout=0.1)
+        await stale.close()
+
+    assert [pid for pid, _ in second.commands.stdin_writes] == [1]
+    assert second.commands.killed == []
+
+
+async def test_kernel_reopens_on_the_next_sandbox_after_a_fresh_restore(
+    creator: _Creator,
+) -> None:
+    first, second = _CodeSandbox(sandbox_id="first"), _CodeSandbox(sandbox_id="second")
+    creator._queue.extend([first, second])
+    holder = KernelHolder()
+
+    async with e2b_environment(allowed_roots=[_WS], lazy=True) as env:
+        kernel = await holder.get(env.exec_backend)
+        await _execute(kernel, "x = 1")
+        await env.restore(FRESH_SNAPSHOT_REF)
+        assert kernel.closed
+
+        reopened = await holder.get(env.exec_backend)
+        assert (await _execute(reopened, "x = 2")).status == "ok"
+        assert holder.take_reset()  # RunCell tells the model its variables are gone
+
+    assert second.ran == [("second-ctx0", "x = 2")]
+
+
+async def test_kernel_reattaches_after_a_snapshot_rollback_without_a_reset(
+    creator: _Creator,
+) -> None:
+    pytest.importorskip("e2b_code_interpreter")
+    first = _CodeSandbox(sandbox_id="first")
+    # The snapshot keeps the kernel's memory, so its context lives on there.
+    restored = _CodeSandbox(sandbox_id="restored", contexts=("first-ctx0",))
+    creator._queue.extend([first, restored])
+    holder = KernelHolder()
+
+    async with e2b_environment(allowed_roots=[_WS], lazy=True) as env:
+        kernel = await holder.get(env.exec_backend)
+        await _execute(kernel, "x = 1")
+        await env.restore("snap-1")
+        holder.rebind(kernel.context_id)  # what rollback_to_step does
+
+        reattached = await holder.get(env.exec_backend)
+        assert (await _execute(reattached, "x")).status == "ok"
+        assert not holder.take_reset()
+
+    assert restored.ran == [("first-ctx0", "x")]
+
+
+async def test_kernel_survives_a_reconnect_to_the_same_sandbox(
+    creator: _Creator,
+) -> None:
+    first = _CodeSandbox(sandbox_id="first")
+    # resume() reconnects through a new client object for the same sandbox.
+    reconnected = _CodeSandbox(sandbox_id="first")
+    reconnected.contexts = first.contexts
+    creator._queue.append(first)
+    creator.reconnects["first"] = reconnected
+    holder = KernelHolder()
+
+    async with e2b_environment(allowed_roots=[_WS], lazy=True) as env:
+        kernel = await holder.get(env.exec_backend)
+        await _execute(kernel, "x = 1")
+        await env.pause()
+        await env.resume()
+
+        assert await holder.get(env.exec_backend) is kernel
+        assert (await _execute(kernel, "x")).status == "ok"
+
+    assert reconnected.ran == [("first-ctx0", "x")]

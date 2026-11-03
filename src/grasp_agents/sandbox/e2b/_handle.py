@@ -222,3 +222,14 @@ class SandboxHandle:
                 "context manager creates the sandbox) before any file/exec call."
             )
         return self.sandbox
+
+    def live(self, sandbox_id: str) -> AsyncSandbox | None:
+        """
+        The live sandbox while it is still the one with ``sandbox_id``, else
+        ``None``. A resume reconnects to the same sandbox through a new client,
+        so this compares ids, not client objects.
+        """
+        sandbox = self.sandbox
+        if sandbox is None or sandbox.sandbox_id != sandbox_id:
+            return None
+        return sandbox
