@@ -29,6 +29,7 @@ from .base import (
     GrepRawResult,
     StaleFileError,
 )
+from .glob_match import match_segments
 from .paths import (
     PathAccessError,
     check_access_path,
@@ -69,25 +70,7 @@ def _glob_matches(pattern: str, rel_path: str) -> bool:
     norm = rel_path.replace(os.sep, "/")
     if "**" not in pattern:
         return fnmatch.fnmatchcase(norm, pattern)
-    return _match_segments(pattern.split("/"), norm.split("/"))
-
-
-def _match_segments(pattern_parts: list[str], path_parts: list[str]) -> bool:
-    if not pattern_parts:
-        return not path_parts
-    head, *tail = pattern_parts
-    if head == "**":
-        if not tail:
-            return True
-        for i in range(len(path_parts) + 1):
-            if _match_segments(tail, path_parts[i:]):
-                return True
-        return False
-    if not path_parts:
-        return False
-    if fnmatch.fnmatchcase(path_parts[0], head):
-        return _match_segments(tail, path_parts[1:])
-    return False
+    return match_segments(pattern.split("/"), norm.split("/"))
 
 
 class LocalFileBackend(FileBackend):

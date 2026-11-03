@@ -24,7 +24,8 @@ binary and skipped. The regex is Python's ``re`` with ``re.MULTILINE``
 Globs follow ripgrep with one difference: a glob containing ``/`` matches
 the path relative to ``root`` (ripgrep matches it relative to the process
 working directory). A glob without ``/`` matches the file name at any
-depth, ``!`` negates, ``**`` spans directories and ``{a,b}`` alternates.
+depth, ``!`` negates, ``**`` spans directories and ``{a,b}`` alternates (up
+to :data:`~.glob_match.MAX_BRACE_EXPANSIONS` alternatives).
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ import re
 from typing import TYPE_CHECKING
 
 from .base import GrepOutputMode, GrepRawResult
+from .glob_match import expand_braces, match_segments
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -127,6 +129,7 @@ def grep_texts(
         before = before_context or 0
         after = after_context or 0
 
+    glob_filter = _GlobFilter(glob) if glob is not None else None
     selected: list[tuple[Path, str]] = []
     for path, text in files:
         rel = _relative_parts(path, root)
@@ -134,7 +137,7 @@ def grep_texts(
             continue
         if rel and not include_hidden and any(part.startswith(".") for part in rel):
             continue
-        if glob is not None and rel and not _glob_selects(glob, rel):
+        if glob_filter is not None and rel and not glob_filter.selects(rel):
             continue
         if type_globs is not None and not any(
             fnmatch.fnmatchcase(path.name, g) for g in type_globs
@@ -289,52 +292,40 @@ def _render_line(
     return f"{path}{sep}{text}"
 
 
-def _glob_selects(glob: str, rel: tuple[str, ...]) -> bool:
-    negated = glob.startswith("!")
-    patterns = _expand_braces(glob[1:] if negated else glob)
-    if negated:
-        return not any(_glob_hits(p, rel, match_dirs=True) for p in patterns)
-    return any(_glob_hits(p, rel, match_dirs=False) for p in patterns)
+class _GlobFilter:
+    """A ripgrep-style ``--glob``, parsed once per search."""
 
+    def __init__(self, glob: str) -> None:
+        self._negated = glob.startswith("!")
+        self._names: list[str] = []
+        self._paths: list[list[str]] = []
+        for pattern in expand_braces(glob[1:] if self._negated else glob):
+            if "/" in pattern.rstrip("/"):
+                self._paths.append(pattern.strip("/").split("/"))
+            else:
+                self._names.append(pattern.rstrip("/"))
 
-def _glob_hits(pattern: str, rel: tuple[str, ...], *, match_dirs: bool) -> bool:
-    if "/" not in pattern.rstrip("/"):
-        name_pattern = pattern.rstrip("/")
+    def selects(self, rel: tuple[str, ...]) -> bool:
+        if self._negated:
+            return not self._hits(rel, match_dirs=True)
+        return self._hits(rel, match_dirs=False)
+
+    def _hits(self, rel: tuple[str, ...], *, match_dirs: bool) -> bool:
         candidates = rel if match_dirs else rel[-1:]
-        return any(fnmatch.fnmatchcase(part, name_pattern) for part in candidates)
-    parts = pattern.strip("/").split("/")
-    if _match_parts(parts, list(rel)):
-        return True
-    if match_dirs:
-        return any(_match_parts(parts, list(rel[:k])) for k in range(1, len(rel)))
-    return False
-
-
-def _match_parts(pattern_parts: list[str], path_parts: list[str]) -> bool:
-    if not pattern_parts:
-        return not path_parts
-    head, *tail = pattern_parts
-    if head == "**":
-        return any(
-            _match_parts(tail, path_parts[i:]) for i in range(len(path_parts) + 1)
-        )
-    if not path_parts or not fnmatch.fnmatchcase(path_parts[0], head):
+        if any(
+            fnmatch.fnmatchcase(part, name)
+            for name in self._names
+            for part in candidates
+        ):
+            return True
+        for parts in self._paths:
+            if match_segments(parts, rel):
+                return True
+            if match_dirs and any(
+                match_segments(parts, rel[:k]) for k in range(1, len(rel))
+            ):
+                return True
         return False
-    return _match_parts(tail, path_parts[1:])
-
-
-_BRACE = re.compile(r"\{([^{}]*)\}")
-
-
-def _expand_braces(pattern: str) -> list[str]:
-    m = _BRACE.search(pattern)
-    if m is None:
-        return [pattern]
-    head, tail = pattern[: m.start()], pattern[m.end() :]
-    out: list[str] = []
-    for option in m.group(1).split(","):
-        out.extend(_expand_braces(head + option + tail))
-    return out
 
 
 __all__ = ["FILE_TYPE_GLOBS", "grep_texts"]
