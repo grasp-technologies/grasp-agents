@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.selector import Selector
 
+from .injection import check_memory_instructions
 from .types import DEFAULT_STALE_AFTER, MEMORY_TYPES
 
 if TYPE_CHECKING:
@@ -103,12 +104,19 @@ class MemoryProvider:
         memory_types: The type taxonomy the instructions offer the agent.
             Defaults to :data:`MEMORY_TYPES` (user, feedback, project,
             reference). Frontmatter keeps any type the agent writes; entries
-            with a type outside the defaults show it verbatim.
+            with a type outside the defaults show it verbatim. The built-in
+            instructions describe the four default types one by one, so
+            other types need an ``instructions_template``.
         instructions_template: Replaces the built-in memory instructions
             (``memory_instructions.md``). It is formatted with the same
             fields: ``{memdir}``, ``{index_file}``, ``{index_path}``,
             ``{memory_types}``, ``{max_lines}``, ``{max_bytes}`` and
             ``{selector_instructions}``; literal braces must be doubled.
+
+    Raises:
+        ValueError: ``memory_types`` is empty or differs from the defaults
+            without an ``instructions_template``, or the template does not
+            render.
         auto_create_index: When True (default) and ``MEMORY.md`` is absent,
             bootstrap an empty index (creating the memdir if needed) on first
             load so the agent has a file to append topic pointers to. Best-
@@ -137,6 +145,7 @@ class MemoryProvider:
         self._memory_types: tuple[str, ...] = (
             tuple(memory_types) if memory_types is not None else MEMORY_TYPES
         )
+        check_memory_instructions(self._memory_types, instructions_template)
         self._instructions_template = instructions_template
         self._root: Path = (
             Path(root).expanduser() if root is not None else default_memdir_path()

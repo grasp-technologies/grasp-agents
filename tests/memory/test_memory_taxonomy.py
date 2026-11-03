@@ -51,12 +51,40 @@ async def test_default_taxonomy_is_unchanged() -> None:
     assert "one of: user, feedback, project, reference" in text
 
 
-async def test_custom_types_reach_the_instructions() -> None:
-    provider = MemoryProvider(root=MEMDIR, memory_types=CUSTOM_TYPES)
+async def test_custom_types_need_their_own_template() -> None:
+    with pytest.raises(ValueError, match="instructions_template"):
+        MemoryProvider(root=MEMDIR, memory_types=CUSTOM_TYPES)
+
+
+async def test_the_default_types_in_another_order_keep_the_built_in_text() -> None:
+    provider = MemoryProvider(root=MEMDIR, memory_types=tuple(reversed(MEMORY_TYPES)))
 
     text = await _section_text(provider)
 
-    assert "one of: person, goal, preference, habit" in text
+    assert "one of: reference, project, feedback, user" in text
+    assert "## Types of memory" in text
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "Types: {memory_types} {name}",
+        "Types: {}",
+        "Types: {0}",
+        "Types: {memory_types",
+        "Lines: {max_lines:q}",
+    ],
+)
+async def test_a_template_that_cannot_render_is_refused_up_front(template: str) -> None:
+    with pytest.raises(ValueError, match="instructions_template"):
+        MemoryProvider(
+            root=MEMDIR, memory_types=CUSTOM_TYPES, instructions_template=template
+        )
+
+
+async def test_memory_types_must_not_be_empty() -> None:
+    with pytest.raises(ValueError, match="memory_types"):
+        MemoryProvider(root=MEMDIR, memory_types=(), instructions_template="x")
 
 
 async def test_custom_template_replaces_the_instructions() -> None:

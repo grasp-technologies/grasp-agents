@@ -27,6 +27,16 @@ MEMORY_INSTRUCTIONS = (
     .read_text(encoding="utf-8")
 )
 
+_TEMPLATE_FIELDS = (
+    "{memdir}",
+    "{index_file}",
+    "{index_path}",
+    "{memory_types}",
+    "{max_lines}",
+    "{max_bytes}",
+    "{selector_instructions}",
+)
+
 MEMORY_SELECTOR_INSTRUCTIONS = """\
 
 ## Relevant memories per turn
@@ -73,6 +83,41 @@ def render_memory_instructions(
         max_lines=MAX_INDEX_LINES,
         max_bytes=MAX_INDEX_BYTES,
     )
+
+
+def check_memory_instructions(
+    memory_types: Sequence[str], template: str | None
+) -> None:
+    """
+    Raise :class:`ValueError` if these instructions would mislead or fail.
+
+    The built-in instructions describe the four :data:`MEMORY_TYPES` one by
+    one, so a different taxonomy needs a template of its own. A template
+    must render with the fields :func:`render_memory_instructions` supplies.
+    """
+    if not memory_types:
+        raise ValueError("memory_types must name at least one type.")
+    if template is None:
+        if set(memory_types) != set(MEMORY_TYPES):
+            raise ValueError(
+                f"memory_types {list(memory_types)} differ from the built-in "
+                f"{list(MEMORY_TYPES)}, which the built-in instructions describe "
+                "one by one. Pass an instructions_template that describes yours."
+            )
+        return
+    try:
+        render_memory_instructions(
+            has_selector=True,
+            memdir="/memdir",
+            memory_types=memory_types,
+            template=template,
+        )
+    except (AttributeError, IndexError, KeyError, ValueError) as exc:
+        raise ValueError(
+            f"instructions_template does not render ({type(exc).__name__}: {exc}). "
+            "It may use the fields " + ", ".join(_TEMPLATE_FIELDS) + "; write a "
+            "literal brace as {{ or }}."
+        ) from exc
 
 
 def render_memory_index(
