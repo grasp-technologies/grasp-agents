@@ -202,17 +202,20 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
             raise
 
     async def __aexit__(self, *exc: object) -> None:
+        # Disarm before waiting for the lock: a start in flight then kills its
+        # sandbox when it finishes, and no new start begins.
         self._holder.disarm()
-        sandbox = self._holder.sandbox
-        if sandbox is None or not self._owns_sandbox:
-            return
-        try:
-            if self._pause_on_exit:
-                await sandbox.pause()
-            else:
-                await sandbox.kill()
-        finally:
-            self._holder.sandbox = None
+        async with self._holder.lock:
+            sandbox = self._holder.sandbox
+            if sandbox is None or not self._owns_sandbox:
+                return
+            try:
+                if self._pause_on_exit:
+                    await sandbox.pause()
+                else:
+                    await sandbox.kill()
+            finally:
+                self._holder.sandbox = None
 
     async def snapshot(self) -> str:
         """
@@ -242,20 +245,24 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         environment drops its sandbox and starts a new one on next use; an
         eager one starts a new one from the base template now.
         """
-        previous = self._holder.sandbox
-        if ref == FRESH_SNAPSHOT_REF:
-            if self._holder.armed:
-                self._holder.sandbox = None
+        async with self._holder.lock:
+            previous = self._holder.sandbox
+            if ref == FRESH_SNAPSHOT_REF:
+                if self._holder.armed:
+                    self._holder.sandbox = None
+                else:
+                    self._holder.sandbox = await self._start()
             else:
-                self._holder.sandbox = await self._start()
-        else:
-            # Create from the snapshot, not a base template.
-            params: E2BCreateParams = {**(self._create_params or {}), "template": ref}
-            sandbox_cls = _sandbox_cls(self._code_interpreter)
-            self._holder.sandbox = await sandbox_cls.create(**params)
-        if previous is not None and self._owns_sandbox:
-            with contextlib.suppress(Exception):
-                await previous.kill()
+                # Create from the snapshot, not a base template.
+                params: E2BCreateParams = {
+                    **(self._create_params or {}),
+                    "template": ref,
+                }
+                sandbox_cls = _sandbox_cls(self._code_interpreter)
+                self._holder.sandbox = await sandbox_cls.create(**params)
+            if previous is not None and self._owns_sandbox:
+                with contextlib.suppress(Exception):
+                    await previous.kill()
 
     async def pause(self) -> str:
         """
@@ -265,26 +272,28 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         :meth:`snapshot`: pause is suspend/resume (no rewind), whereas a snapshot
         is a persistent point-in-time copy you spawn fresh sandboxes from.
         """
-        if self._holder.sandbox is None and self._holder.armed:
-            raise RuntimeError("Nothing to pause: the sandbox was never started.")
-        sandbox = self._holder.require()
-        await sandbox.pause()
-        return str(sandbox.sandbox_id)
+        async with self._holder.lock:
+            if self._holder.sandbox is None and self._holder.armed:
+                raise RuntimeError("Nothing to pause: the sandbox was never started.")
+            sandbox = self._holder.require()
+            await sandbox.pause()
+            return str(sandbox.sandbox_id)
 
     async def resume(self, sandbox_id: str | None = None) -> None:
         """
         Reconnect to (and auto-resume) a paused sandbox, swapping the live
         handle. Defaults to the currently-bound sandbox's id.
         """
-        target = sandbox_id
-        if target is None:
-            current = self._holder.sandbox
-            if current is None:
-                raise RuntimeError(
-                    "resume() needs a sandbox_id when no sandbox is bound."
-                )
-            target = str(current.sandbox_id)
-        self._holder.sandbox = await AsyncSandbox.connect(target)
+        async with self._holder.lock:
+            target = sandbox_id
+            if target is None:
+                current = self._holder.sandbox
+                if current is None:
+                    raise RuntimeError(
+                        "resume() needs a sandbox_id when no sandbox is bound."
+                    )
+                target = str(current.sandbox_id)
+            self._holder.sandbox = await AsyncSandbox.connect(target)
 
 
 def e2b_environment(
