@@ -40,8 +40,8 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.asyncio
 
-MEMORY = Path("/learner/memory")
-NOTES = Path("/learner/notes")
+MEMORY = Path("/user/memory")
+NOTES = Path("/user/notes")
 SCRATCH = Path("/scratch")
 
 
@@ -63,7 +63,7 @@ def _composite(*, notes_read_only: bool = False) -> CompositeFileBackend:
                 NOTES,
                 _mem(NOTES, **{"inbox/a.md": "TODO read the paper\n"}),
                 read_only=notes_read_only,
-                description="learner notes",
+                description="user notes",
             ),
             Mount(SCRATCH, _mem(SCRATCH)),
         ],
@@ -121,10 +121,10 @@ async def test_validate_path_routes_and_normalizes() -> None:
     backend = _composite()
 
     assert backend.mount_for(MEMORY / "a.md") is backend.mounts[0]
-    assert backend.mount_for(Path("/learner")) is None
+    assert backend.mount_for(Path("/user")) is None
     assert (
         await backend.validate_path(
-            Path("/learner/memory/../notes/x.md"), must_exist=False
+            Path("/user/memory/../notes/x.md"), must_exist=False
         )
         == NOTES / "x.md"
     )
@@ -137,10 +137,10 @@ async def test_validate_path_routes_and_normalizes() -> None:
 async def test_paths_outside_mounts_are_refused() -> None:
     backend = _composite()
 
-    with pytest.raises(PathAccessError, match="/learner/memory"):
+    with pytest.raises(PathAccessError, match="/user/memory"):
         await backend.validate_path(Path("/etc/passwd"), must_exist=False)
     with pytest.raises(PathAccessError):
-        await backend.validate_path(Path("/learner/../etc/passwd"), must_exist=False)
+        await backend.validate_path(Path("/user/../etc/passwd"), must_exist=False)
 
 
 async def test_read_only_mounts_refuse_writes() -> None:
@@ -156,15 +156,13 @@ async def test_read_only_mounts_refuse_writes() -> None:
 async def test_virtual_dirs_are_readable_not_writable() -> None:
     backend = _composite()
 
-    assert await backend.validate_path(Path("/learner"), must_exist=True) == Path(
-        "/learner"
-    )
+    assert await backend.validate_path(Path("/user"), must_exist=True) == Path("/user")
     assert await backend.validate_path(Path("/"), must_exist=True) == Path("/")
     with pytest.raises(PathAccessError, match="not inside a mount"):
-        await backend.validate_path(Path("/learner"), must_exist=True, access="write")
+        await backend.validate_path(Path("/user"), must_exist=True, access="write")
     with pytest.raises(PathAccessError, match="outside every mount"):
         await backend.validate_path(
-            Path("/learner/x.md"), must_exist=False, access="write"
+            Path("/user/x.md"), must_exist=False, access="write"
         )
 
 
@@ -205,26 +203,26 @@ async def test_expected_mtime_reaches_the_child() -> None:
 async def test_virtual_dirs_exist_and_list_their_mounts() -> None:
     backend = _composite()
 
-    assert await backend.exists(Path("/learner"))
-    assert stat_module.S_ISDIR((await backend.stat(Path("/learner"))).mode)
+    assert await backend.exists(Path("/user"))
+    assert stat_module.S_ISDIR((await backend.stat(Path("/user"))).mode)
     assert await backend.parent_exists(MEMORY)
     with pytest.raises(IsADirectoryError):
-        await backend.read_text(Path("/learner"))
+        await backend.read_text(Path("/user"))
 
     root_names = sorted((e.name, e.is_dir) for e in await backend.list_dir(Path("/")))
-    learner_names = sorted(e.name for e in await backend.list_dir(Path("/learner")))
+    user_names = sorted(e.name for e in await backend.list_dir(Path("/user")))
     recursive = {
-        str(e.path) for e in await backend.list_dir(Path("/learner"), recursive=True)
+        str(e.path) for e in await backend.list_dir(Path("/user"), recursive=True)
     }
 
-    assert root_names == [("learner", True), ("scratch", True)]
-    assert learner_names == ["memory", "notes"]
+    assert root_names == [("scratch", True), ("user", True)]
+    assert user_names == ["memory", "notes"]
     assert {
-        "/learner/memory",
-        "/learner/memory/MEMORY.md",
-        "/learner/notes",
-        "/learner/notes/inbox",
-        "/learner/notes/inbox/a.md",
+        "/user/memory",
+        "/user/memory/MEMORY.md",
+        "/user/notes",
+        "/user/notes/inbox",
+        "/user/notes/inbox/a.md",
     } <= recursive
 
 
@@ -232,13 +230,13 @@ async def test_find_files_spans_mounts_newest_first() -> None:
     backend = _composite()
     await backend.write_bytes(MEMORY / "late.md", b"x", mode=0o644)
 
-    matched, truncated = await backend.find_files(Path("/learner"), "**/*.md")
+    matched, truncated = await backend.find_files(Path("/user"), "**/*.md")
 
-    assert str(matched[0].path) == "/learner/memory/late.md"
+    assert str(matched[0].path) == "/user/memory/late.md"
     assert {str(e.path) for e in matched} == {
-        "/learner/memory/MEMORY.md",
-        "/learner/memory/late.md",
-        "/learner/notes/inbox/a.md",
+        "/user/memory/MEMORY.md",
+        "/user/memory/late.md",
+        "/user/notes/inbox/a.md",
     }
     assert not truncated
 
@@ -248,7 +246,7 @@ async def test_find_files_inside_one_mount_delegates() -> None:
 
     matched, _ = await backend.find_files(NOTES, "inbox/*.md")
 
-    assert [str(e.path) for e in matched] == ["/learner/notes/inbox/a.md"]
+    assert [str(e.path) for e in matched] == ["/user/notes/inbox/a.md"]
 
 
 class _NoGrep(InMemoryFileBackend):
@@ -260,11 +258,11 @@ async def test_grep_spans_mounts() -> None:
     backend = _composite()
     await backend.write_bytes(MEMORY / "todo.md", b"TODO memory\n", mode=0o644)
 
-    result = await backend.grep(Path("/learner"), "TODO", output_mode="content")
+    result = await backend.grep(Path("/user"), "TODO", output_mode="content")
 
     assert result.lines == [
-        "/learner/memory/todo.md:1:TODO memory",
-        "/learner/notes/inbox/a.md:1:TODO read the paper",
+        "/user/memory/todo.md:1:TODO memory",
+        "/user/notes/inbox/a.md:1:TODO read the paper",
     ]
     assert result.num_matches == 2
     assert result.num_files_matched == 2
@@ -280,11 +278,11 @@ async def test_grep_reports_mounts_it_could_not_search(mode: GrepOutputMode) -> 
         ]
     )
 
-    result = await backend.grep(Path("/learner"), "TODO", output_mode=mode)
+    result = await backend.grep(Path("/user"), "TODO", output_mode=mode)
 
     assert result.num_files_matched == 1
     assert len(result.notes) == 1
-    assert "/learner/memory" in result.notes[0]
+    assert "/user/memory" in result.notes[0]
 
 
 async def test_grep_raises_when_no_mount_could_search() -> None:
@@ -293,7 +291,7 @@ async def test_grep_raises_when_no_mount_could_search() -> None:
     )
 
     with pytest.raises(NotImplementedError):
-        await backend.grep(Path("/learner"), "TODO")
+        await backend.grep(Path("/user"), "TODO")
 
 
 async def test_add_allowed_root_only_accepts_mounted_paths() -> None:
@@ -394,7 +392,7 @@ async def test_file_tools_work_across_mounts() -> None:
         agent_ctx=agent_ctx,
     )
     glob = await tk.glob.run(
-        GlobInput(pattern="**/*.md", path="/learner"), ctx=ctx, agent_ctx=agent_ctx
+        GlobInput(pattern="**/*.md", path="/user"), ctx=ctx, agent_ctx=agent_ctx
     )
     grep = await tk.grep.run(
         GrepInput(pattern="TODO", path="/"), ctx=ctx, agent_ctx=agent_ctx
@@ -405,9 +403,9 @@ async def test_file_tools_work_across_mounts() -> None:
     assert isinstance(refused, ToolErrorInfo)
     assert "read-only" in refused.error
     assert isinstance(glob, GlobResult)
-    assert set(glob.files) == {"/learner/memory/MEMORY.md", "/learner/notes/inbox/a.md"}
+    assert set(glob.files) == {"/user/memory/MEMORY.md", "/user/notes/inbox/a.md"}
     assert isinstance(grep, GrepResult)
-    assert grep.output == "/learner/notes/inbox/a.md"
+    assert grep.output == "/user/notes/inbox/a.md"
 
 
 async def test_grep_tool_renders_notes() -> None:
@@ -420,10 +418,10 @@ async def test_grep_tool_renders_notes() -> None:
     ctx: SessionContext[Any] = SessionContext(file_backend=backend, session_key="s")
 
     result = await FileToolkit().grep.run(
-        GrepInput(pattern="TODO", path="/learner"), ctx=ctx
+        GrepInput(pattern="TODO", path="/user"), ctx=ctx
     )
 
     assert isinstance(result, GrepResult)
-    assert result.output.splitlines()[0] == "/learner/notes/b.md"
+    assert result.output.splitlines()[0] == "/user/notes/b.md"
     assert "Note:" in result.output
-    assert "/learner/memory" in result.output
+    assert "/user/memory" in result.output

@@ -25,7 +25,7 @@ from tests._helpers import _make_agent_ctx
 
 pytestmark = pytest.mark.asyncio
 
-NOTES = Path("/learner/notes")
+NOTES = Path("/user/notes")
 WORK = Path("/work")
 LIBRARY = Path("/library")
 

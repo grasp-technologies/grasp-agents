@@ -26,8 +26,8 @@ from grasp_agents.session_context import SessionContext
 
 pytestmark = pytest.mark.asyncio
 
-MEMDIR = Path("/learner/memory")
-LEARNER_TYPES = ("learner", "goal", "preference", "struggle", "feedback")
+MEMDIR = Path("/user/memory")
+CUSTOM_TYPES = ("person", "goal", "preference", "habit")
 
 
 async def _section_text(provider: MemoryProvider) -> str:
@@ -52,29 +52,27 @@ async def test_default_taxonomy_is_unchanged() -> None:
 
 
 async def test_custom_types_reach_the_instructions() -> None:
-    provider = MemoryProvider(root=MEMDIR, memory_types=LEARNER_TYPES)
+    provider = MemoryProvider(root=MEMDIR, memory_types=CUSTOM_TYPES)
 
     text = await _section_text(provider)
 
-    assert "one of: learner, goal, preference, struggle, feedback" in text
+    assert "one of: person, goal, preference, habit" in text
 
 
 async def test_custom_template_replaces_the_instructions() -> None:
     template = (
-        "# Learner memory at{memdir}\n"
+        "# Memory at{memdir}\n"
         "Types: {memory_types}. Index: {index_path} ({index_file}), "
         "{max_lines} lines / {max_bytes} bytes.{selector_instructions}"
     )
     provider = MemoryProvider(
-        root=MEMDIR, memory_types=LEARNER_TYPES, instructions_template=template
+        root=MEMDIR, memory_types=CUSTOM_TYPES, instructions_template=template
     )
 
     text = await _section_text(provider)
 
-    assert text.startswith(
-        "# Learner memory at `/learner/memory`\nTypes: learner, goal"
-    )
-    assert "Index: /learner/memory/MEMORY.md (MEMORY.md)" in text
+    assert text.startswith("# Memory at `/user/memory`\nTypes: person, goal")
+    assert "Index: /user/memory/MEMORY.md (MEMORY.md)" in text
     assert "## Types of memory" not in text
 
 

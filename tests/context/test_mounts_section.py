@@ -18,8 +18,8 @@ from tests._helpers import MockLLM, _make_agent_ctx
 
 pytestmark = pytest.mark.asyncio
 
-MEMORY = Path("/learner/memory")
-NOTES = Path("/learner/notes")
+MEMORY = Path("/user/memory")
+NOTES = Path("/user/notes")
 SCRATCH = Path("/scratch")
 
 
@@ -28,13 +28,13 @@ def _mounts() -> list[Mount]:
         Mount(
             MEMORY,
             InMemoryFileBackend([MEMORY]),
-            description="what you know about the learner",
+            description="what you know about the user",
         ),
         Mount(
             NOTES,
             InMemoryFileBackend([NOTES]),
             read_only=True,
-            description="the learner's notes",
+            description="the user's notes",
         ),
         Mount(SCRATCH, InMemoryFileBackend([SCRATCH])),
     ]
@@ -56,8 +56,8 @@ async def test_lists_each_mount_with_its_access() -> None:
 
     assert text is not None
     assert text.startswith("<mounts>")
-    assert "- `/learner/memory`: what you know about the learner (read-write)" in text
-    assert "- `/learner/notes`: the learner's notes (read-only)" in text
+    assert "- `/user/memory`: what you know about the user (read-write)" in text
+    assert "- `/user/notes`: the user's notes (read-only)" in text
     assert "- `/scratch` (read-write)" in text
     assert "Bash" not in text
     assert "Copy" not in text

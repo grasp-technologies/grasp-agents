@@ -5,8 +5,8 @@ Each :class:`Mount` attaches a child :class:`FileBackend` at an absolute
 path. The composite routes every call to the mount whose path contains the
 target, so the file tools see a single tree, e.g.::
 
-    /learner/memory   -> a database-backed backend
-    /learner/notes    -> the same, read-only for this agent
+    /user/memory      -> a database-backed backend
+    /user/notes       -> the same, read-only for this agent
     /scratch          -> InMemoryFileBackend (spills, task logs)
     /home/user/work   -> the E2B sandbox's own file backend
 
@@ -18,14 +18,14 @@ Rules:
   this keeps the file tools and ``Bash`` agreeing on every path. Mount local
   directories at their resolved (symlink-free) paths.
 * Mounts never nest. Strict ancestors of mount paths (``/`` and
-  ``/learner`` above) are virtual directories: they can be listed, globbed
+  ``/user`` above) are virtual directories: they can be listed, globbed
   and grepped, which fans out to the mounts below, but never written.
 * A read-only mount refuses writes, both in :meth:`validate_path` with
   ``access="write"`` and in the mutating calls themselves.
 * ``allowed_roots`` lists the ``scratch`` mount first. Framework writes
   that use ``allowed_roots[0]`` (spilled tool output, background task logs)
   and path-less ``Glob`` / ``Grep`` calls therefore land on scratch rather
-  than in, say, a learner's memory.
+  than in, say, a user's memory.
 """
 
 from __future__ import annotations
