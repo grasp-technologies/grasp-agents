@@ -76,10 +76,11 @@ class CompositeFileBackend(FileBackend):
         scratch: The mount path that receives framework writes (spilled tool
             output, task logs) and serves as the default search root. It
             must be one of the mount paths and writable. Defaults to the
-            first mount.
+            first writable mount.
 
     Raises:
-        ValueError: A mount or the scratch path breaks the rules above.
+        ValueError: A mount or the scratch path breaks the rules above, or
+            no mount is writable.
 
     """
 
@@ -116,7 +117,13 @@ class CompositeFileBackend(FileBackend):
 
         self._mounts: tuple[Mount, ...] = tuple(mounts)
         if scratch is None:
-            self._scratch = self._mounts[0]
+            writable = next((m for m in self._mounts if not m.read_only), None)
+            if writable is None:
+                raise ValueError(
+                    "CompositeFileBackend needs a writable mount for scratch "
+                    "(spilled tool output, task logs); every mount is read-only."
+                )
+            self._scratch = writable
         else:
             match = self._mount_at(normalize_posix(scratch))
             if match is None:

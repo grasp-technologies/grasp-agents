@@ -107,6 +107,18 @@ async def test_scratch_must_be_a_writable_mount() -> None:
         )
 
 
+async def test_scratch_defaults_to_the_first_writable_mount() -> None:
+    docs = Path("/docs")
+    backend = CompositeFileBackend(
+        [Mount(docs, _mem(docs), read_only=True), Mount(SCRATCH, _mem(SCRATCH))]
+    )
+
+    assert backend.scratch.path == SCRATCH
+    assert backend.allowed_roots == [SCRATCH, docs]
+    with pytest.raises(ValueError, match="writable"):
+        CompositeFileBackend([Mount(docs, _mem(docs), read_only=True)])
+
+
 async def test_scratch_comes_first_in_allowed_roots() -> None:
     backend = _composite()
 
