@@ -68,9 +68,12 @@ First-class integrations.
 
 - `@function_tool` — turn an async function into a typed tool (schema inferred
   from the signature and docstring); or subclass `BaseTool` directly.
-- File tools (`Read` / `ReadImage` / `Write` / `Edit` / `Delete` / `Glob` / `Grep`) over a
-  pluggable backend (local filesystem or MCP), with fuzzy-match edits and
-  read-before-write mtime guards.
+- File tools (`Read` / `ReadImage` / `Write` / `Edit` / `Delete` / `Glob` / `Grep`, opt-in
+  `Copy`) over a pluggable backend (local filesystem, MCP, E2B, in-memory), with
+  fuzzy-match edits and read-before-write mtime guards that the backend enforces
+  on write. A `CompositeFileBackend` mounts several backends as one tree (say,
+  database-backed memory beside a sandbox workspace), and `Copy` moves files
+  between mounts without passing them through the model.
 - Terminal (`Bash`, persistent `BashSession`), REPL code execution (`RunPython`),
   and notebook tools (`RunCell` / `NotebookRead` / `NotebookEdit`).
 - MCP: tools, resources, and prompts.
