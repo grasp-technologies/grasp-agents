@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -22,6 +22,9 @@ from grasp_agents.sandbox.e2b.environment import (
 )
 from tests.sandbox.test_e2b import _WS, _FakeFiles, _FakeSandbox
 
+if TYPE_CHECKING:
+    from e2b import AsyncSandbox
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -32,16 +35,56 @@ class _Creator:
         self.__name__ = "FakeAsyncSandbox"
         self._queue = list(sandboxes)
         self.created: list[dict[str, Any]] = []
+        self.made: list[_FakeSandbox] = []
+        self.connected: list[_FakeSandbox] = []
 
     async def create(self, **kwargs: Any) -> _FakeSandbox:
         self.created.append(kwargs)
+        sandbox = (
+            self._queue.pop(0)
+            if self._queue
+            else _FakeSandbox(sandbox_id=f"sbx_{len(self.created)}")
+        )
+        self.made.append(sandbox)
         await asyncio.sleep(0)
-        return self._queue.pop(0) if self._queue else _FakeSandbox()
+        return sandbox
+
+    async def connect(self, sandbox_id: str) -> _FakeSandbox:
+        sandbox = _FakeSandbox(sandbox_id=sandbox_id)
+        self.connected.append(sandbox)
+        return sandbox
+
+
+class _SlowCreator(_Creator):
+    """
+    Holds each create without a template (a lazy start) until ``gate`` opens.
+    The sandbox exists from the moment the create is sent, as on E2B, so a
+    caller cancelled mid-create leaves it running unless something kills it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gate = asyncio.Event()
+        self.creating = asyncio.Event()
+
+    async def create(self, **kwargs: Any) -> _FakeSandbox:
+        sandbox = await super().create(**kwargs)
+        if kwargs.get("template") is None:
+            self.creating.set()
+            await self.gate.wait()
+        return sandbox
 
 
 @pytest.fixture
 def creator(monkeypatch: pytest.MonkeyPatch) -> _Creator:
     fake = _Creator()
+    monkeypatch.setattr(e2b_env, "AsyncSandbox", fake)
+    return fake
+
+
+@pytest.fixture
+def slow_creator(monkeypatch: pytest.MonkeyPatch) -> _SlowCreator:
+    fake = _SlowCreator()
     monkeypatch.setattr(e2b_env, "AsyncSandbox", fake)
     return fake
 
@@ -167,3 +210,121 @@ async def test_failed_setup_kills_the_sandbox_and_retries_later(
         assert env.started
 
     assert len(creator.created) == 2
+
+
+# --- lifecycle changes while a start is in flight ---------------------------
+
+
+async def test_exit_waits_for_a_start_and_kills_its_sandbox(
+    slow_creator: _SlowCreator,
+) -> None:
+    env = e2b_environment(allowed_roots=[_WS], lazy=True)
+    async with env:
+        first_use = asyncio.create_task(env.file_backend.mkdir(Path(f"{_WS}/a")))
+        await slow_creator.creating.wait()
+        # Finish the create only once the exit is under way.
+        asyncio.get_running_loop().call_soon(slow_creator.gate.set)
+
+    with pytest.raises(RuntimeError, match="while it was starting"):
+        await first_use
+    (started,) = slow_creator.made
+    assert started.killed
+    assert not env.started
+
+
+async def test_restore_waits_for_a_start_in_flight(
+    slow_creator: _SlowCreator,
+) -> None:
+    async with e2b_environment(allowed_roots=[_WS], lazy=True) as env:
+        first_use = asyncio.create_task(env.file_backend.mkdir(Path(f"{_WS}/a")))
+        await slow_creator.creating.wait()
+        restoring = asyncio.create_task(env.restore("snap-1"))
+        await asyncio.sleep(0)
+        slow_creator.gate.set()
+        await asyncio.gather(first_use, restoring)
+        await env.file_backend.mkdir(Path(f"{_WS}/b"))
+
+    started, restored = slow_creator.made
+    assert started.killed
+    assert f"{_WS}/b" in restored.files.made_dirs
+
+
+async def test_pause_waits_for_a_start_in_flight(
+    slow_creator: _SlowCreator,
+) -> None:
+    async with e2b_environment(allowed_roots=[_WS], lazy=True) as env:
+        first_use = asyncio.create_task(env.file_backend.mkdir(Path(f"{_WS}/a")))
+        await slow_creator.creating.wait()
+        pausing = asyncio.create_task(env.pause())
+        await asyncio.sleep(0)
+        slow_creator.gate.set()
+        await first_use
+        (started,) = slow_creator.made
+        assert await pausing == started.sandbox_id
+        assert started.paused
+
+
+async def test_resume_waits_for_a_start_in_flight(
+    slow_creator: _SlowCreator,
+) -> None:
+    async with e2b_environment(allowed_roots=[_WS], lazy=True) as env:
+        first_use = asyncio.create_task(env.file_backend.mkdir(Path(f"{_WS}/a")))
+        await slow_creator.creating.wait()
+        resuming = asyncio.create_task(env.resume("sbx_paused"))
+        await asyncio.sleep(0)
+        slow_creator.gate.set()
+        await asyncio.gather(first_use, resuming)
+        await env.file_backend.mkdir(Path(f"{_WS}/b"))
+
+    (resumed,) = slow_creator.connected
+    assert f"{_WS}/b" in resumed.files.made_dirs
+
+
+async def test_start_finding_the_handle_filled_kills_its_sandbox(
+    slow_creator: _SlowCreator,
+) -> None:
+    async with e2b_environment(allowed_roots=[_WS], lazy=True) as env:
+        first_use = asyncio.create_task(env.file_backend.mkdir(Path(f"{_WS}/a")))
+        await slow_creator.creating.wait()
+        env._holder.sandbox = cast("AsyncSandbox", _FakeSandbox(sandbox_id="other"))
+        slow_creator.gate.set()
+        with pytest.raises(RuntimeError, match="while it was starting"):
+            await first_use
+
+    (started,) = slow_creator.made
+    assert started.killed
+
+
+async def test_cancelled_first_call_kills_the_sandbox_it_started(
+    slow_creator: _SlowCreator,
+) -> None:
+    async with e2b_environment(allowed_roots=[_WS], lazy=True) as env:
+        first_use = asyncio.create_task(env.file_backend.mkdir(Path(f"{_WS}/a")))
+        await slow_creator.creating.wait()
+        first_use.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_use
+        slow_creator.gate.set()
+        # pause() waits for the start, which no caller awaits any more.
+        with pytest.raises(RuntimeError, match="never started"):
+            await env.pause()
+
+        (started,) = slow_creator.made
+        assert started.killed
+        assert not env.started
+
+
+async def test_cancelling_one_first_call_leaves_the_others_their_sandbox(
+    slow_creator: _SlowCreator,
+) -> None:
+    async with e2b_environment(allowed_roots=[_WS], lazy=True) as env:
+        cancelled = asyncio.create_task(env.file_backend.mkdir(Path(f"{_WS}/a")))
+        waiting = asyncio.create_task(env.file_backend.mkdir(Path(f"{_WS}/b")))
+        await slow_creator.creating.wait()
+        cancelled.cancel()
+        slow_creator.gate.set()
+        await waiting
+
+        (started,) = slow_creator.made
+        assert not started.killed
+        assert f"{_WS}/b" in started.files.made_dirs
