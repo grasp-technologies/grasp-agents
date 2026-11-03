@@ -251,7 +251,8 @@ def _build_args(
     if mode == "files_with_matches":
         args.append("--files-with-matches")
     elif mode == "count":
-        args.append("--count")
+        # rg leaves the file name off when searching a single file.
+        args.extend(["--count", "--with-filename"])
     else:
         args.append("--json")
         if context is not None:
