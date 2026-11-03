@@ -9,15 +9,23 @@ enter a sandbox mount and how results come back.
 Rules:
 
 1. ``validate_path`` on the source (read) and on every destination file
-   (write), so read-only mounts and sandbox policies apply.
+   (write), so read-only mounts and sandbox policies apply. Inside a
+   directory every file is validated for reading too. A file the policy
+   refuses, a symbolic link (its resolved path is not the listed one) and
+   anything that is not a regular file are skipped, never read, and listed
+   in ``skipped``.
 2. A file copied onto an existing directory lands inside it under its own
    name. A directory's contents land under ``destination``, which is
    created if missing (``a/b.txt`` → ``destination/a/b.txt``).
-3. Existing destination files are refused unless ``overwrite`` is set. The
-   whole plan is checked before anything is written.
-4. When overwriting a file the agent read this session, the write is
-   conditional on the recorded mtime, as for ``Write``.
-5. File-count and byte caps are checked before anything is written.
+3. The whole plan is checked before anything is written: the file count
+   right after listing, the byte cap, destination files that already exist,
+   and destination directories that already exist as files.
+4. Existing destination files are refused unless ``overwrite`` is set.
+   Inside an agent, overwriting a file also needs a read record of it,
+   unchanged since, as ``Write`` does; the write is conditional on that
+   record's mtime.
+5. Every source file is read before anything is written, and the byte cap
+   counts the bytes actually read, not the sizes the backend reported.
 6. Every written file is recorded in the session state, so a following
    ``Edit`` needs no extra ``Read``.
 """
@@ -37,15 +45,20 @@ from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 from .session_state import refuse_if_stale
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.file_backend.base import FileBackend
     from grasp_agents.file_backend.paths import AccessMode
     from grasp_agents.session_context import SessionContext
 
+    from .session_state import FileEditSessionState
+
 DEFAULT_MAX_COPY_FILES = 1_000
 DEFAULT_MAX_COPY_BYTES = 50 * 1024 * 1024
 _DEFAULT_MODE = 0o644
 _MAX_LISTED_CONFLICTS = 5
+_MAX_LISTED_SKIPS = 20
 
 
 class CopyInput(BaseModel):
@@ -69,12 +82,19 @@ class CopyInput(BaseModel):
 
 
 class CopyResult(BaseModel):
-    """Output schema for the ``Copy`` tool."""
+    """
+    Output schema for the ``Copy`` tool.
+
+    ``skipped`` lists the first skipped source files as ``"<path>: <reason>"``;
+    ``files_skipped`` counts all of them.
+    """
 
     source: str
     destination: str
     files_copied: int
     bytes_copied: int
+    files_skipped: int = 0
+    skipped: list[str] = Field(default_factory=list[str])
 
 
 class _PathCheck(Protocol):
@@ -103,10 +123,14 @@ class CopyTool(BaseTool[CopyInput, CopyResult, Any]):
         "* A file copied onto an existing directory lands inside it. A "
         "directory's contents land under `destination`, which is created if "
         "missing.\n"
-        "* Existing destination files are refused unless `overwrite` is true; "
-        "nothing is written when the copy is refused.\n"
+        "* In a directory, symbolic links, special files and files you may not "
+        "read are skipped and listed in `skipped`.\n"
+        "* Existing destination files are refused unless `overwrite` is true. "
+        "As with `Write`, overwriting a file also needs a `Read` of it earlier "
+        "this session, unchanged since. Nothing is written when the copy is "
+        "refused.\n"
         "* Copied files count as read, so you can `Edit` them right away.\n"
-        "* Returns `files_copied` and `bytes_copied`."
+        "* Returns `files_copied`, `bytes_copied` and what was skipped."
     )
 
     def __init__(
@@ -148,14 +172,14 @@ class CopyTool(BaseTool[CopyInput, CopyResult, Any]):
             else None
         )
 
+        async def validate(raw: Path, *, must_exist: bool, access: AccessMode) -> Path:
+            return await backend.validate_path(
+                raw, must_exist=must_exist, access=access, dotfile_overrides=overrides
+            )
+
         async def check(raw: Path, *, must_exist: bool, access: AccessMode) -> Path:
             try:
-                return await backend.validate_path(
-                    raw,
-                    must_exist=must_exist,
-                    access=access,
-                    dotfile_overrides=overrides,
-                )
+                return await validate(raw, must_exist=must_exist, access=access)
             except PathAccessError as exc:
                 raise ValueError(str(exc)) from exc
 
@@ -168,11 +192,16 @@ class CopyTool(BaseTool[CopyInput, CopyResult, Any]):
                 f"Cannot copy {source} onto or into itself ({destination})."
             )
 
+        skipped: list[str] = []
         source_stat = await backend.stat(source)
         if _is_dir(source_stat.mode):
             target_root = destination
-            steps = await self._plan_tree(backend, source, destination, check)
+            steps = await self._plan_tree(
+                backend, source, destination, validate, check, skipped
+            )
         else:
+            if not _may_be_regular(source_stat.mode):
+                raise ValueError(f"{source} is not a regular file or a directory.")
             target_root = destination
             if await backend.exists(destination) and _is_dir(
                 (await backend.stat(destination)).mode
@@ -191,52 +220,25 @@ class CopyTool(BaseTool[CopyInput, CopyResult, Any]):
                 )
             ]
 
-        total_bytes = sum(s.size for s in steps)
-        if len(steps) > self._max_files:
+        reported_bytes = sum(s.size for s in steps)
+        if reported_bytes > self._max_bytes:
             raise ValueError(
-                f"Copy would write {len(steps)} files, over the limit of "
-                f"{self._max_files}. Copy a smaller directory."
-            )
-        if total_bytes > self._max_bytes:
-            raise ValueError(
-                f"Copy would write {total_bytes:,} bytes, over the limit of "
+                f"Copy would write {reported_bytes:,} bytes, over the limit of "
                 f"{self._max_bytes:,} bytes. Copy a smaller directory."
             )
-
-        existing: list[Path] = []
-        for step in steps:
-            if not await backend.exists(step.destination):
-                continue
-            if _is_dir((await backend.stat(step.destination)).mode):
-                raise ValueError(
-                    f"{step.destination} is a directory; it cannot be overwritten."
-                )
-            existing.append(step.destination)
-        if existing and not inp.overwrite:
-            listed = ", ".join(str(p) for p in existing[:_MAX_LISTED_CONFLICTS])
-            more = len(existing) - _MAX_LISTED_CONFLICTS
-            suffix = f" and {more} more" if more > 0 else ""
-            raise ValueError(
-                f"{len(existing)} destination file(s) already exist: {listed}{suffix}. "
-                "Pass overwrite=true to replace them."
-            )
+        await _refuse_files_in_the_way(backend, steps)
+        expected = await _check_overwrites(
+            backend, steps, state, overwrite=inp.overwrite
+        )
+        contents = await self._read_sources(backend, steps)
 
         copied = 0
         made_dirs: set[Path] = set()
-        for step in steps:
+        for step, data in zip(steps, contents, strict=True):
             parent = step.destination.parent
             if parent not in made_dirs and parent != target_root.parent:
                 await backend.mkdir(parent)
                 made_dirs.add(parent)
-            record = (
-                state.get_read_record(step.destination) if state is not None else None
-            )
-            expected = (
-                record.mtime
-                if record is not None and step.destination in existing
-                else None
-            )
-            data, _ = await backend.read_bytes(step.source)
             with refuse_if_stale(
                 step.destination,
                 action="overwriting it",
@@ -247,7 +249,7 @@ class CopyTool(BaseTool[CopyInput, CopyResult, Any]):
                     data,
                     mode=step.mode,
                     overwrite=True,
-                    expected_mtime=expected,
+                    expected_mtime=expected.get(step.destination),
                 )
             if state is not None:
                 state.record_write(step.destination, new_mtime)
@@ -257,7 +259,9 @@ class CopyTool(BaseTool[CopyInput, CopyResult, Any]):
             source=str(source),
             destination=str(target_root),
             files_copied=copied,
-            bytes_copied=total_bytes,
+            bytes_copied=sum(len(data) for data in contents),
+            files_skipped=len(skipped),
+            skipped=skipped[:_MAX_LISTED_SKIPS],
         )
 
     async def _plan_tree(
@@ -265,22 +269,152 @@ class CopyTool(BaseTool[CopyInput, CopyResult, Any]):
         backend: FileBackend,
         source: Path,
         destination: Path,
+        validate: _PathCheck,
         check: _PathCheck,
+        skipped: list[str],
     ) -> list[_Step]:
+        listed = [
+            e for e in await backend.list_dir(source, recursive=True) if not e.is_dir
+        ]
+        if len(listed) > self._max_files:
+            raise ValueError(
+                f"{source} holds {len(listed):,} files, over the limit of "
+                f"{self._max_files:,}. Copy a smaller directory."
+            )
         steps: list[_Step] = []
-        for entry in await backend.list_dir(source, recursive=True):
-            if entry.is_dir:
+        for entry in sorted(listed, key=lambda e: e.path.parts):
+            try:
+                resolved = await validate(entry.path, must_exist=True, access="read")
+            except PathAccessError as exc:
+                skipped.append(f"{entry.path}: {exc}")
                 continue
-            rel = entry.path.relative_to(source)
-            target = await check(destination / rel, must_exist=False, access="write")
-            st = await backend.stat(entry.path)
-            steps.append(_Step(entry.path, target, st.size, _mode_bits(st.mode)))
-        steps.sort(key=lambda s: s.destination.parts)
+            if resolved != entry.path or source not in resolved.parents:
+                skipped.append(f"{entry.path}: a symbolic link, not followed")
+                continue
+            st = await backend.stat(resolved)
+            if not _may_be_regular(st.mode):
+                skipped.append(f"{entry.path}: not a regular file")
+                continue
+            target = await check(
+                destination / resolved.relative_to(source),
+                must_exist=False,
+                access="write",
+            )
+            steps.append(_Step(resolved, target, st.size, _mode_bits(st.mode)))
         return steps
+
+    async def _read_sources(
+        self, backend: FileBackend, steps: Sequence[_Step]
+    ) -> list[bytes]:
+        contents: list[bytes] = []
+        total = 0
+        for step in steps:
+            data, _ = await backend.read_bytes(step.source)
+            total += len(data)
+            if total > self._max_bytes:
+                raise ValueError(
+                    f"The source files hold over {self._max_bytes:,} bytes, the "
+                    "limit (the sizes the backend reported were smaller). Nothing "
+                    "was copied. Copy a smaller directory."
+                )
+            contents.append(data)
+        return contents
+
+
+async def _refuse_files_in_the_way(
+    backend: FileBackend, steps: Sequence[_Step]
+) -> None:
+    """Refuse when a directory a destination needs already exists as a file."""
+    seen: set[Path] = set()
+    for step in steps:
+        directory = step.destination.parent
+        while directory not in seen:
+            seen.add(directory)
+            if await backend.exists(directory):
+                if _is_file((await backend.stat(directory)).mode):
+                    raise ValueError(
+                        f"{directory} is a file, so {step.destination} cannot be "
+                        "created. Nothing was copied."
+                    )
+                break
+            if directory.parent == directory:
+                break
+            directory = directory.parent
+
+
+async def _check_overwrites(
+    backend: FileBackend,
+    steps: Sequence[_Step],
+    state: FileEditSessionState | None,
+    *,
+    overwrite: bool,
+) -> dict[Path, float]:
+    """
+    Refuse destinations that cannot be overwritten; return the expected
+    mtime of each existing destination file (none outside an agent).
+    """
+    current: dict[Path, float] = {}
+    for step in steps:
+        if not await backend.exists(step.destination):
+            continue
+        st = await backend.stat(step.destination)
+        if _is_dir(st.mode):
+            raise ValueError(
+                f"{step.destination} is a directory; it cannot be overwritten."
+            )
+        current[step.destination] = st.mtime
+    if not current:
+        return {}
+    if not overwrite:
+        raise ValueError(
+            f"{len(current)} destination file(s) already exist: "
+            f"{_list_paths(list(current))}. Pass overwrite=true to replace them."
+        )
+    if state is None:
+        return {}
+
+    expected: dict[Path, float] = {}
+    unread: list[Path] = []
+    changed: list[Path] = []
+    for dest, mtime in current.items():
+        record = state.get_read_record(dest)
+        if record is None:
+            unread.append(dest)
+        elif record.mtime != mtime:
+            changed.append(dest)
+        else:
+            expected[dest] = record.mtime
+    if unread:
+        raise ValueError(
+            f"Must Read {_list_paths(unread)} before overwriting. As with Write, "
+            "read-before-write keeps you from replacing content you haven't seen."
+        )
+    if changed:
+        raise ValueError(
+            f"{_list_paths(changed)} {'was' if len(changed) == 1 else 'were'} "
+            "modified since you last read it. Re-Read before overwriting."
+        )
+    return expected
+
+
+def _list_paths(paths: Sequence[Path]) -> str:
+    listed = ", ".join(str(p) for p in paths[:_MAX_LISTED_CONFLICTS])
+    more = len(paths) - _MAX_LISTED_CONFLICTS
+    return f"{listed} and {more} more" if more > 0 else listed
 
 
 def _is_dir(mode: int) -> bool:
     return bool(stat_module.S_IFMT(mode)) and stat_module.S_ISDIR(mode)
+
+
+def _may_be_regular(mode: int) -> bool:
+    """False only when the mode's type bits name something else."""
+    return not stat_module.S_IFMT(mode) or stat_module.S_ISREG(mode)
+
+
+def _is_file(mode: int) -> bool:
+    """True only when the mode's type bits name something other than a directory."""
+    return bool(stat_module.S_IFMT(mode)) and not stat_module.S_ISDIR(mode)
 
 
 def _mode_bits(mode: int) -> int:
