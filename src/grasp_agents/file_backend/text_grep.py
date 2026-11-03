@@ -197,6 +197,8 @@ def _relative_parts(path: Path, root: Path) -> tuple[str, ...] | None:
 
 
 def _split_lines(text: str) -> list[str]:
+    if not text:
+        return []
     lines = text.split("\n")
     if text.endswith("\n"):
         lines.pop()

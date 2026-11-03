@@ -26,6 +26,8 @@ FILES: dict[str, str] = {
     "code/main.py": "def main():\n    # todo lower\n    return 1\n",
     "code/util.py": "import os\n\ndef helper():\n    return os.sep\n",
     "readme.txt": "TODO in text\n",
+    "notes/empty.md": "",
+    "notes/blank.md": "\n",
 }
 
 
@@ -52,6 +54,8 @@ PARITY_CASES: list[dict[str, Any]] = [
     {"pattern": "return", "output_mode": "count", "file_type": "py"},
     {"pattern": "TODO", "output_mode": "files_with_matches", "file_type": "md"},
     {"pattern": "^\\s+return", "output_mode": "content"},
+    {"pattern": "^", "output_mode": "files_with_matches"},
+    {"pattern": "^$", "output_mode": "count"},
 ]
 
 
@@ -114,6 +118,17 @@ def test_hidden_files_are_skipped_unless_asked(tmp_path: Path) -> None:
 
     assert default.files == [root / "b.md"]
     assert with_hidden.files == [root / ".hidden/a.md", root / "b.md"]
+
+
+def test_an_empty_file_has_no_lines(tmp_path: Path) -> None:
+    root = tmp_path.resolve()
+    pairs = [(root / "empty.md", ""), (root / "blank.md", "\n")]
+
+    anything = grep_texts(pairs, "^", root=root)
+    blank_lines = grep_texts(pairs, "^$", root=root, output_mode="count")
+
+    assert anything.files == [root / "blank.md"]
+    assert blank_lines.counts == [(root / "blank.md", 1)]
 
 
 def test_text_with_nul_bytes_is_treated_as_binary(tmp_path: Path) -> None:
