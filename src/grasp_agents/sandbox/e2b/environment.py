@@ -30,6 +30,8 @@ from .file_backend import E2BFileBackend
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from e2b.connection_config import ApiParams
+
 logger = logging.getLogger(__name__)
 
 FRESH_SNAPSHOT_REF = "e2b-fresh"
@@ -289,6 +291,10 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         """
         Reconnect to (and auto-resume) a paused sandbox, swapping the live
         handle. Defaults to the currently-bound sandbox's id.
+
+        Reconnects with the sandbox class the environment creates (the code
+        interpreter one with ``code_interpreter=True``) and its configured
+        API key, domain and keep-alive timeout.
         """
         async with self._holder.lock:
             target = sandbox_id
@@ -299,7 +305,16 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
                         "resume() needs a sandbox_id when no sandbox is bound."
                     )
                 target = str(current.sandbox_id)
-            self._holder.sandbox = await AsyncSandbox.connect(target)
+            params: E2BCreateParams = self._create_params or {}
+            opts: ApiParams = {}
+            if "api_key" in params:
+                opts["api_key"] = params["api_key"]
+            if "domain" in params:
+                opts["domain"] = params["domain"]
+            sandbox_cls = _sandbox_cls(self._code_interpreter)
+            self._holder.sandbox = await sandbox_cls.connect(
+                target, timeout=params.get("timeout"), **opts
+            )
 
 
 def e2b_environment(

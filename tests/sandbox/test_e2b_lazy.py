@@ -62,7 +62,8 @@ class _Creator:
         await asyncio.sleep(0)
         return sandbox
 
-    async def connect(self, sandbox_id: str) -> _FakeSandbox:
+    async def connect(self, sandbox_id: str, **opts: Any) -> _FakeSandbox:
+        del opts
         sandbox = self.reconnects.get(sandbox_id) or _FakeSandbox(sandbox_id=sandbox_id)
         self.connected.append(sandbox)
         return sandbox
