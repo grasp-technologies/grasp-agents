@@ -40,8 +40,8 @@ class MCPTool(BaseTool[BaseModel, McpToolResult, None]):
 
     Created by :class:`MCPClient` during tool discovery.
 
-    When the server defines an ``outputSchema``, the structured result
-    is validated and available via :pyattr:`last_structured_result`.
+    Returns the server's raw ``CallToolResult``. When the server defines an
+    ``outputSchema``, :attr:`struct_output_schema` is its Pydantic model.
     """
 
     _copy_shared_attrs = frozenset({"_session"})

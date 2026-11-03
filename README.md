@@ -16,15 +16,16 @@
 
 ## Overview
 
-**Grasp Agents** is a lightweight, modular Python framework for building LLM
+**Grasp Agents** is a modular, strictly typed Python framework for building LLM
 agents and structured workflows. It focuses on clean and flexible architecture that allows for rapid experimentation, while maintaining resilience and durability necessary for production use. You build the agent and choose how to run it:
 
 - **Embedded** in an application, as the orchestration layer behind its AI
   features; or
 - **Standalone**, as a personal agent with its own cross-session memory, skills, sandboxing. A simple multi-agent Terminal UI (using [Textual](https://github.com/textualize/textual)) is included.
 
-The core is small. Tools, sandboxing, memory, skills, durable persistence, MCP,
-and the terminal UI are additive layers you opt into.
+The agent loop and the LLM layer are the core. Tools, sandboxing, memory,
+skills, durable persistence, MCP, compaction, and the terminal UI are additive
+layers you opt into.
 
 ## Features
 
@@ -85,7 +86,7 @@ First-class integrations.
 
 - Cross-session memory: a markdown memory directory with an always-loaded index,
   topic files with frontmatter, and per-turn relevance selection. Authored
-  through the generic file tools — no dedicated memory tools (Claude Code inspired).
+  through the generic file tools — no dedicated memory tools.
 - Skills: a `SKILL.md` catalog injected into the system prompt, loaded on demand,
   and slash-invocable with arguments.
 
@@ -114,7 +115,7 @@ First-class integrations.
   `SessionContext`; the application stays the source of truth and rebuilds context
   on resume.
 
-  Orchestration/durability example: [`orchestration_durability_demo.ipynb`](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/notebooks/orchestration_durability_demo.ipynb)
+  Orchestration/durability example: [`orchestration_durability.ipynb`](https://github.com/grasp-technologies/grasp-agents/blob/master/src/grasp_agents/examples/notebooks/orchestration_durability.ipynb)
 
 - **Long-running personal & research agents.** A single agent with tools, subagents,
   cross-session memory, and skills that persists and resumes across sessions —
@@ -339,26 +340,34 @@ Runnable notebooks in
 
 ```
 src/grasp_agents/
-  agent/            LLMAgent, AgentLoop, AgentContext, transcript, background tasks
+  agent/            LLMAgent, AgentLoop, AgentContext, context window, background tasks, approvals
   processors/       Processor, ParallelProcessor
   workflow/         SequentialWorkflow, LoopedWorkflow, WorkflowProcessor
   runner/           Runner + EventBus (multi-agent orchestration)
-  context/          PromptBuilder, prompt sections (env info, untrusted-content fencing)
+  runtime/          actor driver + transports under the event bus and agent teams
+  agent_team/       resident peer agents with mailboxes (experimental)
+  context/          prompt sections, compaction strategies, untrusted-content fencing
   llm/              LLM / CloudLLM / FallbackLLM / RetryPolicy / model metadata
   llm_providers/    OpenAI Responses, OpenAI Completions, Anthropic, Gemini, LiteLLM
-  tools/            BaseTool, @function_tool, .as_tool(), Bash, RunPython, file tools
+  tools/            BaseTool, @function_tool, .as_tool(), Bash, RunPython, notebook and file tools
   file_backend/     FileBackend ABC + local / MCP backends
-  sandbox/          SandboxPolicy, ExecBackend, environments (local / Seatbelt / E2B)
+  sandbox/          SandboxPolicy, ExecBackend, environments (local / Seatbelt / srt / E2B)
   memory/           cross-session memory provider + relevance selection
   skills/           skills registry + injection + load_skill
-  durability/       CheckpointStore, resume, background-task records
   mcp/              MCP client (tools + resources + prompts)
+  durability/       CheckpointStore, resume, task records, session history
+  evals/            datasets, scorers, judges, runner (`grasp-evals` CLI)
   types/            pure data: content, events, items, response, packet, errors
-  telemetry/        @traced + Phoenix / OpenLLMetry exporters
+  telemetry/        @traced + Phoenix exporter
   ui/               EventConsole (Rich) + Textual app ([tui] extra)
   session_context.py    SessionContext[CtxT]
   hooks.py          hook Protocols
 ```
+
+## Documentation
+
+Design reference for each subsystem (current design, contracts, limitations):
+[docs/](docs/README.md). Start with [Concepts](docs/concepts.md).
 
 ## License
 

@@ -23,15 +23,15 @@ Usage::
     # Poll or surface ``store.list_pending(session_key)`` from your UI
     # and resolve each one via ``store.resolve(...)``.
 
-    agent.add_before_tool_hook(
-        build_store_approval(tool_names={"delete_file", "send_email"})
-    )
-
     ctx = SessionContext(
         approval_store=store,
         session_key="user-42",
     )
-    await agent.run(..., ctx=ctx)
+    agent = LLMAgent(..., ctx=ctx)
+    agent.add_before_tool_hook(
+        build_store_approval(tool_names={"delete_file", "send_email"})
+    )
+    await agent.run(...)
 """
 
 from __future__ import annotations

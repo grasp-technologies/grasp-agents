@@ -10,11 +10,13 @@ through the same ``FileBackend`` as :mod:`.file_edit.notebook` (sharing its
 read-before-write + mtime invariants), and run through the same environment as
 ``Bash`` (so the kernel inherits the co-located filesystem + confinement).
 
-Each :class:`AgentLoop` owns one :class:`KernelHolder` (mirroring
-``BashSessionHolder``): a single persistent kernel per loop, opened lazily,
-fresh on deep-copy (sub-agent / replica isolation), closed at run end. State
+Each agent's :class:`AgentContext` holds one :class:`KernelHolder` (mirroring
+``BashSessionHolder``): a single persistent kernel per agent, opened lazily,
+fresh on deep-copy (sub-agent / replica isolation), and session-scoped — it
+survives run boundaries and is released only by ``agent.aclose()``. State
 carries across ``RunCell`` calls (imports, variables) like cells in a live
-notebook. Used outside a loop, each call opens a throwaway kernel.
+notebook. Used outside an agent (no ``AgentContext``), each call opens a
+throwaway kernel.
 """
 
 from __future__ import annotations
@@ -52,12 +54,12 @@ DEFAULT_CELL_TIMEOUT = 120.0
 
 class KernelHolder:
     """
-    Lazily opens and caches one persistent :class:`KernelSession` per agent loop.
+    Lazily opens and caches one persistent :class:`KernelSession` per agent.
 
-    Mirrors :class:`~grasp_agents.tools.bash_session.BashSessionHolder`: owned by
-    the loop, deep-copied fresh so sub-agents / parallel replicas each get their
-    own kernel. Reopened if a previous kernel was closed (e.g. a timeout that
-    killed it).
+    Mirrors :class:`~grasp_agents.tools.bash_session.BashSessionHolder`: held on
+    the agent's :class:`AgentContext`, deep-copied fresh so sub-agents / parallel
+    replicas each get their own kernel. Reopened if a previous kernel was closed
+    (e.g. a timeout that killed it).
 
     Seed ``context_id`` to **re-attach** to an existing kernel on resume: read
     :attr:`context_id` before pausing/snapshotting the sandbox, persist it in

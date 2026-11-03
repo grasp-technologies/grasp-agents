@@ -315,9 +315,11 @@ class CollapseToolOutputsProjector(Budgeted):
     :func:`collapse_tool_outputs`).
 
     Recency-gated, never size-gated: it only hides outputs the model has already
-    moved past, so it cannot blind the model to the result it is acting on now (the
-    framework has no spill-to-file recovery, so a collapsed recent output would be
-    unrecoverable mid-run). Two firing modes:
+    moved past, so it cannot blind the model to the result it is acting on now
+    (collapsing writes the hidden middle nowhere the model can read it back, so a
+    collapsed recent output would be unrecoverable mid-run). To bound a large
+    output with a recovery path, spill it when it is produced instead — the tool's
+    ``max_inline_result_chars``. Two firing modes:
 
     - **budget-gated** (default): collapse only when the view exceeds ``budget``.
       With window headroom it does nothing, leaving the prompt-cache prefix intact —

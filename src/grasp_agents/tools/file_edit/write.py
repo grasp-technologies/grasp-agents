@@ -17,8 +17,8 @@ Invariants enforced on every call:
 5. Preserve the existing file's permission bits when overwriting (local
    backend only — MCP servers may not honor the ``mode`` argument).
 
-On success the backend refreshes its read record with the post-write
-mtime so consecutive edits by the same agent don't re-trip the
+On success the agent's ``FileEditSessionState`` read record is refreshed with
+the post-write mtime so consecutive edits by the same agent don't re-trip the
 staleness check on their own prior writes.
 """
 

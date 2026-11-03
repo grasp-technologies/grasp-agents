@@ -153,8 +153,10 @@ class ViewProjector(Protocol):
     / ``tool_result`` pairing (``context.projection.repair_tool_call_pairing``)
     before the provider call, then discarded — it is never persisted, so a
     projection must be deterministic enough to re-derive on the next turn and on
-    resume. ``input_tokens`` is the provider-reported size of the last view (0
-    before the first response) — the budget signal for size-reactive projectors.
+    resume. ``input_tokens`` is the current (folded) log's estimated cost: the last
+    response's reported input tokens plus a count of the messages appended since,
+    or a full count before any reported usage (or after a fold / rollback) — the
+    budget signal for size-reactive projectors.
     """
 
     async def __call__(

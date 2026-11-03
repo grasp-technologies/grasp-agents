@@ -1,11 +1,13 @@
 """
 Classification of the next :class:`AgentLoop` step after an LLM turn.
 
-After each response the loop picks one of four outcomes: stop with a
-final answer, force-generate a final answer (budget exhausted), run
-tool calls, or continue to another turn. :func:`decide_next_step` is
-the pure function that makes the choice; the four ``NextStep*``
-dataclasses carry any payload the handler needs.
+After each response the loop picks one outcome: stop with a final
+answer, force-generate a final answer (budget exhausted), run tool
+calls, or continue to another turn — plus, for a resident actor (open
+inbox), answer the current message or force an answer for it, then
+park for the next one. :func:`decide_next_step` is the pure function
+that makes the choice; the ``NextStep*`` dataclasses carry any payload
+the handler needs.
 """
 
 from __future__ import annotations
@@ -115,9 +117,10 @@ def decide_next_step(
     not per run: ``turns_on_message`` (turns generated since the current message
     was delivered) is capped at ``max_turns`` rather than the lifetime ``turn``,
     which grows unbounded across messages. A resident never stops or force-ends
-    its run; instead, finishing a message recycles the loop to wait for the next
-    one. A satisfied answer becomes a ``NextStepResidentAnswer``; blowing the
-    per-message budget without one becomes a ``NextStepForceResidentAnswer`` (force
+    its run (so the run deadline does not apply to it); instead, finishing a
+    message recycles the loop to wait for the next one. A satisfied answer
+    becomes a ``NextStepResidentAnswer``; blowing the per-message budget
+    without one becomes a ``NextStepForceResidentAnswer`` (force
     an answer, then move on) — so a model stuck in a tool loop on one message
     cannot spin forever. A resident also never waits on answer-blocking
     background work: its loop outlives the answer, so a pending completion
@@ -151,15 +154,10 @@ def decide_next_step(
     # The resident's answer for this message, if it has one it can return now.
     resident_answer = final_answer if inbox_open else None
 
-    # NOTE: let's be clear why deadline_exceeded is not applied to residents
     if over_budget and inbox_open:
         # Resident past its per-message budget: wrap this message up now —
         # never run more tools or continue. Answer with the one it has if there is
         # one, else force one (closing dangling tool calls), then park.
-
-        # NOTE: can we change the condition to
-        # (over_budget and inbox_open and resident_answer is None) and skip
-        # the resident answer check here?
         if resident_answer is not None:
             return NextStepResidentAnswer(final_answer=resident_answer)
         return NextStepForceResidentAnswer()

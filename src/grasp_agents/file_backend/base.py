@@ -166,9 +166,9 @@ class FileBackend(ABC):
         """
         Return ``(content, mtime)``. ``errors='replace'`` for utf-8.
 
-        Read-before-write bookkeeping happens in the caller — tools
-        consult :func:`get_current_file_edit_state` and record the read
-        themselves.
+        Read-before-write bookkeeping happens in the caller — the file tools
+        record the read in the agent's ``FileEditSessionState``
+        (``agent_ctx.file_edit_state``).
         """
         ...
 

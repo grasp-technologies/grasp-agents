@@ -46,10 +46,10 @@ if TYPE_CHECKING:
 
 class BashSessionHolder:
     """
-    Lazily opens and caches one persistent :class:`ExecSession` per agent loop.
+    Lazily opens and caches one persistent :class:`ExecSession` per agent.
 
-    Owned by the agent loop and wired onto its ``BashSession`` tool; because the
-    agent owns its tools (deep-copied at construction), sub-agents and parallel
+    Held on the agent's :class:`AgentContext`, from which the stateless
+    ``BashSession`` tool resolves it per call, so sub-agents and parallel
     replicas each get their own stateful shell. The session is opened on first
     use and reopened if a command closed it (e.g. one that ignored the interrupt
     and forced a session-level kill) or if it reached its lifetime cap (E2B's

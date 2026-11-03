@@ -3,9 +3,10 @@ Checkpoint-store key construction.
 
 Layout: ``"<session_key>/<kind>/<path>"``. The ``kind`` segment names the
 record type (``agent`` / ``workflow`` / ``parallel`` / ``runner`` / ``team`` /
-``task`` / ``session``); each kind tree is type-homogeneous. The ``session``
-record is a singleton per session key (no path). Tool calls contribute a
-``tc_<call_id>`` segment; parallel replicas a combined ``<subproc>_<idx>``.
+``task`` / ``session`` / ``mailbox``); each kind tree is type-homogeneous. The
+``session`` record is a singleton per session key (no path). Tool calls
+contribute a ``tc_<call_id>`` segment; parallel replicas a combined
+``<subproc>_<idx>``.
 Always use the helpers — never compose keys inline.
 """
 

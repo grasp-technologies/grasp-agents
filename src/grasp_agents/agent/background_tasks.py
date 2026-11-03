@@ -542,9 +542,9 @@ class BackgroundTask:
     event to ``events`` (the buffer), mirrors the stream's output to ``log`` as
     it flows, and settles ``outcome`` when the tool finishes. ``cursor`` tracks
     how far the turn boundary has re-emitted the buffer to the parent stream
-    (live progress). ``task_key`` is set only for a *resumable* tool (its
-    ``TaskRecord`` is persisted so a restart can re-spawn it); a backgrounded
-    shell command is not resumable, so it has none.
+    (live progress). ``task_key`` names the task's persisted ``TaskRecord``
+    (``None`` without a checkpoint store): on resume a resumable tool is
+    re-spawned from it, any other is reported to the agent as interrupted.
     """
 
     task_id: str
@@ -633,7 +633,7 @@ class BackgroundTask:
             role="user",
         )
 
-        # Durable record → DELIVERED (resumable tasks only), deferred to
+        # Durable record → DELIVERED, deferred to
         # :meth:`BackgroundTaskManager.flush_flips` after the next checkpoint
         # persists the transcript holding this note: flipping now would lose the
         # outcome on a crash before that checkpoint (resume skips DELIVERED
