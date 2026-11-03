@@ -33,11 +33,11 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from grasp_agents.file_backend.base import StaleFileError
 from grasp_agents.file_backend.paths import PathAccessError, has_binary_extension
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
 from .fuzzy_match import apply_replacements, fuzzy_find, preserve_quote_style
+from .session_state import refuse_if_stale
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
@@ -231,7 +231,7 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
         new_content = apply_replacements(content, matches, adjusted_new)
         data = new_content.encode("utf-8")
 
-        try:
+        with refuse_if_stale(resolved, action="editing"):
             new_mtime = await backend.write_bytes(
                 resolved,
                 data,
@@ -239,11 +239,6 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
                 overwrite=True,
                 expected_mtime=expected_mtime,
             )
-        except StaleFileError as exc:
-            raise ValueError(
-                f"{resolved} was modified since you last read it ({exc}). "
-                "Re-Read before editing."
-            ) from exc
         if state is not None:
             state.record_write(resolved, new_mtime)
 

@@ -31,9 +31,10 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import BaseModel, Field
 
-from grasp_agents.file_backend.base import StaleFileError
 from grasp_agents.file_backend.paths import PathAccessError
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
+
+from .session_state import refuse_if_stale
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
@@ -236,7 +237,11 @@ class CopyTool(BaseTool[CopyInput, CopyResult, Any]):
                 else None
             )
             data, _ = await backend.read_bytes(step.source)
-            try:
+            with refuse_if_stale(
+                step.destination,
+                action="overwriting it",
+                note=f"{copied} of {len(steps)} files were copied before this one. ",
+            ):
                 new_mtime = await backend.write_bytes(
                     step.destination,
                     data,
@@ -244,12 +249,6 @@ class CopyTool(BaseTool[CopyInput, CopyResult, Any]):
                     overwrite=True,
                     expected_mtime=expected,
                 )
-            except StaleFileError as exc:
-                raise ValueError(
-                    f"{step.destination} was modified since you last read it "
-                    f"({exc}). {copied} of {len(steps)} files were copied before "
-                    "this one; Re-Read it before overwriting."
-                ) from exc
             if state is not None:
                 state.record_write(step.destination, new_mtime)
             copied += 1

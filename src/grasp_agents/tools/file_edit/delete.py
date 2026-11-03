@@ -27,9 +27,10 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from grasp_agents.file_backend.base import StaleFileError
 from grasp_agents.file_backend.paths import PathAccessError
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
+
+from .session_state import refuse_if_stale
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
@@ -153,13 +154,8 @@ class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
                 )
             expected_mtime = record.mtime
 
-        try:
+        with refuse_if_stale(resolved, action="deleting"):
             await backend.delete(resolved, expected_mtime=expected_mtime)
-        except StaleFileError as exc:
-            raise ValueError(
-                f"{resolved} was modified since you last read it ({exc}). "
-                "Re-Read before deleting."
-            ) from exc
         if state is not None:
             state.read_file_state.pop(resolved, None)
 

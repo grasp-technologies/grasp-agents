@@ -264,7 +264,7 @@ class RunCell(BaseTool[RunCellInput, list[InputText | InputImage], Any]):
             if state is not None and state.dotfile_overrides
             else None
         )
-        resolved, nb, mode = await open_notebook_for_write(
+        resolved, nb, mode, expected_mtime = await open_notebook_for_write(
             backend, state, inp.notebook_path, overrides=overrides
         )
 
@@ -307,7 +307,9 @@ class RunCell(BaseTool[RunCellInput, list[InputText | InputImage], Any]):
         cell["outputs"] = [
             cell_output_to_nbformat(o, sanitize=self._sanitize_outputs) for o in outputs
         ]
-        await write_notebook(backend, resolved, nb, mode=mode, state=state)
+        await write_notebook(
+            backend, resolved, nb, mode=mode, expected_mtime=expected_mtime, state=state
+        )
 
         header = f"[execution_count={result.execution_count} status={result.status}]"
         if result.timed_out:

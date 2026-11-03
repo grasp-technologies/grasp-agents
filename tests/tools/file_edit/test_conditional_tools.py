@@ -1,5 +1,6 @@
 """
-Edit, Write and Delete pass the mtime recorded at Read to the backend.
+Edit, Write, Delete and the notebook tools pass the mtime recorded at Read
+to the backend.
 
 A change that lands after the tool's own staleness check (a concurrent
 writer) must still be refused: the backend sees ``expected_mtime`` and raises
@@ -12,7 +13,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import nbformat
 import pytest
+from nbformat import v4
 
 from grasp_agents.file_backend import FileStat, InMemoryFileBackend
 from grasp_agents.session_context import SessionContext
@@ -25,6 +28,10 @@ from grasp_agents.tools.file_edit import (
     ReadInput,
     ReadResult,
     WriteInput,
+)
+from grasp_agents.tools.file_edit.notebook import (
+    open_notebook_for_write,
+    write_notebook,
 )
 from grasp_agents.types.events import ToolErrorInfo
 from tests._helpers import _make_agent_ctx
@@ -119,3 +126,27 @@ async def test_delete_refuses_a_concurrent_change() -> None:
 
     _assert_refused(result)
     assert await backend.exists(TARGET)
+
+
+async def test_a_notebook_write_keeps_the_mtime_it_opened_with() -> None:
+    """
+    RunCell opens a notebook, runs a cell, then writes. A change that lands
+    in between, even one the session recorded, makes that write stale.
+    """
+    path = Path("/mem/a.ipynb")
+    empty = nbformat.writes(v4.new_notebook())
+    backend = InMemoryFileBackend(["/mem"], files={str(path): empty})
+    state = FileEditSessionState()
+    _, mtime = await backend.read_text(path)
+    state.record_read(path, mtime)
+    resolved, nb, mode, expected = await open_notebook_for_write(
+        backend, state, str(path), overrides=None
+    )
+    concurrent = await backend.write_bytes(resolved, empty.encode(), mode=0o644)
+    state.record_write(resolved, concurrent)
+
+    with pytest.raises(ValueError, match="modified since you last read it"):
+        await write_notebook(
+            backend, resolved, nb, mode=mode, expected_mtime=expected, state=state
+        )
+    assert expected == mtime

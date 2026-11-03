@@ -34,7 +34,6 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
-from grasp_agents.file_backend.base import StaleFileError
 from grasp_agents.file_backend.paths import PathAccessError
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 from grasp_agents.tools.cell_output import (
@@ -43,6 +42,8 @@ from grasp_agents.tools.cell_output import (
     image_parts_from_data,
 )
 from grasp_agents.types.content import InputImage, InputText
+
+from .session_state import refuse_if_stale
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
@@ -376,15 +377,21 @@ async def read_notebook_as_text(backend: Any, resolved: Path) -> tuple[str, floa
 
 async def open_notebook_for_write(
     backend: Any, state: Any, notebook_path: str, *, overrides: set[Path] | None
-) -> tuple[Path, Any, int]:
+) -> tuple[Path, Any, int, float | None]:
     """
     Validate + read a notebook for a mutating operation, returning
-    ``(resolved, notebook_node, mode)``.
+    ``(resolved, notebook_node, mode, expected_mtime)``.
 
     Enforces the file-edit write invariants shared by ``NotebookEdit`` and
     ``RunCell``: path policy (write access), read-before-write, mtime staleness
     refusal, and permission-bit capture. Parses the notebook and mints stable
     cell ids. Raises ``ValueError`` on any violation.
+
+    ``expected_mtime`` is the read record's mtime this check passed against
+    (``None`` without a session state); pass it to :func:`write_notebook` so
+    the write is refused if the notebook changes in the meantime, even when
+    the session's read record moves on (``RunCell`` writes after the cell
+    has run).
     """
     try:
         resolved = await backend.validate_path(
@@ -396,6 +403,7 @@ async def open_notebook_for_write(
     except PathAccessError as exc:
         raise ValueError(str(exc)) from exc
 
+    expected_mtime: float | None = None
     if state is not None:
         record = state.get_read_record(resolved)
         if record is None:
@@ -403,6 +411,7 @@ async def open_notebook_for_write(
                 f"Must Read {resolved} before modifying it. Read-before-write "
                 "enforcement prevents acting on a notebook the model hasn't seen."
             )
+        expected_mtime = record.mtime
         current_stat = await backend.stat(resolved)
         if current_stat.mtime != record.mtime:
             raise ValueError(
@@ -424,28 +433,33 @@ async def open_notebook_for_write(
 
     nb = _load_notebook(text)
     _ensure_cell_ids(nb)
-    return resolved, nb, mode
+    return resolved, nb, mode, expected_mtime
 
 
 async def write_notebook(
-    backend: Any, resolved: Path, nb: Any, *, mode: int, state: Any
+    backend: Any,
+    resolved: Path,
+    nb: Any,
+    *,
+    mode: int,
+    expected_mtime: float | None,
+    state: Any,
 ) -> None:
-    """Re-serialize ``nb`` and write it atomically, refreshing the read record."""
+    """
+    Re-serialize ``nb`` and write it atomically, refreshing the read record.
+
+    The write is conditional on ``expected_mtime``, the value
+    :func:`open_notebook_for_write` returned.
+    """
     new_bytes = _nbformat().writes(nb).encode("utf-8")
-    record = state.get_read_record(resolved) if state is not None else None
-    try:
+    with refuse_if_stale(resolved, action="modifying"):
         new_mtime = await backend.write_bytes(
             resolved,
             new_bytes,
             mode=mode,
             overwrite=True,
-            expected_mtime=record.mtime if record is not None else None,
+            expected_mtime=expected_mtime,
         )
-    except StaleFileError as exc:
-        raise ValueError(
-            f"{resolved} was modified since you last read it ({exc}). "
-            "Re-Read before modifying."
-        ) from exc
     if state is not None:
         state.record_write(resolved, new_mtime)
 
@@ -641,11 +655,13 @@ class NotebookEditTool(BaseTool[NotebookEditInput, NotebookEditResult, Any]):
             if state is not None and state.dotfile_overrides
             else None
         )
-        resolved, nb, mode = await open_notebook_for_write(
+        resolved, nb, mode, expected_mtime = await open_notebook_for_write(
             backend, state, inp.notebook_path, overrides=overrides
         )
         result_cell_id, result_cell_type = self._apply_edit(nb, inp, resolved)
-        await write_notebook(backend, resolved, nb, mode=mode, state=state)
+        await write_notebook(
+            backend, resolved, nb, mode=mode, expected_mtime=expected_mtime, state=state
+        )
 
         return NotebookEditResult(
             path=str(resolved),

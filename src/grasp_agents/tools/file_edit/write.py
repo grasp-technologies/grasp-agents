@@ -29,9 +29,10 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from grasp_agents.file_backend.base import StaleFileError
 from grasp_agents.file_backend.paths import PathAccessError
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
+
+from .session_state import refuse_if_stale
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
@@ -183,7 +184,7 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
             )
 
         data = inp.content.encode("utf-8")
-        try:
+        with refuse_if_stale(resolved, action="writing"):
             new_mtime = await backend.write_bytes(
                 resolved,
                 data,
@@ -191,11 +192,6 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
                 overwrite=True,
                 expected_mtime=expected_mtime,
             )
-        except StaleFileError as exc:
-            raise ValueError(
-                f"{resolved} was modified since you last read it ({exc}). "
-                "Re-Read before writing."
-            ) from exc
         if state is not None:
             state.record_write(resolved, new_mtime)
 
