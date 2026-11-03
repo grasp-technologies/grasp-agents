@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import posixpath
 import stat as stat_module
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -40,7 +39,7 @@ from typing import TYPE_CHECKING
 
 from .base import FileBackend, FileEntry, FileStat, GrepOutputMode, GrepRawResult
 from .local import glob_filter_entries
-from .paths import PathAccessError
+from .paths import PathAccessError, normalize_posix
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -94,7 +93,7 @@ class CompositeFileBackend(FileBackend):
             raw = PurePosixPath(mount.path)
             if not raw.is_absolute():
                 raise ValueError(f"Mount path must be absolute: {mount.path}")
-            if str(mount.path) != posixpath.normpath(str(mount.path)):
+            if raw != normalize_posix(raw):
                 raise ValueError(f"Mount path must be normalized: {mount.path}")
             if raw in paths:
                 raise ValueError(f"duplicate mount path: {mount.path}")
@@ -119,7 +118,7 @@ class CompositeFileBackend(FileBackend):
         if scratch is None:
             self._scratch = self._mounts[0]
         else:
-            match = self._mount_at(_norm(scratch))
+            match = self._mount_at(normalize_posix(scratch))
             if match is None:
                 raise ValueError(f"scratch {scratch} is not one of the mount paths.")
             if match.read_only:
@@ -140,7 +139,7 @@ class CompositeFileBackend(FileBackend):
 
     def mount_for(self, path: Path) -> Mount | None:
         """The mount containing ``path`` (lexically normalized), or None."""
-        return self._mount_containing(_norm(path))
+        return self._mount_containing(normalize_posix(path))
 
     @property
     def allowed_roots(self) -> list[Path]:
@@ -191,7 +190,7 @@ class CompositeFileBackend(FileBackend):
             access=access,
             dotfile_overrides=dotfile_overrides,
         )
-        if self._mount_containing(_norm(resolved)) is not mount:
+        if self._mount_containing(normalize_posix(resolved)) is not mount:
             raise PathAccessError(
                 f"{path} resolves to {resolved}, outside its mount {mount.path}."
             )
@@ -200,7 +199,7 @@ class CompositeFileBackend(FileBackend):
     # ---- metadata -------------------------------------------------------------
 
     async def stat(self, path: Path) -> FileStat:
-        target = _norm(path)
+        target = normalize_posix(path)
         mount = self._mount_containing(target)
         if mount is None:
             if self._is_virtual_dir(target):
@@ -209,14 +208,14 @@ class CompositeFileBackend(FileBackend):
         return await mount.backend.stat(Path(str(target)))
 
     async def exists(self, path: Path) -> bool:
-        target = _norm(path)
+        target = normalize_posix(path)
         mount = self._mount_containing(target)
         if mount is None:
             return self._is_virtual_dir(target)
         return await mount.backend.exists(Path(str(target)))
 
     async def parent_exists(self, path: Path) -> bool:
-        target = _norm(path)
+        target = normalize_posix(path)
         if self._is_virtual_dir(target.parent):
             return True
         mount = self._mount_containing(target.parent)
@@ -257,7 +256,7 @@ class CompositeFileBackend(FileBackend):
         await mount.backend.delete(target, expected_mtime=expected_mtime)
 
     async def mkdir(self, path: Path) -> None:
-        target = _norm(path)
+        target = normalize_posix(path)
         if self._is_virtual_dir(target) or self._mount_at(target) is not None:
             return
         mount, routed = self._route_write(path)
@@ -266,7 +265,7 @@ class CompositeFileBackend(FileBackend):
     # ---- listing and search ---------------------------------------------------
 
     async def list_dir(self, path: Path, *, recursive: bool = False) -> list[FileEntry]:
-        target = _norm(path)
+        target = normalize_posix(path)
         mount = self._mount_containing(target)
         if mount is not None:
             return await mount.backend.list_dir(Path(str(target)), recursive=recursive)
@@ -301,7 +300,7 @@ class CompositeFileBackend(FileBackend):
         include_hidden: bool = False,
         head_limit: int = 250,
     ) -> tuple[list[FileEntry], bool]:
-        target = _norm(root)
+        target = normalize_posix(root)
         mount = self._mount_containing(target)
         if mount is not None:
             return await mount.backend.find_files(
@@ -334,7 +333,7 @@ class CompositeFileBackend(FileBackend):
         after_context: int | None = None,
         context: int | None = None,
     ) -> GrepRawResult:
-        target = _norm(root)
+        target = normalize_posix(root)
 
         async def run(backend: FileBackend, at: Path) -> GrepRawResult:
             return await backend.grep(
@@ -388,7 +387,7 @@ class CompositeFileBackend(FileBackend):
         raw = PurePosixPath(path)
         if not raw.is_absolute():
             raw = PurePosixPath(self._scratch.path) / raw
-        return _norm(raw)
+        return normalize_posix(raw)
 
     def _mount_at(self, target: PurePosixPath) -> Mount | None:
         return next((m for m in self._mounts if PurePosixPath(m.path) == target), None)
@@ -407,7 +406,7 @@ class CompositeFileBackend(FileBackend):
         return bool(self._mounts_below(target))
 
     def _route_file(self, path: Path) -> tuple[Mount, Path]:
-        target = _norm(path)
+        target = normalize_posix(path)
         mount = self._mount_containing(target)
         if mount is None:
             if self._is_virtual_dir(target):
@@ -416,7 +415,7 @@ class CompositeFileBackend(FileBackend):
         return mount, Path(str(target))
 
     def _route_write(self, path: Path) -> tuple[Mount, Path]:
-        target = _norm(path)
+        target = normalize_posix(path)
         mount = self._mount_containing(target)
         if mount is None:
             raise PathAccessError(
@@ -432,10 +431,6 @@ class CompositeFileBackend(FileBackend):
         return ", ".join(
             f"{m.path}{' (read-only)' if m.read_only else ''}" for m in self._mounts
         )
-
-
-def _norm(path: Path | PurePosixPath | str) -> PurePosixPath:
-    return PurePosixPath(posixpath.normpath(PurePosixPath(path).as_posix()))
 
 
 __all__ = ["CompositeFileBackend", "Mount"]

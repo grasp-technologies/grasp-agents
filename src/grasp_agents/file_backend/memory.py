@@ -9,7 +9,6 @@ under it, when it was created with :meth:`mkdir`, or when it is a root.
 
 from __future__ import annotations
 
-import posixpath
 import stat as stat_module
 import time
 from dataclasses import dataclass
@@ -25,7 +24,7 @@ from .base import (
     StaleFileError,
 )
 from .local import glob_filter_entries
-from .paths import PathAccessError
+from .paths import PathAccessError, normalize_posix
 from .text_grep import grep_texts
 
 if TYPE_CHECKING:
@@ -66,7 +65,9 @@ class InMemoryFileBackend(FileBackend):
         *,
         files: Mapping[str | Path, str | bytes] | None = None,
     ) -> None:
-        self._allowed_roots: list[Path] = [Path(_norm(r)) for r in allowed_roots]
+        self._allowed_roots: list[Path] = [
+            Path(normalize_posix(r)) for r in allowed_roots
+        ]
         for root in self._allowed_roots:
             if not PurePosixPath(root).is_absolute():
                 raise ValueError(f"InMemoryFileBackend roots must be absolute: {root}")
@@ -75,7 +76,9 @@ class InMemoryFileBackend(FileBackend):
         self._last_mtime = 0.0
         for raw_path, content in (files or {}).items():
             data = content.encode("utf-8") if isinstance(content, str) else content
-            self._files[_norm(raw_path)] = _File(data, self._next_mtime(), 0o644)
+            self._files[normalize_posix(raw_path)] = _File(
+                data, self._next_mtime(), 0o644
+            )
 
     # ---- address space ----------------------------------------------------
 
@@ -84,7 +87,7 @@ class InMemoryFileBackend(FileBackend):
         return list(self._allowed_roots)
 
     def add_allowed_root(self, root: Path) -> None:
-        resolved = Path(_norm(root))
+        resolved = Path(normalize_posix(root))
         if any(resolved == r or r in resolved.parents for r in self._allowed_roots):
             return
         self._allowed_roots.append(resolved)
@@ -103,7 +106,7 @@ class InMemoryFileBackend(FileBackend):
         raw = PurePosixPath(path)
         if not raw.is_absolute():
             raw = PurePosixPath(self._allowed_roots[0]) / raw
-        candidate = _norm(raw)
+        candidate = normalize_posix(raw)
         if not any(
             candidate == PurePosixPath(r) or PurePosixPath(r) in candidate.parents
             for r in self._allowed_roots
@@ -118,7 +121,7 @@ class InMemoryFileBackend(FileBackend):
     # ---- metadata -----------------------------------------------------------
 
     async def stat(self, path: Path) -> FileStat:
-        key = _norm(path)
+        key = normalize_posix(path)
         entry = self._files.get(key)
         if entry is not None:
             return FileStat(
@@ -131,11 +134,11 @@ class InMemoryFileBackend(FileBackend):
         raise FileNotFoundError(f"No such file or directory: {path}")
 
     async def exists(self, path: Path) -> bool:
-        key = _norm(path)
+        key = normalize_posix(path)
         return key in self._files or self._is_dir(key)
 
     async def parent_exists(self, path: Path) -> bool:
-        return self._is_dir(_norm(path).parent)
+        return self._is_dir(normalize_posix(path).parent)
 
     # ---- content ------------------------------------------------------------
 
@@ -144,7 +147,7 @@ class InMemoryFileBackend(FileBackend):
         return data.decode("utf-8", errors="replace"), mtime
 
     async def read_bytes(self, path: Path) -> tuple[bytes, float]:
-        entry = self._require_file(_norm(path))
+        entry = self._require_file(normalize_posix(path))
         return entry.data, entry.mtime
 
     async def write_bytes(
@@ -156,7 +159,7 @@ class InMemoryFileBackend(FileBackend):
         overwrite: bool = True,
         expected_mtime: float | None = None,
     ) -> float:
-        key = _norm(path)
+        key = normalize_posix(path)
         if self._is_dir(key):
             raise IsADirectoryError(f"Is a directory: {path}")
         current = self._files.get(key)
@@ -168,7 +171,7 @@ class InMemoryFileBackend(FileBackend):
         return mtime
 
     async def append_bytes(self, path: Path, data: bytes, *, mode: int) -> float:
-        key = _norm(path)
+        key = normalize_posix(path)
         current = self._files.get(key)
         existing = current.data if current is not None else b""
         file_mode = current.mode if current is not None else mode & 0o7777
@@ -177,13 +180,13 @@ class InMemoryFileBackend(FileBackend):
         return mtime
 
     async def delete(self, path: Path, *, expected_mtime: float | None = None) -> None:
-        key = _norm(path)
+        key = normalize_posix(path)
         current = self._require_file(key)
         self._check_expected(path, current, expected_mtime)
         del self._files[key]
 
     async def mkdir(self, path: Path) -> None:
-        key = _norm(path)
+        key = normalize_posix(path)
         if key in self._files:
             raise FileExistsError(f"A file exists at {path}")
         self._dirs.add(key)
@@ -191,7 +194,7 @@ class InMemoryFileBackend(FileBackend):
     # ---- listing and search -------------------------------------------------
 
     async def list_dir(self, path: Path, *, recursive: bool = False) -> list[FileEntry]:
-        base = _norm(path)
+        base = normalize_posix(path)
         if not self._is_dir(base):
             return []
         seen: dict[PurePosixPath, FileEntry] = {}
@@ -218,7 +221,7 @@ class InMemoryFileBackend(FileBackend):
         entries = await self.list_dir(root, recursive=True)
         return glob_filter_entries(
             entries,
-            Path(_norm(root)),
+            Path(normalize_posix(root)),
             pattern,
             include_hidden=include_hidden,
             head_limit=head_limit,
@@ -239,7 +242,7 @@ class InMemoryFileBackend(FileBackend):
         after_context: int | None = None,
         context: int | None = None,
     ) -> GrepRawResult:
-        base = _norm(root)
+        base = normalize_posix(root)
         pairs = [
             (Path(key), entry.data.decode("utf-8", errors="replace"))
             for key, entry in self._files.items()
@@ -322,10 +325,6 @@ class InMemoryFileBackend(FileBackend):
         return FileEntry(
             name=key.name, path=Path(key), is_dir=True, mtime=self._dir_mtime(key)
         )
-
-
-def _norm(path: Path | PurePosixPath | str) -> PurePosixPath:
-    return PurePosixPath(posixpath.normpath(PurePosixPath(path).as_posix()))
 
 
 __all__ = ["InMemoryFileBackend"]

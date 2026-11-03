@@ -31,15 +31,13 @@ backend renders them as POSIX strings for the wire.
 from __future__ import annotations
 
 import json
-import posixpath
-from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
 from grasp_agents.mcp.resource_index import AnyUrl, MCPResourceIndex
 
 from .base import FileBackend, FileEntry, FileStat, GrepRawResult, StaleFileError
 from .local import glob_filter_entries
-from .paths import PathAccessError
+from .paths import PathAccessError, normalize_posix
 
 try:
     from mcp.types import TextContent, TextResourceContents
@@ -133,17 +131,11 @@ class MCPFileBackend(FileBackend):
 
     # ---- Path / URI helpers --------------------------------------------------
 
-    def _posix(self, path: Path) -> PurePosixPath:
-        # ``normpath`` collapses ``./`` and ``../`` lexically (safe — MCP
-        # paths live in the server's address space, no client-side
-        # symlinks), so containment checks cannot be escaped via ``..``.
-        return PurePosixPath(posixpath.normpath(PurePosixPath(path).as_posix()))
-
     def _to_uri(self, path: Path) -> str:
-        return self._index.make_uri(self._posix(path))
+        return self._index.make_uri(normalize_posix(path))
 
     def _to_wire(self, path: Path) -> str:
-        return str(self._posix(path))
+        return str(normalize_posix(path))
 
     def _canonical(self, path: Path) -> Path:
         """
@@ -156,7 +148,7 @@ class MCPFileBackend(FileBackend):
         (e.g. ``Read`` post-validate_path vs. ``MemoryProvider`` loading
         the snapshot) hash to the same entry.
         """
-        return type(path)(str(self._posix(path)))
+        return type(path)(str(normalize_posix(path)))
 
     # ---- FileBackend protocol ------------------------------------------------
 
@@ -173,9 +165,9 @@ class MCPFileBackend(FileBackend):
         if not self._allowed_roots:
             raise PathAccessError("No allowed_roots configured for MCP file backend.")
 
-        candidate = self._posix(path)
+        candidate = normalize_posix(path)
         for root in self._allowed_roots:
-            root_posix = self._posix(root)
+            root_posix = normalize_posix(root)
             if candidate == root_posix or root_posix in candidate.parents:
                 # Reconstruct in the caller's Path flavor (PosixPath /
                 # WindowsPath / etc.) so they keep their preferred type.
@@ -208,8 +200,8 @@ class MCPFileBackend(FileBackend):
         # listed resource sits under it. Sufficient for the Write-tool
         # parent-existence check, which only needs to refuse silent
         # parent-creation.
-        parent = self._posix(path).parent
-        if str(parent) == str(self._posix(path)):
+        parent = normalize_posix(path).parent
+        if str(parent) == str(normalize_posix(path)):
             return True
         if await self._index.get(self._index.make_uri(parent)) is not None:
             return True
@@ -286,7 +278,9 @@ class MCPFileBackend(FileBackend):
         del path
 
     async def list_dir(self, path: Path, *, recursive: bool = False) -> list[FileEntry]:
-        entries = await self._index.children_of(self._posix(path), recursive=recursive)
+        entries = await self._index.children_of(
+            normalize_posix(path), recursive=recursive
+        )
         return [
             FileEntry(
                 name=e.path.name,
