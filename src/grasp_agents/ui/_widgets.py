@@ -181,9 +181,17 @@ class PromptArea(TextArea):
             return
         await super()._on_key(event)
 
+    def on_resize(self) -> None:
+        # a new width rewraps the text; resize once TextArea has rewrapped it
+        self.call_after_refresh(self.sync_height)
+
     def sync_height(self) -> None:
-        # sits at the bottom of the screen, so growing its height expands upward
-        self.styles.height = min(max(self.document.line_count, 1), self._MAX_ROWS)
+        # Wrapped rows, so a long line grows the box as a newline does. The box
+        # sits at the bottom of the screen, so growing its height expands upward.
+        rows = (
+            self.wrapped_document.height if self.soft_wrap else self.document.line_count
+        )
+        self.styles.height = min(max(rows, 1), self._MAX_ROWS)
 
 
 class SelectableStatic(Static):

@@ -23,6 +23,7 @@ from grasp_agents.sandbox import local_environment
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.tools.function_tool import function_tool
+from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.events import ToolErrorInfo
 from grasp_agents.types.items import FunctionToolCallItem, InputMessageItem
 from tests._helpers import MockLLM, _make_agent_loop
@@ -252,3 +253,76 @@ class TestConvertToolOutputSpill:
         assert "chars omitted" in item.text
         spilled = tmp_path / ".grasp" / "tasks" / "c1.result"
         assert spilled.read_text() == "X" * 1000
+
+
+# ---------- results with several parts ----------
+
+_PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+
+class TestConvertMultipartOutputSpill:
+    @pytest.mark.asyncio
+    async def test_large_text_part_spills_and_images_stay(self, tmp_path: Path) -> None:
+        ctx = _backed_ctx(tmp_path)
+        loop = _loop([capped], ctx=ctx)
+        call = FunctionToolCallItem(call_id="c1", name="capped", arguments="{}")
+        image = InputImage.from_base64(_PIXEL, mime_type="image/png")
+        output = [InputText(text="R" * 1000), InputText(text="Screenshot:"), image]
+
+        item = await loop._convert_tool_output(output, call, exec_id="t")  # pyright: ignore[reportPrivateUsage]
+
+        assert isinstance(item.output, list)
+        report, caption, kept = item.output
+        assert isinstance(report, InputText)
+        spilled = tmp_path / ".grasp" / "tasks" / "c1.result"
+        assert f"full output in {spilled}" in report.text
+        assert spilled.read_text() == "R" * 1000
+        assert caption == InputText(text="Screenshot:")
+        assert kept == image
+
+    @pytest.mark.asyncio
+    async def test_each_large_text_part_gets_its_own_file(self, tmp_path: Path) -> None:
+        ctx = _backed_ctx(tmp_path)
+        loop = _loop([capped], ctx=ctx)
+        call = FunctionToolCallItem(call_id="c1", name="capped", arguments="{}")
+        output = [InputText(text="A" * 500), InputText(text="B" * 500)]
+
+        await loop._convert_tool_output(output, call, exec_id="t")  # pyright: ignore[reportPrivateUsage]
+
+        tasks = tmp_path / ".grasp" / "tasks"
+        assert (tasks / "c1.result").read_text() == "A" * 500
+        assert (tasks / "c1-2.result").read_text() == "B" * 500
+
+    @pytest.mark.asyncio
+    async def test_small_parts_are_not_spilled(self, tmp_path: Path) -> None:
+        ctx = _backed_ctx(tmp_path)
+        loop = _loop([capped], ctx=ctx)
+        call = FunctionToolCallItem(call_id="c1", name="capped", arguments="{}")
+        output = [InputText(text="ok"), InputText(text="fine")]
+
+        item = await loop._convert_tool_output(output, call, exec_id="t")  # pyright: ignore[reportPrivateUsage]
+
+        assert item.output == output
+        assert not (tmp_path / ".grasp" / "tasks").exists()
+
+    @pytest.mark.asyncio
+    async def test_parts_under_the_cap_spill_when_together_they_exceed_it(
+        self, tmp_path: Path
+    ) -> None:
+        ctx = _backed_ctx(tmp_path)
+        loop = _loop([capped], ctx=ctx)
+        call = FunctionToolCallItem(call_id="c1", name="capped", arguments="{}")
+        output = [InputText(text=letter * 60) for letter in "ABCD"]
+
+        item = await loop._convert_tool_output(output, call, exec_id="t")  # pyright: ignore[reportPrivateUsage]
+
+        assert isinstance(item.output, list)
+        tasks = tmp_path / ".grasp" / "tasks"
+        names = ["c1.result", "c1-2.result", "c1-3.result", "c1-4.result"]
+        for part, letter, name in zip(item.output, "ABCD", names, strict=True):
+            assert isinstance(part, InputText)
+            assert (tasks / name).read_text() == letter * 60
+            # Each part previews a quarter of the cap: 12 chars of head, 13 of tail.
+            assert part.text.startswith(letter * 12 + "\n")
+            assert part.text.endswith("\n" + letter * 13)
+            assert f"full output in {tasks / name}" in part.text

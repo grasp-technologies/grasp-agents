@@ -81,7 +81,7 @@ from .loop_state import (
     NextStepStop,
     decide_next_step,
 )
-from .task_progress import spill_if_large
+from .task_progress import spill_if_large, spill_parts_if_large
 from .tool_decision import (
     AllowTool,
     RaiseToolException,
@@ -112,6 +112,20 @@ if TYPE_CHECKING:
 
 
 logger = getLogger(__name__)
+
+# What a stopped run tells the model, and its unfinished tool calls, by reason.
+_STOP_NOTICE: Final[dict[StopReason, str]] = {
+    StopReason.MAX_TURNS: "Exceeded the maximum number of turns: provide a final "
+    "answer now!",
+    StopReason.TIMEOUT: "Ran out of time for this run: provide a final answer now!",
+}
+_CANCELLED_CALL: Final[dict[StopReason, str]] = {
+    StopReason.MAX_TURNS: "[Tool call cancelled: agent reached turn limit]",
+    StopReason.TIMEOUT: "[Tool call cancelled: agent ran out of time]",
+}
+
+# How often a lone agent waiting on background work re-emits the tasks' progress.
+_BG_PROGRESS_INTERVAL = 0.25
 
 
 def _truncation_notice(response: Response) -> str:
@@ -418,13 +432,16 @@ class AgentLoop[CtxT]:
             parts = FunctionToolOutputItem.from_tool_result(
                 call_id=call.call_id, output=output
             ).output
-            if not is_error and isinstance(parts, str):
-                parts, _ = await spill_if_large(
-                    self.ctx.file_backend,
-                    name=call.call_id,
-                    text=parts,
-                    cap=tool.max_inline_result_chars if tool is not None else None,
-                )
+            cap = tool.max_inline_result_chars if tool is not None else None
+            if not is_error:
+                if isinstance(parts, str):
+                    parts, _ = await spill_if_large(
+                        self.ctx.file_backend, name=call.call_id, text=parts, cap=cap
+                    )
+                else:
+                    parts = await spill_parts_if_large(
+                        self.ctx.file_backend, name=call.call_id, parts=parts, cap=cap
+                    )
 
         # Fence external content so the model reads it as data, not instructions
         # (paired with the ``untrusted_content`` system-prompt section).
@@ -917,11 +934,10 @@ class AgentLoop[CtxT]:
         self,
         exec_id: str,
         extra_llm_settings: dict[str, Any],
+        stop_reason: StopReason = StopReason.MAX_TURNS,
     ) -> AsyncIterator[Event[Any]]:
         user_message = InputMessageItem.from_text(
-            wrap_in_system_reminder(
-                "Exceeded the maximum number of turns: provide a final answer now!"
-            ),
+            wrap_in_system_reminder(_STOP_NOTICE[stop_reason]),
             role="user",
         )
         self.cw.add_messages([user_message])
@@ -1011,7 +1027,7 @@ class AgentLoop[CtxT]:
         return [tc for tc in tool_calls if tc.call_id not in answered]
 
     def _close_dangling_tool_calls(
-        self, response: Response
+        self, response: Response, stop_reason: StopReason = StopReason.MAX_TURNS
     ) -> list[tuple[FunctionToolCallItem, FunctionToolOutputItem]]:
         """
         Inject synthetic tool outputs for tool calls that will never execute.
@@ -1025,8 +1041,7 @@ class AgentLoop[CtxT]:
             (
                 tc,
                 FunctionToolOutputItem.from_tool_result(
-                    call_id=tc.call_id,
-                    output="[Tool call cancelled: agent reached turn limit]",
+                    call_id=tc.call_id, output=_CANCELLED_CALL[stop_reason]
                 ),
             )
             for tc in self._unanswered_tool_calls(response)
@@ -1325,13 +1340,14 @@ class AgentLoop[CtxT]:
         kill deliberately backgrounded work; completion notes land at a later
         run's turn boundary.
         """
-        closures = self._close_dangling_tool_calls(response)
+        closures = self._close_dangling_tool_calls(response, stop_reason)
         for closure_event in self._closure_events(closures, exec_id=exec_id):
             yield closure_event
 
         async for event in self._force_generate_final_answer_stream(
             exec_id=exec_id,
             extra_llm_settings=extra_llm_settings,
+            stop_reason=stop_reason,
         ):
             yield event
 
@@ -1487,34 +1503,61 @@ class AgentLoop[CtxT]:
 
     # --- Inbox / background-task message queues ---
 
-    async def _await_inbox(self) -> None:
+    async def _await_inbox(self) -> AsyncIterator[Event[Any]]:
         """
         Resident PRE-ACT wait — the inbox counterpart to
         :meth:`BackgroundTaskManager.wait_idle`. Block until there is something to
         deliver: a peer message queued in the inbox, or a pending background-task
-        completion (both surfaced by the drains below). Ended from outside by
-        cancelling the resident run's task.
+        completion (both surfaced by the drains below), re-emitting background
+        progress between polls. Ended from outside by cancelling the resident
+        run's task.
         """
         assert self.inbox is not None
 
         # NOTE: inbox.has_pending can be a property?
 
         # Mark the inbox parked ("waiting") so a team supervisor can read this loop
-        # as idle while it blocks here (the per-actor quiescence signal).
-        with self.inbox.waiting():
-            while not (
-                await self.inbox.has_pending()
-                or self.bg_tasks.has_undelivered_completions
-            ):
+        # as idle while it checks and blocks here (the per-actor quiescence
+        # signal). Progress is gathered while waiting and passed on after: an
+        # async generator mustn't yield inside a context manager.
+        while True:
+            with self.inbox.waiting():
+                if (
+                    await self.inbox.has_pending()
+                    or self.bg_tasks.has_undelivered_completions
+                ):
+                    return
                 await self.inbox.wait(timeout=self._inbox_poll_interval)
+                progress = [event async for event in self.bg_tasks.bubble_events()]
+            for event in progress:
+                yield event
 
-    async def _await_bg_tasks(self) -> None:
-        idle_timeout = (
-            max(0.0, self._deadline - time.monotonic())
-            if self._deadline is not None
-            else None
-        )
-        await self.bg_tasks.wait_idle(timeout=idle_timeout)
+    async def _await_bg_tasks(self) -> AsyncIterator[Event[Any]]:
+        """
+        Lone-agent PRE-ACT wait: block until the next background task completes,
+        at once when none is outstanding and no longer than the run deadline,
+        re-emitting background progress while waiting.
+        """
+        while True:
+            remaining = (
+                max(0.0, self._deadline - time.monotonic())
+                if self._deadline is not None
+                else None
+            )
+            step = (
+                _BG_PROGRESS_INTERVAL
+                if remaining is None
+                else min(_BG_PROGRESS_INTERVAL, remaining)
+            )
+            await self.bg_tasks.wait_idle(timeout=step)
+            async for event in self.bg_tasks.bubble_events():
+                yield event
+            if (
+                self.bg_tasks.has_undelivered_completions
+                or not self.bg_tasks.has_tracked_tasks
+                or (remaining is not None and remaining <= step)
+            ):
+                return
 
     async def _drain_inbox(self, *, exec_id: str) -> AsyncIterator[Event[Any]]:
         """
@@ -1635,18 +1678,23 @@ class AgentLoop[CtxT]:
             # the agent has nothing to respond to (user messages or tool outputs)
             # at this turn.
             if not self.cw.transcript.owes_response:
+                # Both waits re-emit the background tasks' live progress while
+                # parked, so a sub-agent's output streams as it happens rather
+                # than at the next turn boundary.
                 if self.inbox is not None:
                     # Resident: park for the next inbox message (or a pending
                     # background completion). Indefinite — ended only when the
                     # run's task is cancelled from outside.
-                    await self._await_inbox()
+                    async for event in self._await_inbox():
+                        yield event
                 else:
                     # Lone agent: a bounded idle-wait for outstanding
                     # background work (returns at once when there is none).
                     # Capped by the remaining run-timeout budget so a
                     # non-blocking task that never completes can't block past
                     # the deadline (the next JUDGE check then stops the run).
-                    await self._await_bg_tasks()
+                    async for event in self._await_bg_tasks():
+                        yield event
 
             # Turn-boundary delivery: the next resident inbox message as a user
             # turn, then the background tasks' live progress (bubbled events,

@@ -37,6 +37,7 @@ from grasp_agents.types.items import (
 )
 from grasp_agents.types.response import Response
 from tests._helpers import (
+    AddTool,
     MockLLM,
     _make_agent_ctx,
     _make_agent_loop,
@@ -1313,3 +1314,249 @@ class TestFrontTrim:
         streamed = [e for e in events if isinstance(e, ToolStreamEvent)]
         assert streamed
         assert all(e.destination is None for e in streamed)
+
+
+class _GatedStreamingTool(BaseTool[EchoInput, Any, Any]):
+    """A backgrounded tool that reports progress, then waits for ``gate``."""
+
+    def __init__(self, gate: asyncio.Event) -> None:
+        super().__init__(
+            name="gated", description="Streams, then waits", auto_background_at=0
+        )
+        self._gate = gate
+
+    async def _run(self, inp, *, ctx=None, **kwargs):
+        del inp, ctx, kwargs
+        return "done"
+
+    async def _run_stream(self, inp, *, exec_id=None, **kwargs):
+        del inp, kwargs
+        from grasp_agents.types.events import ToolOutputEvent, ToolStreamEvent
+
+        # Report only once the agent has answered and parked.
+        await asyncio.sleep(0.3)
+        yield ToolStreamEvent(data="progress", source="gated", exec_id=exec_id)
+        await self._gate.wait()
+        yield ToolOutputEvent(data="done", source="gated", exec_id=exec_id)
+
+
+async def _progress_seen_before_completion(
+    stream: Any, gate: asyncio.Event, until: Any
+) -> bool:
+    """Consume ``stream``, opening ``gate`` on the task's progress, up to ``until``."""
+    from grasp_agents.types.events import ToolStreamEvent
+
+    early = False
+    async for event in stream:
+        if isinstance(event, ToolStreamEvent) and event.data == "progress":
+            early = not gate.is_set()
+            gate.set()
+        if until(event):
+            break
+    return early
+
+
+class TestProgressWhileParked:
+    """An agent waiting on background work streams the work's progress as it happens."""
+
+    @pytest.mark.asyncio
+    async def test_lone_agent_streams_progress_while_waiting(self):
+        gate = asyncio.Event()
+        executor, transcript, _ = _make_executor(
+            [
+                _tool_call_response("gated", '{"text": "x"}', "c1"),
+                _text_response("waiting for it"),
+                _text_response("all done"),
+            ],
+            tools=[_GatedStreamingTool(gate)],
+        )
+        early = await asyncio.wait_for(
+            _progress_seen_before_completion(
+                executor.execute_stream(exec_id="t"), gate, lambda _e: False
+            ),
+            timeout=10,
+        )
+        assert early
+        assert transcript.messages[-1].text == "all done"
+
+    @pytest.mark.asyncio
+    async def test_resident_streams_progress_while_parked(self):
+        from grasp_agents.agent.llm_agent import LLMAgent
+        from grasp_agents.types.message import CONTROL_PRIORITY, TeamMessage
+
+        gate = asyncio.Event()
+        ctx = SessionContext[None](state=None)
+        with ctx:
+            agent = LLMAgent[str, str, None](
+                name="resident",
+                llm=MockLLM(
+                    responses_queue=[
+                        _tool_call_response("gated", '{"text": "x"}', "c1"),
+                        _text_response("started it"),
+                        _text_response("it finished"),
+                    ]
+                ),
+                tools=[_GatedStreamingTool(gate)],
+            )
+        agent.attach_inbox()
+        await ctx.transport.post(
+            TeamMessage.from_input(
+                sender="user",
+                to="resident",
+                chat_inputs="go",
+                priority=CONTROL_PRIORITY,
+            )
+        )
+        stream = agent.run_stream()
+        try:
+            early = await asyncio.wait_for(
+                _progress_seen_before_completion(
+                    stream,
+                    gate,
+                    lambda e: isinstance(e, BackgroundTaskCompletedEvent),
+                ),
+                timeout=10,
+            )
+        finally:
+            await stream.aclose()
+        assert early
+
+
+class _UnheldTool(BaseTool[EchoInput, Any, Any]):
+    """A backgrounded tool that does not hold the run; done when ``gate`` opens."""
+
+    def __init__(self, gate: asyncio.Event) -> None:
+        super().__init__(
+            name="unheld",
+            description="Waits",
+            auto_background_at=0,
+            blocks_final_answer=False,
+        )
+        self._gate = gate
+
+    async def _run(self, inp, *, ctx=None, **kwargs):
+        del inp, ctx, kwargs
+        await self._gate.wait()
+        return "done"
+
+
+class TestDeliveryBetweenRuns:
+    """A task that finishes after its run ended is delivered by a run with no input."""
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_input_delivers_a_finished_task(self):
+        from grasp_agents.agent.llm_agent import LLMAgent
+
+        gate = asyncio.Event()
+        ctx = SessionContext[None](state=None)
+        with ctx:
+            agent = LLMAgent[str, str, None](
+                name="lone",
+                llm=MockLLM(
+                    responses_queue=[
+                        _tool_call_response("unheld", '{"text": "x"}', "c1"),
+                        _text_response("started it"),
+                        _text_response("it finished"),
+                    ]
+                ),
+                tools=[_UnheldTool(gate)],
+            )
+
+        first = await asyncio.wait_for(agent.run("go"), timeout=10)
+
+        bg = agent.agent_ctx.bg_tasks
+        assert first.payloads[0] == "started it"
+        assert bg.has_live_tasks
+        gate.set()
+        async with asyncio.timeout(10):
+            # A level-triggered property: nothing to await.
+            while not bg.has_undelivered_completions:  # ruff: ignore[async-busy-wait]
+                await asyncio.sleep(0.01)
+
+        second = await asyncio.wait_for(agent.run(), timeout=10)
+
+        assert second.payloads[0] == "it finished"
+        notes = [i.text for i in agent.transcript if isinstance(i, InputMessageItem)]
+        assert any("done" in note for note in notes)
+        assert not bg.has_tracked_tasks
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_input_and_nothing_to_deliver_is_rejected(self):
+        from grasp_agents.agent.llm_agent import LLMAgent
+        from grasp_agents.types.errors import ProcInputValidationError, ProcRunError
+
+        ctx = SessionContext[None](state=None)
+        with ctx:
+            agent = LLMAgent[str, str, None](
+                name="lone", llm=MockLLM(responses_queue=[])
+            )
+
+        with pytest.raises(ProcRunError) as failure:
+            await agent.run()
+        assert isinstance(failure.value.__cause__, ProcInputValidationError)
+
+    @pytest.mark.asyncio
+    async def test_a_delivery_run_gets_the_full_turn_budget(self):
+        from grasp_agents.agent.llm_agent import LLMAgent
+
+        gate = asyncio.Event()
+        ctx = SessionContext[None](state=None)
+        with ctx:
+            agent = LLMAgent[str, str, None](
+                name="lone",
+                llm=MockLLM(
+                    responses_queue=[
+                        _tool_call_response("unheld", '{"text": "x"}', "c1"),
+                        _text_response("started it"),
+                        _tool_call_response("add", '{"a": 1, "b": 2}', "c2"),
+                        _text_response("acted on it"),
+                    ]
+                ),
+                tools=[_UnheldTool(gate), AddTool()],
+                max_turns=1,
+            )
+
+        await asyncio.wait_for(agent.run("go"), timeout=10)
+        bg = agent.agent_ctx.bg_tasks
+        gate.set()
+        async with asyncio.timeout(10):
+            while not bg.has_undelivered_completions:  # ruff: ignore[async-busy-wait]
+                await asyncio.sleep(0.01)
+
+        second = await asyncio.wait_for(agent.run(), timeout=10)
+
+        # The first run spent its one turn on a tool call. The delivery run gets
+        # its own, so it can call a tool on the result without being cut short.
+        assert second.payloads[0] == "acted on it"
+        notes = [i.text for i in agent.transcript if isinstance(i, InputMessageItem)]
+        assert not any("maximum number of turns" in note for note in notes)
+
+    @pytest.mark.asyncio
+    async def test_a_killed_task_leaves_nothing_to_deliver(self):
+        from grasp_agents.agent.llm_agent import LLMAgent
+        from grasp_agents.types.errors import ProcInputValidationError, ProcRunError
+
+        ctx = SessionContext[None](state=None)
+        with ctx:
+            agent = LLMAgent[str, str, None](
+                name="lone",
+                llm=MockLLM(
+                    responses_queue=[
+                        _tool_call_response("unheld", '{"text": "x"}', "c1"),
+                        _text_response("started it"),
+                    ]
+                ),
+                tools=[_UnheldTool(asyncio.Event())],
+            )
+
+        await asyncio.wait_for(agent.run("go"), timeout=10)
+        bg = agent.agent_ctx.bg_tasks
+        (task_id,) = bg._tasks  # pyright: ignore[reportPrivateUsage]
+
+        await bg.kill_task(task_id)
+
+        # Its done-callback still queued the id, with nothing left to deliver.
+        assert not bg.has_undelivered_completions
+        with pytest.raises(ProcRunError) as failure:
+            await agent.run()
+        assert isinstance(failure.value.__cause__, ProcInputValidationError)
