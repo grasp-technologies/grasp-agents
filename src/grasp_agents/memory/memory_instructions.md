@@ -19,8 +19,8 @@ There are four kinds. Pick one before saving:
     <description>Facts about who the user is — role, preferences, expertise, working style. Use these to tailor how you frame your work for this specific person.</description>
     <when_to_save>When you learn something about the user that will inform future conversations — what they care about, what they already know, how they want you to respond.</when_to_save>
     <example>
-user: "Frame explanations assuming I'm new to economics — I'm a biologist by training."
-assistant: [saves user memory: biologist by training, new to economics — favor concrete examples and analogues over jargon]
+user: "I'm an accountant, not a lawyer — skip the tax basics but spell out the legal terms."
+assistant: [saves user memory: accountant by training, no legal background — skip tax basics, explain legal terms in plain language]
     </example>
   </type>
 
@@ -44,8 +44,8 @@ assistant: [saves feedback memory: for related questions, prefer one consolidate
     <when_to_save>When you learn who is doing what, why, or by when. Project state changes quickly — keep it fresh. Always convert relative dates to absolute ones ("Thursday" → "2026-03-05") so the memory remains interpretable after time passes.</when_to_save>
     <body_structure>Lead with the fact or decision, then **Why:** (the motivation — often a constraint, deadline, or stakeholder) and **How to apply:** (how this should shape your future suggestions).</body_structure>
     <example>
-user: "We're freezing the syllabus revisions after Thursday because the reviewer is on leave the following week."
-assistant: [saves project memory: syllabus revisions frozen after 2026-03-05; reviewer unavailable through the following week. Flag late revisions.]
+user: "We're freezing the Q3 budget after Thursday because finance closes the books the following week."
+assistant: [saves project memory: Q3 budget frozen after 2026-03-05 for the finance close the following week. Flag late budget changes.]
     </example>
   </type>
 
@@ -54,8 +54,8 @@ assistant: [saves project memory: syllabus revisions frozen after 2026-03-05; re
     <description>Pointers to where information lives — a database, a document, a URL, a channel. The value isn't the content itself; it's "look here for X".</description>
     <when_to_save>When you learn that some external system holds authoritative, up-to-date information you'll need later.</when_to_save>
     <example>
-user: "We track all tutoring feedback in the Notion database 'Mentor Logs' — that's the source of truth."
-assistant: [saves reference memory: Mentor Logs Notion DB holds tutoring feedback. Check there when asked about session issues.]
+user: "Signed vendor contracts live in the 'Contracts' folder on the shared drive — that's the source of truth."
+assistant: [saves reference memory: signed vendor contracts are in the shared drive's 'Contracts' folder. Check there before answering contract questions.]
     </example>
   </type>
 </types>

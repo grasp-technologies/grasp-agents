@@ -84,26 +84,22 @@ class TestMemoryFrontmatter:
     @pytest.mark.parametrize(
         "bad",
         [
-            "User",                # uppercase
-            "-leading",            # leading hyphen
-            "trailing-",           # trailing hyphen
-            "double--hyphen",      # consecutive separators
-            "double__under",       # consecutive separators
-            "spaced name",         # space
-            "",                    # empty
+            "User",  # uppercase
+            "-leading",  # leading hyphen
+            "trailing-",  # trailing hyphen
+            "double--hyphen",  # consecutive separators
+            "double__under",  # consecutive separators
+            "spaced name",  # space
+            "",  # empty
         ],
     )
     def test_name_regex_rejects(self, bad: str) -> None:
         with pytest.raises(ValidationError):
-            MemoryFrontmatter.model_validate(
-                {"name": bad, "description": "ok"}
-            )
+            MemoryFrontmatter.model_validate({"name": bad, "description": "ok"})
 
     def test_name_max_length(self) -> None:
         with pytest.raises(ValidationError):
-            MemoryFrontmatter.model_validate(
-                {"name": "a" * 65, "description": "ok"}
-            )
+            MemoryFrontmatter.model_validate({"name": "a" * 65, "description": "ok"})
 
     def test_description_required(self) -> None:
         with pytest.raises(ValidationError):
@@ -111,20 +107,18 @@ class TestMemoryFrontmatter:
 
     def test_description_max_length(self) -> None:
         with pytest.raises(ValidationError):
-            MemoryFrontmatter.model_validate(
-                {"name": "x", "description": "a" * 2049}
-            )
+            MemoryFrontmatter.model_validate({"name": "x", "description": "a" * 2049})
 
     def test_extra_fields_preserved(self) -> None:
         fm = MemoryFrontmatter.model_validate(
             {
                 "name": "x",
                 "description": "y",
-                "metadata": {"app": "mentor"},
+                "metadata": {"app": "notes"},
                 "future_field": "ignored",
             }
         )
-        assert fm.metadata == {"app": "mentor"}
+        assert fm.metadata == {"app": "notes"}
         # extra="allow" preserves unknown fields silently
         assert fm.model_dump().get("future_field") == "ignored"
 
