@@ -25,8 +25,11 @@ class SnapshotCapable(Protocol):
     :meth:`snapshot` captures the current state and returns an opaque ref, which
     the framework records in the session checkpoint and per-step watermarks;
     :meth:`restore` rewinds the environment to a ref on resume or step rollback.
-    A ``SessionContext.fs_snapshot_policy`` other than ``"off"`` requires
-    ``ctx.environment`` to implement it.
+
+    There is no fallback for environments that do not implement it:
+    ``SessionContext.fs_snapshot_policy`` must stay ``"off"`` (any other value
+    raises), checkpoints record no filesystem state, and resuming or rolling
+    back a session leaves the files as they are.
     """
 
     async def snapshot(self) -> str: ...
