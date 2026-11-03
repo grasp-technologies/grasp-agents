@@ -200,6 +200,18 @@ async def test_expected_mtime_reaches_the_child() -> None:
         await backend.delete(MEMORY / "MEMORY.md", expected_mtime=mtime)
 
 
+async def test_mkdir_of_a_mount_root_reaches_its_backend(tmp_path: Path) -> None:
+    root = tmp_path.resolve() / "new"
+    backend = CompositeFileBackend(
+        [Mount(root, LocalFileBackend(allowed_roots=[root]))]
+    )
+
+    await backend.mkdir(root)
+    await backend.mkdir(root.parent)
+
+    assert root.is_dir()
+
+
 async def test_virtual_dirs_exist_and_list_their_mounts() -> None:
     backend = _composite()
 
@@ -397,6 +409,28 @@ async def test_memory_provider_works_through_a_composite() -> None:
 
     assert snapshot.index is not None
     assert snapshot.index.startswith("# Memory")
+
+
+async def test_memory_bootstraps_a_new_memdir_through_a_composite(
+    tmp_path: Path,
+) -> None:
+    memdir = tmp_path.resolve() / "memory"
+    backend = CompositeFileBackend(
+        [
+            Mount(SCRATCH, _mem(SCRATCH)),
+            Mount(memdir, LocalFileBackend(allowed_roots=[memdir])),
+        ]
+    )
+    ctx: SessionContext[Any] = SessionContext(
+        file_backend=backend, memory=MemoryProvider(root=memdir)
+    )
+
+    assert ctx.memory is not None
+    snapshot = await ctx.memory.load()
+
+    assert snapshot.index is not None
+    assert snapshot.index.startswith("# Memory")
+    assert (memdir / "MEMORY.md").read_text().startswith("# Memory")
 
 
 async def test_file_tools_work_across_mounts() -> None:

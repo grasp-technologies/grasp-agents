@@ -256,8 +256,9 @@ class CompositeFileBackend(FileBackend):
         await mount.backend.delete(target, expected_mtime=expected_mtime)
 
     async def mkdir(self, path: Path) -> None:
-        target = normalize_posix(path)
-        if self._is_virtual_dir(target) or self._mount_at(target) is not None:
+        # A virtual directory always exists; a mount's own root may not exist
+        # in its backend yet (a new local memdir), so it is passed down.
+        if self._is_virtual_dir(normalize_posix(path)):
             return
         mount, routed = self._route_write(path)
         await mount.backend.mkdir(routed)
