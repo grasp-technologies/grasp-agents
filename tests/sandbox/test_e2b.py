@@ -24,6 +24,7 @@ import datetime as dt
 import importlib.util
 import os
 import re
+import shlex
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,7 +46,6 @@ from grasp_agents.sandbox import (
 )
 from grasp_agents.sandbox.e2b import _handle as e2b_handle
 from grasp_agents.sandbox.e2b import environment as e2b_env
-from grasp_agents.sandbox.e2b import file_backend as e2b_file_backend
 from grasp_agents.sandbox.exec_backend import ExecChunk, ExecResult, TerminationReason
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.file_edit import DeleteInput, DeleteTool
@@ -318,39 +318,6 @@ async def test_wrap_stdin() -> None:
     assert base64.b64encode(b"hello").decode() in wrapped
 
 
-async def test_build_grep_cmd_content_mode() -> None:
-    cmd = e2b_file_backend._build_grep_cmd(
-        Path(_WS),
-        "foo",
-        glob=None,
-        file_type="py",
-        case_insensitive=True,
-        output_mode="content",
-        show_line_numbers=True,
-        before_context=None,
-        after_context=None,
-        context=2,
-    )
-    assert cmd.startswith("grep -r -E -i -n -C2")
-    assert "--include=*.py" in cmd
-    assert "-e foo" in cmd
-    assert cmd.endswith(_WS)
-
-
-async def test_parse_grep_modes() -> None:
-    files = e2b_file_backend._parse_grep("/w/a.py\n/w/b.py\n", "files_with_matches")
-    assert files.files == [Path("/w/a.py"), Path("/w/b.py")]
-
-    counts = e2b_file_backend._parse_grep("/w/a.py:3\n/w/b.py:1\n", "count")
-    assert counts.counts == [(Path("/w/a.py"), 3), (Path("/w/b.py"), 1)]
-    assert counts.num_matches == 4
-
-    content = e2b_file_backend._parse_grep(
-        "/w/a.py:1:foo\n--\n/w/a.py:9:foo\n", "content"
-    )
-    assert content.lines == ["/w/a.py:1:foo", "/w/a.py:9:foo"]  # `--` dropped
-
-
 # --- file backend ------------------------------------------------------------
 
 
@@ -385,7 +352,7 @@ async def test_stat_maps_fields_and_mtime() -> None:
 
 
 async def test_stat_adds_file_type_bits() -> None:
-    # envd reports permission bits only; the entry type supplies the rest.
+    # The sandbox reports permission bits only; the entry type adds the rest.
     fake = _FakeSandbox()
     fake.files.infos[f"{_WS}/pkg"] = _FakeEntry(
         name="pkg", path=f"{_WS}/pkg", type_value="dir", mode=0o755
@@ -505,15 +472,105 @@ async def test_find_files_globs_over_listing() -> None:
 # --- grep (shelled out through the co-located exec) -------------------------
 
 
+def _grep_backend(stdout: str) -> tuple[FileBackend, _FakeCommands]:
+    cmds = _FakeCommands(fg_stdout=stdout, fg_exit_code=0)
+    return _env(_FakeSandbox(commands=cmds)).file_backend, cmds
+
+
 async def test_grep_files_mode_builds_command_and_parses() -> None:
-    cmds = _FakeCommands(fg_stdout=f"{_WS}/a.py\n{_WS}/b.py\n", fg_exit_code=0)
-    backend = _env(_FakeSandbox(commands=cmds)).file_backend
+    backend, cmds = _grep_backend(f"{_WS}/a.py\0{_WS}/b.py\0")
     res = await backend.grep(Path(_WS), "needle", glob="*.py")
     assert res.files == [Path(f"{_WS}/a.py"), Path(f"{_WS}/b.py")]
+    assert (res.num_matches, res.num_files_matched) == (2, 2)
     grep_cmd = cmds.calls[0]["cmd"]
-    assert grep_cmd.startswith("grep -r -E -l")
+    # -H names the file even for a single-file root; -Z ends names with NUL.
+    assert grep_cmd.startswith("grep -r -E -H -Z -l")
     assert "--include=*.py" in grep_cmd
     assert "-e needle" in grep_cmd
+
+
+@pytest.mark.parametrize(
+    ("file_type", "include"),
+    [
+        ("rust", "*.rs"),
+        ("ruby", "*.rb"),
+        ("markdown", "*.md"),
+        ("js", "*.mjs"),
+        ("ts", "*.tsx"),
+        ("c", "*.[chH]"),
+        ("cpp", "*.cc"),
+    ],
+)
+async def test_grep_maps_file_types_to_globs(file_type: str, include: str) -> None:
+    backend, cmds = _grep_backend("")
+    await backend.grep(Path(_WS), "x", file_type=file_type)
+    assert f"--include={include}" in shlex.split(cmds.calls[0]["cmd"])
+
+
+async def test_grep_rejects_unknown_file_type() -> None:
+    backend, cmds = _grep_backend("")
+    with pytest.raises(ValueError, match="unrecognized file type"):
+        await backend.grep(Path(_WS), "x", file_type="nope")
+    assert cmds.calls == []
+
+
+async def test_grep_glob_and_type_both_apply() -> None:
+    # grep ORs its --include filters, so the type is applied to the results.
+    backend, cmds = _grep_backend(f"{_WS}/test_a.py\0{_WS}/test_b.txt\0")
+    res = await backend.grep(Path(_WS), "x", glob="test_*", file_type="py")
+    assert res.files == [Path(f"{_WS}/test_a.py")]
+    assert "--include=*.py" not in shlex.split(cmds.calls[0]["cmd"])
+
+
+async def test_grep_count_mode_drops_files_without_matches() -> None:
+    backend, cmds = _grep_backend(
+        f"{_WS}/a.py\x002\n{_WS}/b.py\x000\n{_WS}/c:1.py\x001\n"
+    )
+    res = await backend.grep(Path(_WS), "x", output_mode="count")
+    assert res.counts == [(Path(f"{_WS}/a.py"), 2), (Path(f"{_WS}/c:1.py"), 1)]
+    assert (res.num_matches, res.num_files_matched) == (3, 2)
+    assert cmds.calls[0]["cmd"].startswith("grep -r -E -H -Z -c")
+
+
+_CONTENT_STDOUT = (
+    f"{_WS}/notes-1-a.md\x001-intro\n"
+    f"{_WS}/notes-1-a.md\x002:TODO one\n"
+    "--\n"
+    f"{_WS}/src/lib.rs\x007:TODO two\n"
+    f"{_WS}/src/lib.rs\x008-after\n"
+)
+
+
+async def test_grep_content_mode_counts_match_lines_only() -> None:
+    backend, cmds = _grep_backend(_CONTENT_STDOUT)
+    res = await backend.grep(Path(_WS), "TODO", output_mode="content", context=1)
+    assert res.lines == [
+        f"{_WS}/notes-1-a.md-1-intro",
+        f"{_WS}/notes-1-a.md:2:TODO one",
+        f"{_WS}/src/lib.rs:7:TODO two",
+        f"{_WS}/src/lib.rs-8-after",
+    ]
+    assert (res.num_matches, res.num_files_matched) == (2, 2)
+    assert cmds.calls[0]["cmd"].startswith("grep -r -E -H -Z -n -C1")
+
+
+async def test_grep_content_mode_without_line_numbers() -> None:
+    backend, cmds = _grep_backend(_CONTENT_STDOUT)
+    res = await backend.grep(
+        Path(_WS),
+        "TODO",
+        output_mode="content",
+        context=1,
+        show_line_numbers=False,
+    )
+    assert res.lines == [
+        f"{_WS}/notes-1-a.md-intro",
+        f"{_WS}/notes-1-a.md:TODO one",
+        f"{_WS}/src/lib.rs:TODO two",
+        f"{_WS}/src/lib.rs-after",
+    ]
+    # Line numbers are still requested: they tell matches from context.
+    assert " -n " in cmds.calls[0]["cmd"]
 
 
 async def test_grep_no_match_returns_empty() -> None:
