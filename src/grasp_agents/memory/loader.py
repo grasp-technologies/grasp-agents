@@ -6,9 +6,11 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 from pydantic import ValidationError
+from yaml.composer import ComposerError
 
 from .types import (
     INDEX_FILE_NAME,
+    MAX_FRONTMATTER_CHARS,
     MAX_INDEX_BYTES,
     MAX_INDEX_LINES,
     MAX_MEMORY_FILES,
@@ -29,6 +31,49 @@ _FRONTMATTER_RE = re.compile(
 )
 
 
+class _FrontmatterLoader(yaml.SafeLoader):
+    """
+    ``SafeLoader`` that refuses anchors, and with them aliases.
+
+    Memory files may come from untrusted writers, and a few hundred bytes of
+    nested aliases expand to gigabytes once anything walks the result. An
+    alias can only name an anchor defined before it, so refusing each anchor
+    as soon as its node is composed also refuses every alias.
+    """
+
+    def compose_node(self, parent: yaml.Node | None, index: int) -> yaml.Node | None:
+        node = super().compose_node(parent, index)
+        if self.anchors:
+            raise ComposerError(
+                problem="anchors and aliases are not allowed",
+                problem_mark=node.start_mark if node is not None else None,
+            )
+        return node
+
+
+def _describe_yaml_error(exc: yaml.YAMLError) -> str:
+    """Summarize a YAML error without the input snippet PyYAML attaches."""
+    if not isinstance(exc, yaml.MarkedYAMLError):
+        return str(exc).splitlines()[0]
+    problem = exc.problem or exc.context or "malformed YAML"
+    mark = exc.problem_mark or exc.context_mark
+    if mark is None:
+        return problem
+    # Marks count lines from the one after the opening ``---``.
+    return f"{problem} (line {mark.line + 2}, column {mark.column + 1})"
+
+
+def _describe_validation_error(exc: ValidationError) -> str:
+    """List each failing field and why, without echoing its value."""
+    return "; ".join(
+        f"{'.'.join(str(part) for part in error['loc']) or 'frontmatter'}: "
+        f"{error['msg']}"
+        for error in exc.errors(
+            include_url=False, include_context=False, include_input=False
+        )
+    )
+
+
 def strip_frontmatter(text: str) -> str:
     """Drop a leading ``--- ... ---`` YAML block; pass-through if absent."""
     match = _FRONTMATTER_RE.match(text)
@@ -43,8 +88,13 @@ def parse_memory_md(
     """
     Parse a topic memory file source into ``(frontmatter, body)``.
 
-    Raises :class:`MemoryFormatError` on missing frontmatter, invalid YAML,
-    or schema-violating frontmatter.
+    The text may come from an untrusted writer: frontmatter longer than
+    :data:`MAX_FRONTMATTER_CHARS`, YAML anchors and aliases, and nesting
+    too deep to parse are all refused, and error messages never quote the
+    offending values.
+
+    Raises :class:`MemoryFormatError` on missing or oversized frontmatter,
+    invalid or refused YAML, or schema-violating frontmatter.
     """
     match = _FRONTMATTER_RE.match(text)
     if match is None:
@@ -55,11 +105,20 @@ def parse_memory_md(
         )
 
     raw_yaml, body = match.group(1), match.group(2)
+    if len(raw_yaml) > MAX_FRONTMATTER_CHARS:
+        raise MemoryFormatError(
+            path, f"Frontmatter exceeds {MAX_FRONTMATTER_CHARS} characters"
+        )
 
+    # The errors below drop their cause: rendering it would echo the input.
     try:
-        loaded: Any = yaml.safe_load(raw_yaml)
+        loaded: Any = _FrontmatterLoader(raw_yaml).get_single_data()
     except yaml.YAMLError as exc:
-        raise MemoryFormatError(path, f"Invalid YAML frontmatter: {exc}") from exc
+        raise MemoryFormatError(
+            path, f"Invalid YAML frontmatter: {_describe_yaml_error(exc)}"
+        ) from None
+    except RecursionError:
+        raise MemoryFormatError(path, "Frontmatter is nested too deeply") from None
 
     if loaded is None:
         loaded = {}
@@ -71,7 +130,9 @@ def parse_memory_md(
     try:
         frontmatter = MemoryFrontmatter.model_validate(loaded)
     except ValidationError as exc:
-        raise MemoryFormatError(path, f"Frontmatter validation failed: {exc}") from exc
+        raise MemoryFormatError(
+            path, f"Frontmatter validation failed: {_describe_validation_error(exc)}"
+        ) from None
 
     return frontmatter, body.strip("\n")
 
