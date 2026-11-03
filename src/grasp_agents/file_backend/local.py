@@ -21,7 +21,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .atomic_write import atomic_write_bytes
-from .base import FileBackend, FileEntry, FileStat, GrepOutputMode, GrepRawResult
+from .base import (
+    FileBackend,
+    FileEntry,
+    FileStat,
+    GrepOutputMode,
+    GrepRawResult,
+    StaleFileError,
+)
 from .paths import (
     PathAccessError,
     check_access_path,
@@ -210,8 +217,13 @@ class LocalFileBackend(FileBackend):
         *,
         mode: int,
         overwrite: bool = True,
+        expected_mtime: float | None = None,
     ) -> float:
+        # The expected-mtime check runs in the same thread right before the
+        # atomic rename; a writer landing between the two goes unnoticed.
         def _write() -> float:
+            if expected_mtime is not None:
+                _check_expected_mtime(path, expected_mtime)
             atomic_write_bytes(path, data, mode=mode, overwrite=overwrite)
             # ``resolve`` after the write so a brand-new file's parent
             # symlinks (if any) follow the same canonicalization as
@@ -227,6 +239,7 @@ class LocalFileBackend(FileBackend):
             # contract as ``write_bytes``). O_APPEND makes each write land at
             # EOF atomically w.r.t. other writers — fine for our single writer
             # per task, and O(len(data)) instead of rewriting the file.
+            # cspell:ignore WRONLY CREAT
             fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, mode)
             try:
                 os.write(fd, data)
@@ -236,8 +249,13 @@ class LocalFileBackend(FileBackend):
 
         return await asyncio.to_thread(_append)
 
-    async def delete(self, path: Path) -> None:
-        await asyncio.to_thread(path.unlink)
+    async def delete(self, path: Path, *, expected_mtime: float | None = None) -> None:
+        def _delete() -> None:
+            if expected_mtime is not None:
+                _check_expected_mtime(path, expected_mtime)
+            path.unlink()
+
+        await asyncio.to_thread(_delete)
 
     async def mkdir(self, path: Path) -> None:
         resolved = await self.validate_path(path, must_exist=False, access="write")
@@ -344,6 +362,17 @@ class LocalFileBackend(FileBackend):
             before_context=before_context,
             after_context=after_context,
             context=context,
+        )
+
+
+def _check_expected_mtime(path: Path, expected_mtime: float) -> None:
+    try:
+        current = path.stat().st_mtime
+    except FileNotFoundError:
+        raise StaleFileError(f"{path} no longer exists") from None
+    if current != expected_mtime:
+        raise StaleFileError(
+            f"{path} changed (expected mtime {expected_mtime!r}, current {current!r})"
         )
 
 

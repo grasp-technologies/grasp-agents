@@ -23,9 +23,16 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .atomic_write import atomic_write_bytes, atomic_write_text
-    from .base import FileBackend, FileEntry, FileStat
+    from .base import (
+        FileBackend,
+        FileEntry,
+        FileStat,
+        GrepRawResult,
+        StaleFileError,
+    )
     from .local import LocalFileBackend
     from .mcp import MCPFileBackend
+    from .memory import InMemoryFileBackend
     from .paths import (
         PathAccessError,
         SensitivePathRules,
@@ -35,6 +42,7 @@ if TYPE_CHECKING:
         resolve_safe,
         sensitive_path_rules,
     )
+    from .text_grep import grep_texts
 
 
 _LAZY: dict[str, str] = {
@@ -43,8 +51,12 @@ _LAZY: dict[str, str] = {
     "FileBackend": "base",
     "FileEntry": "base",
     "FileStat": "base",
+    "GrepRawResult": "base",
+    "StaleFileError": "base",
     "LocalFileBackend": "local",
     "MCPFileBackend": "mcp",
+    "InMemoryFileBackend": "memory",
+    "grep_texts": "text_grep",
     "PathAccessError": "paths",
     "SensitivePathRules": "paths",
     "check_sensitive_path": "paths",
@@ -69,13 +81,17 @@ __all__ = [
     "FileBackend",
     "FileEntry",
     "FileStat",
+    "GrepRawResult",
+    "InMemoryFileBackend",
     "LocalFileBackend",
     "MCPFileBackend",
     "PathAccessError",
     "SensitivePathRules",
+    "StaleFileError",
     "atomic_write_bytes",
     "atomic_write_text",
     "check_sensitive_path",
+    "grep_texts",
     "has_binary_extension",
     "is_blocked_device",
     "resolve_safe",

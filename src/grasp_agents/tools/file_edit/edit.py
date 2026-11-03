@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from grasp_agents.file_backend.base import StaleFileError
 from grasp_agents.file_backend.paths import PathAccessError, has_binary_extension
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
@@ -168,6 +169,7 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
         except PathAccessError as exc:
             raise ValueError(str(exc)) from exc
 
+        expected_mtime: float | None = None
         if state is not None:
             record = state.get_read_record(resolved)
             if record is None:
@@ -185,6 +187,7 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
                     f"current {current_stat.mtime!r}). "
                     "Re-Read before editing."
                 )
+            expected_mtime = record.mtime
         else:
             current_stat = await backend.stat(resolved)
 
@@ -228,12 +231,19 @@ class EditTool(BaseTool[EditInput, EditResult, Any]):
         new_content = apply_replacements(content, matches, adjusted_new)
         data = new_content.encode("utf-8")
 
-        new_mtime = await backend.write_bytes(
-            resolved,
-            data,
-            mode=mode,
-            overwrite=True,
-        )
+        try:
+            new_mtime = await backend.write_bytes(
+                resolved,
+                data,
+                mode=mode,
+                overwrite=True,
+                expected_mtime=expected_mtime,
+            )
+        except StaleFileError as exc:
+            raise ValueError(
+                f"{resolved} was modified since you last read it ({exc}). "
+                "Re-Read before editing."
+            ) from exc
         if state is not None:
             state.record_write(resolved, new_mtime)
 

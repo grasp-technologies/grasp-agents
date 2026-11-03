@@ -43,6 +43,16 @@ if TYPE_CHECKING:
     from .paths import AccessMode
 
 
+class StaleFileError(OSError):
+    """
+    A conditional write or delete found the file changed.
+
+    Raised by :meth:`FileBackend.write_bytes` and :meth:`FileBackend.delete`
+    when ``expected_mtime`` is given and the file is missing or its current
+    mtime differs. Nothing was written or deleted.
+    """
+
+
 @dataclass(frozen=True)
 class FileStat:
     """Backend-uniform stat result."""
@@ -77,6 +87,9 @@ class GrepRawResult:
     * ``count``: ``counts`` holds ``(path, n)`` tuples.
     * ``content``: ``lines`` holds rendered ``path:line:content`` (or
       ``path-line-context``) lines.
+
+    ``notes`` carries caveats the :class:`GrepTool` renders after the
+    results, e.g. a mount a :class:`CompositeFileBackend` could not search.
     """
 
     files: list[Path] = field(default_factory=list["Path"])
@@ -84,6 +97,7 @@ class GrepRawResult:
     lines: list[str] = field(default_factory=list[str])
     num_matches: int = 0
     num_files_matched: int = 0
+    notes: list[str] = field(default_factory=list[str])
 
 
 class FileBackend(ABC):
@@ -121,6 +135,16 @@ class FileBackend(ABC):
         the memdir in ``allowed_roots``.
         """
         ...
+
+    def includes(self, backend: FileBackend) -> bool:
+        """
+        Return True if this backend is ``backend`` or serves it.
+
+        A plain backend includes only itself; a composite includes every
+        backend mounted in it. :class:`SessionContext` uses this to accept a
+        composite that mounts the environment's own file backend.
+        """
+        return backend is self
 
     @abstractmethod
     async def validate_path(
@@ -185,6 +209,7 @@ class FileBackend(ABC):
         *,
         mode: int,
         overwrite: bool = True,
+        expected_mtime: float | None = None,
     ) -> float:
         """
         Atomically write ``data``. Returns the post-write mtime.
@@ -192,6 +217,12 @@ class FileBackend(ABC):
         The caller refreshes its :class:`FileEditSessionState` read
         record with the returned mtime so a following :class:`EditTool`
         doesn't trip on its own write.
+
+        ``expected_mtime`` makes the write conditional: when it is given
+        and the file is missing or its current mtime differs, raise
+        :class:`StaleFileError` without writing. Backends that can check
+        and write atomically (a database) do so; the others check right
+        before writing and document the remaining race.
         """
         ...
 
@@ -211,8 +242,13 @@ class FileBackend(ABC):
         return await self.write_bytes(path, existing + data, mode=mode, overwrite=True)
 
     @abstractmethod
-    async def delete(self, path: Path) -> None:
-        """Remove ``path``. Callers clear their read record separately."""
+    async def delete(self, path: Path, *, expected_mtime: float | None = None) -> None:
+        """
+        Remove ``path``. Callers clear their read record separately.
+
+        ``expected_mtime`` makes the delete conditional, with the same
+        contract as :meth:`write_bytes`.
+        """
         ...
 
     @abstractmethod
@@ -285,5 +321,6 @@ __all__ = [
     "FileStat",
     "GrepOutputMode",
     "GrepRawResult",
+    "StaleFileError",
     "normalize_backend_kwargs",
 ]

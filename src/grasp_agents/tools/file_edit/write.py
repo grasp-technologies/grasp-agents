@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from grasp_agents.file_backend.base import StaleFileError
 from grasp_agents.file_backend.paths import PathAccessError
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
@@ -141,6 +142,7 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
 
         target_exists = await backend.exists(resolved)
 
+        expected_mtime: float | None = None
         if target_exists:
             # Read-before-write only enforced inside an agent — standalone
             # tool use (state is None) is a power-user escape hatch.
@@ -160,6 +162,7 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
                         f"(recorded mtime {record.mtime!r}, "
                         f"current {current_stat.mtime!r}). Re-Read before writing."
                     )
+                expected_mtime = record.mtime
 
                 # Preserve existing mode when overwriting. Mask off the
                 # file-type bits — the backend returns full ``st_mode``
@@ -180,12 +183,19 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
             )
 
         data = inp.content.encode("utf-8")
-        new_mtime = await backend.write_bytes(
-            resolved,
-            data,
-            mode=mode,
-            overwrite=True,
-        )
+        try:
+            new_mtime = await backend.write_bytes(
+                resolved,
+                data,
+                mode=mode,
+                overwrite=True,
+                expected_mtime=expected_mtime,
+            )
+        except StaleFileError as exc:
+            raise ValueError(
+                f"{resolved} was modified since you last read it ({exc}). "
+                "Re-Read before writing."
+            ) from exc
         if state is not None:
             state.record_write(resolved, new_mtime)
 

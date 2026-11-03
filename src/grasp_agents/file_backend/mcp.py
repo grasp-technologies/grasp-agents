@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from grasp_agents.mcp.resource_index import AnyUrl, MCPResourceIndex
 
-from .base import FileBackend, FileEntry, FileStat, GrepRawResult
+from .base import FileBackend, FileEntry, FileStat, GrepRawResult, StaleFileError
 from .local import glob_filter_entries
 from .paths import PathAccessError
 
@@ -250,8 +250,11 @@ class MCPFileBackend(FileBackend):
         *,
         mode: int,
         overwrite: bool = True,
+        expected_mtime: float | None = None,
     ) -> float:
         del overwrite  # MCP servers always overwrite atomically
+        if expected_mtime is not None:
+            await self._check_expected_mtime(path, expected_mtime)
         result = await self._call_tool(
             self._write_tool,
             {
@@ -270,7 +273,9 @@ class MCPFileBackend(FileBackend):
             return entry.mtime_seconds
         return _ms_to_seconds(result.get("mtime_ms"))
 
-    async def delete(self, path: Path) -> None:
+    async def delete(self, path: Path, *, expected_mtime: float | None = None) -> None:
+        if expected_mtime is not None:
+            await self._check_expected_mtime(path, expected_mtime)
         await self._call_tool(self._delete_tool, {"path": self._to_wire(path)})
         await self._index.refresh()
 
@@ -351,6 +356,23 @@ class MCPFileBackend(FileBackend):
         )
 
     # ---- Internals ----------------------------------------------------------
+
+    async def _check_expected_mtime(self, path: Path, expected_mtime: float) -> None:
+        """
+        Best-effort precondition: re-list the server's resources and compare.
+
+        The MCP write tools have no precondition argument, so a change
+        landing between this check and the write goes unnoticed.
+        """
+        await self._index.refresh()
+        entry = await self._index.get(self._to_uri(path))
+        if entry is None:
+            raise StaleFileError(f"{path} no longer exists")
+        if entry.mtime_seconds != expected_mtime:
+            raise StaleFileError(
+                f"{path} changed (expected mtime {expected_mtime!r}, "
+                f"current {entry.mtime_seconds!r})"
+            )
 
     async def _call_tool(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         session = self._client.session

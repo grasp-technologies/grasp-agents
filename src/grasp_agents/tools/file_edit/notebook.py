@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
+from grasp_agents.file_backend.base import StaleFileError
 from grasp_agents.file_backend.paths import PathAccessError
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 from grasp_agents.tools.cell_output import (
@@ -431,9 +432,20 @@ async def write_notebook(
 ) -> None:
     """Re-serialize ``nb`` and write it atomically, refreshing the read record."""
     new_bytes = _nbformat().writes(nb).encode("utf-8")
-    new_mtime = await backend.write_bytes(
-        resolved, new_bytes, mode=mode, overwrite=True
-    )
+    record = state.get_read_record(resolved) if state is not None else None
+    try:
+        new_mtime = await backend.write_bytes(
+            resolved,
+            new_bytes,
+            mode=mode,
+            overwrite=True,
+            expected_mtime=record.mtime if record is not None else None,
+        )
+    except StaleFileError as exc:
+        raise ValueError(
+            f"{resolved} was modified since you last read it ({exc}). "
+            "Re-Read before modifying."
+        ) from exc
     if state is not None:
         state.record_write(resolved, new_mtime)
 
@@ -480,7 +492,7 @@ class NotebookReadTool(
         timeout: float | None = None,
         redactor: SecretRedactor | None = None,
     ) -> None:
-        from .redact import (
+        from .redact import (  # ruff: ignore[import-outside-top-level]
             DefaultSecretRedactor,
         )
 
