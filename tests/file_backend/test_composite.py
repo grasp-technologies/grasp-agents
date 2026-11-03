@@ -241,6 +241,37 @@ async def test_find_files_spans_mounts_newest_first() -> None:
     assert not truncated
 
 
+async def test_find_files_at_a_virtual_dir_keeps_the_newest() -> None:
+    old, new = InMemoryFileBackend(["/a"]), InMemoryFileBackend(["/b"])
+    for i in range(10):
+        await old.write_bytes(Path(f"/a/old{i}.md"), b"x", mode=0o644)
+    for i in range(3):
+        await new.write_bytes(Path(f"/b/new{i}.md"), b"x", mode=0o644)
+    backend = CompositeFileBackend([Mount(Path("/a"), old), Mount(Path("/b"), new)])
+
+    matched, truncated = await backend.find_files(Path("/"), "**/*.md", head_limit=5)
+
+    assert [e.name for e in matched] == [
+        "new2.md",
+        "new1.md",
+        "new0.md",
+        "old9.md",
+        "old8.md",
+    ]
+    assert truncated
+
+
+async def test_find_files_at_a_virtual_dir_skips_build_dirs() -> None:
+    app = Path("/w/app")
+    backend = CompositeFileBackend(
+        [Mount(app, _mem(app, **{"a.js": "x", "node_modules/p/i.js": "x"}))]
+    )
+
+    matched, _ = await backend.find_files(Path("/w"), "**/*.js")
+
+    assert [str(e.path) for e in matched] == ["/w/app/a.js"]
+
+
 async def test_find_files_inside_one_mount_delegates() -> None:
     backend = _composite()
 

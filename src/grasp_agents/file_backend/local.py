@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import heapq
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -39,7 +40,7 @@ from .paths import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator
 
     from .paths import AccessMode
 
@@ -275,12 +276,8 @@ class LocalFileBackend(FileBackend):
         include_hidden: bool = False,
         head_limit: int = 250,
     ) -> tuple[list[FileEntry], bool]:
-        def _walk() -> tuple[list[FileEntry], bool]:
-            matched: list[FileEntry] = []
-            collect_budget = head_limit + 1
-            truncated = False
-            root_str = str(root)
-            for dirpath, dirnames, filenames in os.walk(root_str):
+        def _matches() -> Iterator[FileEntry]:
+            for dirpath, dirnames, filenames in os.walk(root):
                 dirnames[:] = [
                     d
                     for d in dirnames
@@ -291,24 +288,18 @@ class LocalFileBackend(FileBackend):
                     if not include_hidden and fname.startswith("."):
                         continue
                     abs_path = Path(dirpath) / fname
-                    rel_path = str(abs_path.relative_to(root))
-                    if _glob_matches(pattern, rel_path):
-                        try:
-                            mtime = abs_path.stat().st_mtime
-                        except OSError:
-                            continue
-                        matched.append(
-                            FileEntry(
-                                name=fname,
-                                path=abs_path,
-                                is_dir=False,
-                                mtime=mtime,
-                            )
-                        )
-                        if len(matched) >= collect_budget:
-                            truncated = True
-                            return matched, truncated
-            return matched, truncated
+                    if not _glob_matches(pattern, str(abs_path.relative_to(root))):
+                        continue
+                    try:
+                        mtime = abs_path.stat().st_mtime
+                    except OSError:
+                        continue
+                    yield FileEntry(
+                        name=fname, path=abs_path, is_dir=False, mtime=mtime
+                    )
+
+        def _walk() -> tuple[list[FileEntry], bool]:
+            return _newest_first(_matches(), head_limit)
 
         return await asyncio.to_thread(_walk)
 
@@ -371,30 +362,44 @@ def glob_filter_entries(
     Filter a ``list_dir(recursive=True)`` result by glob pattern.
 
     Shared between any backend that falls back to ``list_dir`` instead
-    of providing its own fast path. Sorts newest-first by mtime and
-    caps at ``head_limit``.
+    of providing its own fast path, with the same rules as
+    :meth:`LocalFileBackend.find_files`: hidden paths are dropped unless
+    ``include_hidden``, and so is everything inside a directory below
+    ``root`` that the local walk always skips (``node_modules``,
+    ``__pycache__``, ``dist``, ...). Returns the ``head_limit`` newest
+    matches, newest first, and whether more matched. CPU-bound on a large
+    listing; async callers run it in a worker thread.
     """
-    matched: list[FileEntry] = []
-    truncated = False
-    collect_budget = head_limit + 1
-    for entry in entries:
-        if entry.is_dir:
-            continue
-        try:
-            rel = entry.path.relative_to(root)
-        except ValueError:
-            continue
-        rel_str = str(rel)
-        if not include_hidden and any(part.startswith(".") for part in rel.parts):
-            continue
-        if not _glob_matches(pattern, rel_str):
-            continue
-        matched.append(entry)
-        if len(matched) >= collect_budget:
-            truncated = True
-            break
-    matched.sort(key=lambda e: e.mtime, reverse=True)
-    if len(matched) > head_limit:
-        matched = matched[:head_limit]
-        truncated = True
-    return matched, truncated
+
+    def _matches() -> Iterator[FileEntry]:
+        for entry in entries:
+            if entry.is_dir:
+                continue
+            try:
+                rel = entry.path.relative_to(root)
+            except ValueError:
+                continue
+            if not include_hidden and any(part.startswith(".") for part in rel.parts):
+                continue
+            if any(part in _ALWAYS_SKIP_DIRS for part in rel.parts[:-1]):
+                continue
+            if _glob_matches(pattern, str(rel)):
+                yield entry
+
+    return _newest_first(_matches(), head_limit)
+
+
+def _newest_first(
+    matches: Iterable[FileEntry], head_limit: int
+) -> tuple[list[FileEntry], bool]:
+    """The ``head_limit`` newest ``matches``, newest first, and whether more exist."""
+    total = 0
+
+    def counted() -> Iterator[FileEntry]:
+        nonlocal total
+        for entry in matches:
+            total += 1
+            yield entry
+
+    newest = heapq.nlargest(head_limit, counted(), key=lambda e: e.mtime)
+    return newest, total > head_limit

@@ -8,6 +8,7 @@ handle: it cannot exist without an entered :class:`E2BEnvironment`.
 
 from __future__ import annotations
 
+import asyncio
 import shlex
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -194,7 +195,8 @@ class E2BFileBackend(FileBackend):
         head_limit: int = 250,
     ) -> tuple[list[FileEntry], bool]:
         flat = await self.list_dir(root, recursive=True)
-        return glob_filter_entries(
+        return await asyncio.to_thread(
+            glob_filter_entries,
             flat,
             root,
             pattern,

@@ -30,6 +30,7 @@ backend renders them as POSIX strings for the wire.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import TYPE_CHECKING, Any, cast
 
@@ -305,7 +306,8 @@ class MCPFileBackend(FileBackend):
         filter client-side, sorted newest-first.
         """
         flat_entries = await self.list_dir(root, recursive=True)
-        return glob_filter_entries(
+        return await asyncio.to_thread(
+            glob_filter_entries,
             flat_entries,
             root,
             pattern,

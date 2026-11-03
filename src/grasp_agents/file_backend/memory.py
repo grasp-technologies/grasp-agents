@@ -9,6 +9,7 @@ under it, when it was created with :meth:`mkdir`, or when it is a root.
 
 from __future__ import annotations
 
+import asyncio
 import stat as stat_module
 import time
 from dataclasses import dataclass
@@ -223,7 +224,8 @@ class InMemoryFileBackend(FileBackend):
         head_limit: int = 250,
     ) -> tuple[list[FileEntry], bool]:
         entries = await self.list_dir(root, recursive=True)
-        return glob_filter_entries(
+        return await asyncio.to_thread(
+            glob_filter_entries,
             entries,
             Path(normalize_posix(root)),
             pattern,

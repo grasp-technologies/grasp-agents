@@ -10,13 +10,14 @@ the interpreter would wait for at exit, so it is not driven here.
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from grasp_agents.file_backend import FileEntry
+from grasp_agents.file_backend import FileEntry, LocalFileBackend
 from grasp_agents.file_backend.glob_match import (
     MAX_BRACE_EXPANSIONS,
     expand_braces,
@@ -131,3 +132,58 @@ def test_expand_braces_refuses_past_its_limit() -> None:
         expand_braces("{a,b}" * 8)
     with pytest.raises(ValueError, match="alternatives"):
         expand_braces("{a,b,c}", limit=2)
+
+
+# ---- glob_filter_entries and LocalFileBackend.find_files --------------------------
+
+
+def _entry(path: str, mtime: float) -> FileEntry:
+    return FileEntry(name=Path(path).name, path=Path(path), is_dir=False, mtime=mtime)
+
+
+def test_glob_filter_keeps_the_newest_before_truncating() -> None:
+    entries = [_entry(f"/r/f{i}.md", mtime=float(i)) for i in range(10)]
+
+    matched, truncated = glob_filter_entries(
+        entries, Path("/r"), "*.md", include_hidden=False, head_limit=3
+    )
+
+    assert [e.name for e in matched] == ["f9.md", "f8.md", "f7.md"]
+    assert truncated
+
+
+def test_glob_filter_skips_build_and_cache_dirs_below_the_root() -> None:
+    entries = [
+        _entry("/r/app.js", 1),
+        _entry("/r/build.js", 2),
+        _entry("/r/node_modules/pkg/index.js", 3),
+        _entry("/r/__pycache__/m.js", 4),
+        _entry("/r/src/dist/bundle.js", 5),
+    ]
+
+    matched, truncated = glob_filter_entries(
+        entries, Path("/r"), "**/*.js", include_hidden=False, head_limit=10
+    )
+    inside, _ = glob_filter_entries(
+        entries, Path("/r/node_modules"), "**/*.js", include_hidden=False, head_limit=10
+    )
+
+    assert [e.name for e in matched] == ["build.js", "app.js"]
+    assert not truncated
+    assert [e.name for e in inside] == ["index.js"]
+
+
+@pytest.mark.asyncio
+async def test_local_find_files_keeps_the_newest(tmp_path: Path) -> None:
+    root = tmp_path.resolve()
+    for i in range(10):
+        f = root / f"f{i}.md"
+        f.write_text("x")
+        os.utime(f, (1_000 + i, 1_000 + i))
+
+    matched, truncated = await LocalFileBackend(allowed_roots=[root]).find_files(
+        root, "*.md", head_limit=3
+    )
+
+    assert [e.name for e in matched] == ["f9.md", "f8.md", "f7.md"]
+    assert truncated

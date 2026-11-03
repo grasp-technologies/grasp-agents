@@ -310,7 +310,8 @@ class CompositeFileBackend(FileBackend):
                 head_limit=head_limit,
             )
         entries = await self.list_dir(Path(str(target)), recursive=True)
-        return glob_filter_entries(
+        return await asyncio.to_thread(
+            glob_filter_entries,
             entries,
             Path(str(target)),
             pattern,
