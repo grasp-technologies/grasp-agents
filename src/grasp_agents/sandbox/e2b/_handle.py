@@ -143,11 +143,19 @@ class SandboxHandle:
     take, so those wait for a start in flight.
     """
 
-    __slots__ = ("_factory", "_lock", "_start_task", "_waiting", "sandbox")
+    __slots__ = (
+        "_factory",
+        "_failure",
+        "_lock",
+        "_start_task",
+        "_waiting",
+        "sandbox",
+    )
 
     def __init__(self, sandbox: AsyncSandbox | None = None) -> None:
         self.sandbox: AsyncSandbox | None = sandbox
         self._factory: Callable[[], Awaitable[AsyncSandbox]] | None = None
+        self._failure: Exception | None = None
         self._lock = asyncio.Lock()
         self._start_task: asyncio.Task[AsyncSandbox] | None = None
         self._waiting = 0
@@ -163,8 +171,12 @@ class SandboxHandle:
         return self._factory is not None
 
     def arm(self, factory: Callable[[], Awaitable[AsyncSandbox]]) -> None:
-        """Start the sandbox with ``factory`` on the first :meth:`ensure`."""
+        """
+        Start the sandbox with ``factory`` on the first :meth:`ensure`, trying
+        again even if an earlier start failed.
+        """
         self._factory = factory
+        self._failure = None
 
     def disarm(self) -> None:
         """
@@ -182,11 +194,19 @@ class SandboxHandle:
         sandbox only if a caller still awaits it and the handle is still armed
         and empty; otherwise it kills the sandbox and raises, so a sandbox it
         created is never left running unowned.
+
+        A failed start is not retried until the handle is re-armed: later calls
+        raise at once instead of creating, and billing, a sandbox each.
         """
         if self.sandbox is not None:
             return self.sandbox
         if self._factory is None:
             return self.require()
+        if self._failure is not None:
+            raise RuntimeError(
+                "The E2B sandbox failed to start; re-enter the environment to "
+                "try again."
+            ) from self._failure
         start = self._start_task
         if start is None or start.done():
             start = self._start_task = asyncio.create_task(self._start())
@@ -204,7 +224,11 @@ class SandboxHandle:
             factory = self._factory
             if factory is None:
                 return self.require()
-            sandbox = await factory()
+            try:
+                sandbox = await factory()
+            except Exception as exc:
+                self._failure = exc
+                raise
             if self._waiting and self._factory is factory and self.sandbox is None:
                 self.sandbox = sandbox
                 return sandbox
