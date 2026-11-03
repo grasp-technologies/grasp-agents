@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import stat as stat_module
 import time
 from pathlib import Path
@@ -37,6 +38,8 @@ from tests._helpers import _make_agent_ctx, max_loop_gap
 pytestmark = pytest.mark.asyncio
 
 ROOT = Path("/mem")
+
+# cspell:ignore EFBIG ENOSPC
 
 
 def _backend(**files: str) -> InMemoryFileBackend:
@@ -207,6 +210,36 @@ async def test_nothing_is_created_inside_a_file() -> None:
     assert [str(e.path) for e in await backend.list_dir(ROOT, recursive=True)] == [
         "/mem/a"
     ]
+
+
+async def test_size_limits_refuse_oversized_writes() -> None:
+    backend = InMemoryFileBackend([ROOT], max_file_bytes=10, max_total_bytes=25)
+    await backend.write_bytes(ROOT / "a", b"x" * 10, mode=0o644)
+    await backend.write_bytes(ROOT / "b", b"x" * 10, mode=0o644)
+
+    with pytest.raises(OSError, match="per file") as too_big:
+        await backend.write_bytes(ROOT / "c", b"x" * 11, mode=0o644)
+    with pytest.raises(OSError, match="per file"):
+        await backend.append_bytes(ROOT / "a", b"x", mode=0o644)
+    with pytest.raises(OSError, match="in total") as full:
+        await backend.write_bytes(ROOT / "c", b"x" * 6, mode=0o644)
+
+    assert too_big.value.errno == errno.EFBIG
+    assert full.value.errno == errno.ENOSPC
+    assert not await backend.exists(ROOT / "c")
+    await backend.write_bytes(ROOT / "a", b"x" * 4, mode=0o644)
+    await backend.write_bytes(ROOT / "c", b"x" * 10, mode=0o644)
+    await backend.delete(ROOT / "b")
+    await backend.append_bytes(ROOT / "a", b"x" * 6, mode=0o644)
+
+
+async def test_seeds_must_fit_the_size_limits() -> None:
+    with pytest.raises(ValueError, match="limit"):
+        InMemoryFileBackend([ROOT], files={"/mem/a": "x" * 11}, max_file_bytes=10)
+    with pytest.raises(ValueError, match="limit"):
+        InMemoryFileBackend(
+            [ROOT], files={"/mem/a": "x" * 6, "/mem/b": "x" * 6}, max_total_bytes=10
+        )
 
 
 async def test_directories_cannot_be_read_or_deleted() -> None:

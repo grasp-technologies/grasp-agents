@@ -10,10 +10,11 @@ under it, when it was created with :meth:`mkdir`, or when it is a root.
 from __future__ import annotations
 
 import asyncio
+import errno
 import stat as stat_module
 import time
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import TYPE_CHECKING
 
 from .base import (
@@ -35,6 +36,8 @@ if TYPE_CHECKING:
 
 _DIR_MODE = stat_module.S_IFDIR | 0o755
 
+# cspell:ignore EFBIG ENOSPC
+
 
 @dataclass
 class _File:
@@ -52,6 +55,11 @@ class InMemoryFileBackend(FileBackend):
             under. Each root exists as an empty directory from the start.
         files: Optional seed content, absolute path → text or bytes. Each
             path must lie under an allowed root and not inside another seed.
+        max_file_bytes: Largest file a write or append may leave behind;
+            beyond it they raise :class:`OSError` (``EFBIG``). None: no limit.
+        max_total_bytes: Most bytes all files may hold together; beyond it
+            writes and appends raise :class:`OSError` (``ENOSPC``). None: no
+            limit.
         grep_time_budget: Seconds one :meth:`grep` may search before it
             returns what it found so far with a note (see :func:`grep_texts`).
 
@@ -68,9 +76,14 @@ class InMemoryFileBackend(FileBackend):
         allowed_roots: Sequence[Path | str],
         *,
         files: Mapping[str | Path, str | bytes] | None = None,
+        max_file_bytes: int | None = None,
+        max_total_bytes: int | None = None,
         grep_time_budget: float = DEFAULT_GREP_TIME_BUDGET,
     ) -> None:
         self._grep_time_budget = grep_time_budget
+        self._max_file_bytes = max_file_bytes
+        self._max_total_bytes = max_total_bytes
+        self._total_bytes = 0
         self._allowed_roots: list[Path] = [
             Path(normalize_posix(r)) for r in allowed_roots
         ]
@@ -82,9 +95,12 @@ class InMemoryFileBackend(FileBackend):
         self._last_mtime = 0.0
         for raw_path, content in (files or {}).items():
             data = content.encode("utf-8") if isinstance(content, str) else content
-            self._files[self._seed_key(raw_path)] = _File(
-                data, self._next_mtime(), 0o644
-            )
+            key = self._seed_key(raw_path)
+            try:
+                self._check_size(raw_path, key, len(data))
+            except OSError as exc:
+                raise ValueError(f"Seed files exceed the size limits: {exc}") from exc
+            self._store(key, _File(data, self._next_mtime(), 0o644))
         for key in self._files:
             for parent in key.parents:
                 if parent in self._files:
@@ -174,8 +190,9 @@ class InMemoryFileBackend(FileBackend):
         if current is not None and not overwrite:
             raise FileExistsError(f"File exists: {path}")
         self._check_expected(path, current, expected_mtime)
+        self._check_size(path, key, len(data))
         mtime = self._next_mtime()
-        self._files[key] = _File(bytes(data), mtime, mode & 0o7777)
+        self._store(key, _File(bytes(data), mtime, mode & 0o7777))
         return mtime
 
     async def append_bytes(self, path: Path, data: bytes, *, mode: int) -> float:
@@ -186,8 +203,9 @@ class InMemoryFileBackend(FileBackend):
         current = self._files.get(key)
         existing = current.data if current is not None else b""
         file_mode = current.mode if current is not None else mode & 0o7777
+        self._check_size(path, key, len(existing) + len(data))
         mtime = self._next_mtime()
-        self._files[key] = _File(existing + data, mtime, file_mode)
+        self._store(key, _File(existing + data, mtime, file_mode))
         return mtime
 
     async def delete(self, path: Path, *, expected_mtime: float | None = None) -> None:
@@ -201,6 +219,7 @@ class InMemoryFileBackend(FileBackend):
         current = self._require_file(key)
         self._check_expected(path, current, expected_mtime)
         del self._files[key]
+        self._total_bytes -= len(current.data)
 
     async def mkdir(self, path: Path) -> None:
         key = normalize_posix(path)
@@ -305,6 +324,29 @@ class InMemoryFileBackend(FileBackend):
                 f"{path} changed (expected mtime {expected_mtime!r}, "
                 f"current {current.mtime!r})"
             )
+
+    def _check_size(self, path: str | PurePath, key: PurePosixPath, size: int) -> None:
+        if self._max_file_bytes is not None and size > self._max_file_bytes:
+            raise OSError(
+                errno.EFBIG,
+                f"File too large: {size:,} bytes, over the limit of "
+                f"{self._max_file_bytes:,} per file",
+                str(path),
+            )
+        current = self._files.get(key)
+        total = self._total_bytes + size - (len(current.data) if current else 0)
+        if self._max_total_bytes is not None and total > self._max_total_bytes:
+            raise OSError(
+                errno.ENOSPC,
+                f"No space left: {total:,} bytes in total, over the limit of "
+                f"{self._max_total_bytes:,}",
+                str(path),
+            )
+
+    def _store(self, key: PurePosixPath, file: _File) -> None:
+        current = self._files.get(key)
+        self._total_bytes += len(file.data) - (len(current.data) if current else 0)
+        self._files[key] = file
 
     def _require_file(self, key: PurePosixPath) -> _File:
         entry = self._files.get(key)

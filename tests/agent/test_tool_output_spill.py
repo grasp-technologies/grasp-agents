@@ -5,7 +5,7 @@ When a foreground tool call's serialized result exceeds the tool's
 ``max_inline_result_chars``, the loop spills the full text to a ``.grasp`` file
 and inlines only a head+tail excerpt that points at it (``Read`` / ``Grep``
 recovers the rest) — bounding transcript growth from one large output without
-hiding it unrecoverably. A backgrounded task's outcome is spilled the same way.
+hiding it for good. A backgrounded task's outcome is spilled the same way.
 """
 
 from __future__ import annotations
@@ -128,6 +128,26 @@ class TestSpillIfLarge:
         assert f"full log in {spilled}" in out
 
     @pytest.mark.asyncio
+    async def test_a_huge_result_is_saved_with_its_middle_cut(
+        self, tmp_path: Path
+    ) -> None:
+        ctx = _backed_ctx(tmp_path)
+        text = "H" * 500 + "M" * 1000 + "T" * 500
+
+        out, result_path = await spill_if_large(
+            ctx.file_backend, name="c1", text=text, cap=100, max_spill_chars=1000
+        )
+
+        assert result_path is not None
+        saved = Path(result_path).read_text()
+        head, marker, tail = saved.split("\n")
+        assert head == "H" * 500
+        assert tail == "T" * 500
+        assert "1,000 chars omitted" in marker
+        assert "first 500 and last 500 of 2,000" in marker
+        assert "first 500 and last 500 chars of the full output" in out
+
+    @pytest.mark.asyncio
     async def test_no_backend_returns_whole_text(self) -> None:
         out = await spill_if_large(None, name="c1", text="X" * 5000, cap=100)
         assert out == ("X" * 5000, None)
@@ -136,11 +156,11 @@ class TestSpillIfLarge:
     async def test_failed_write_returns_whole_text(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        async def unwritable(*args: Any, **kwargs: Any) -> str | None:
+        async def cannot_write(*args: Any, **kwargs: Any) -> str | None:
             del args, kwargs
             return None
 
-        monkeypatch.setattr(task_progress, "write_result_file", unwritable)
+        monkeypatch.setattr(task_progress, "write_result_file", cannot_write)
         ctx = _backed_ctx(tmp_path)
         out = await spill_if_large(
             ctx.file_backend, name="c1", text="X" * 5000, cap=100
