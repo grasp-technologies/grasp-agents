@@ -9,13 +9,15 @@ renders exactly what the ``Grep`` tool already shows for the local backend.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from grasp_agents.file_backend import LocalFileBackend
-from grasp_agents.file_backend.text_grep import grep_texts
+from grasp_agents.file_backend.text_grep import grep_texts, grep_texts_async
 from grasp_agents.tools.file_search import rg_available
+from tests._helpers import max_loop_gap
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -188,3 +190,45 @@ def test_unknown_file_type_raises(tmp_path: Path) -> None:
 def test_invalid_regex_raises(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="Invalid regex"):
         grep_texts([(tmp_path / "a", "x")], "(", root=tmp_path)
+
+
+def test_a_slow_search_stops_at_its_time_budget(tmp_path: Path) -> None:
+    root = tmp_path.resolve()
+    pairs = [
+        (root / "a.md", "TODO first\n"),
+        (root / "b.md", "x" * 5_000 + "\n"),
+        (root / "c.md", "TODO last\n"),
+    ]
+
+    started = time.monotonic()
+    result = grep_texts(pairs, "TODO|(x+x+)+y", root=root, time_budget=0.3)
+
+    assert time.monotonic() - started < 2
+    assert result.files == [root / "a.md"]
+    assert result.num_files_matched == 1
+    assert len(result.notes) == 1
+    assert "stopped after 0.3s" in result.notes[0]
+    assert f"in {root / 'b.md'}" in result.notes[0]
+    assert "1 of 3 files" in result.notes[0]
+
+
+def test_overlong_patterns_and_globs_are_refused(tmp_path: Path) -> None:
+    root = tmp_path.resolve()
+    pairs = [(root / "a.md", "a\n")]
+
+    with pytest.raises(ValueError, match="limit"):
+        grep_texts(pairs, "a" * 5_000, root=root)
+    with pytest.raises(ValueError, match="limit"):
+        grep_texts(pairs, "a", root=root, glob="*" * 5_000)
+
+
+@pytest.mark.asyncio
+async def test_grep_texts_async_keeps_the_event_loop_running(tmp_path: Path) -> None:
+    root = tmp_path.resolve()
+    # The regex engine itself needs a noticeable time on this line.
+    pairs = [(root / "a.md", "x" * 400 + "\n")]
+
+    result, gap = await max_loop_gap(grep_texts_async(pairs, "(x+x+)+y", root=root))
+
+    assert result.files == []
+    assert gap < 0.3

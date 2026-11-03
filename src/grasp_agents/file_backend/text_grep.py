@@ -18,8 +18,17 @@ tool renders it the same way:
 Files are ordered by path components, like ``rg --sort path``. Paths whose
 components under ``root`` start with a dot are skipped unless
 ``include_hidden`` is set, and text containing a NUL byte is treated as
-binary and skipped. The regex is Python's ``re`` with ``re.MULTILINE``
-(plus ``re.DOTALL`` in multiline mode) rather than ripgrep's Rust flavor.
+binary and skipped. The regex is the ``regex`` module's ``re``-compatible
+flavor with ``MULTILINE`` (plus ``DOTALL`` in multiline mode) rather than
+ripgrep's Rust flavor.
+
+Python regexes can backtrack for a very long time (``(x+x+)+y``, or
+``.*a.*b`` on a long line), so every call runs under a time budget
+(``time_budget``, :data:`DEFAULT_GREP_TIME_BUDGET` seconds by default) and
+the engine releases the GIL while it matches. When the budget runs out the
+result keeps the files searched so far and says so in ``notes``.
+:func:`grep_texts` is synchronous; async code calls :func:`grep_texts_async`,
+which runs it in a worker thread so the event loop keeps running.
 
 Globs follow ripgrep with one difference: a glob containing ``/`` matches
 the path relative to ``root`` (ripgrep matches it relative to the process
@@ -30,9 +39,12 @@ to :data:`~.glob_match.MAX_BRACE_EXPANSIONS` alternatives).
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
-import re
+import time
 from typing import TYPE_CHECKING
+
+import regex
 
 from .base import GrepOutputMode, GrepRawResult
 from .glob_match import expand_braces, match_segments
@@ -40,6 +52,12 @@ from .glob_match import expand_braces, match_segments
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
+
+DEFAULT_GREP_TIME_BUDGET = 5.0
+"""Seconds one :func:`grep_texts` call may spend searching."""
+
+MAX_PATTERN_LENGTH = 1_000
+"""Longest regex, and longest glob, :func:`grep_texts` accepts (characters)."""
 
 # A subset of ``rg --type-list``.
 # cspell:ignore jspx sarif jpynb mdwn tcsh
@@ -94,28 +112,32 @@ def grep_texts(
     after_context: int | None = None,
     context: int | None = None,
     include_hidden: bool = False,
+    time_budget: float = DEFAULT_GREP_TIME_BUDGET,
 ) -> GrepRawResult:
     """
     Search ``files`` for ``pattern`` the way the local ``rg`` backend does.
 
     ``files`` may include paths outside ``root``; they are ignored, so a
     caller can pass a coarse candidate set. ``root`` may be a directory or
-    a single file. The keyword arguments mirror :meth:`FileBackend.grep`.
+    a single file. The other keyword arguments mirror
+    :meth:`FileBackend.grep`.
+
+    ``time_budget`` is the time in seconds the whole call may take. When it
+    runs out, the result covers the files searched completely so far and
+    ``notes`` says where the search stopped. This function blocks for up to
+    that long; call :func:`grep_texts_async` from async code.
 
     Raises:
-        ValueError: ``pattern`` is not a valid regex, or ``file_type`` is
-            not a known type.
+        ValueError: ``pattern`` is not a valid regex, ``pattern`` or ``glob``
+            is longer than :data:`MAX_PATTERN_LENGTH`, ``glob`` has too many
+            brace alternatives, or ``file_type`` is not a known type.
 
     """
-    flags = re.MULTILINE
-    if case_insensitive:
-        flags |= re.IGNORECASE
-    if multiline:
-        flags |= re.DOTALL
-    try:
-        regex = re.compile(pattern, flags)
-    except re.error as exc:
-        raise ValueError(f"Invalid regex {pattern!r}: {exc}") from exc
+    deadline = time.monotonic() + time_budget
+    _check_length("Pattern", pattern)
+    if glob is not None:
+        _check_length("Glob", glob)
+    compiled = _compile(pattern, case_insensitive=case_insensitive, multiline=multiline)
 
     type_globs: tuple[str, ...] | None = None
     if file_type is not None:
@@ -151,11 +173,28 @@ def grep_texts(
     found_files: list[Path] = []
     counts: list[tuple[Path, int]] = []
     rendered: list[str] = []
+    notes: list[str] = []
     num_matches = 0
     num_files_matched = 0
-    for path, text in selected:
+    for searched, (path, text) in enumerate(selected):
         lines = _split_lines(text)
-        spans = _match_spans(regex, text, lines, multiline=multiline)
+        try:
+            spans = _match_spans(
+                compiled,
+                text,
+                lines,
+                multiline=multiline,
+                first_only=output_mode == "files_with_matches",
+                deadline=deadline,
+            )
+        except TimeoutError:
+            notes.append(
+                f"The search stopped after {time_budget:g}s in {path}, so it covers "
+                f"only {searched} of {len(selected)} files. Try a simpler pattern "
+                "(nested or repeated wildcards such as `(a+)+` or `.*a.*b` are "
+                "slow on long lines) or a narrower path or glob."
+            )
+            break
         if not spans:
             continue
         num_files_matched += 1
@@ -184,7 +223,81 @@ def grep_texts(
         lines=rendered,
         num_matches=num_matches,
         num_files_matched=num_files_matched,
+        notes=notes,
     )
+
+
+async def grep_texts_async(
+    files: Iterable[tuple[Path, str]],
+    pattern: str,
+    *,
+    root: Path,
+    glob: str | None = None,
+    file_type: str | None = None,
+    case_insensitive: bool = False,
+    multiline: bool = False,
+    output_mode: GrepOutputMode = "files_with_matches",
+    show_line_numbers: bool = True,
+    before_context: int | None = None,
+    after_context: int | None = None,
+    context: int | None = None,
+    include_hidden: bool = False,
+    time_budget: float = DEFAULT_GREP_TIME_BUDGET,
+) -> GrepRawResult:
+    """
+    Run :func:`grep_texts` in a worker thread, so the event loop keeps running.
+
+    Takes the same arguments. ``files`` is consumed in the worker thread:
+    pass a list, or a generator over data nothing changes meanwhile. A
+    cancelled caller stops waiting at once, but the thread runs on until the
+    search finishes or ``time_budget`` runs out.
+    """
+    return await asyncio.to_thread(
+        grep_texts,
+        files,
+        pattern,
+        root=root,
+        glob=glob,
+        file_type=file_type,
+        case_insensitive=case_insensitive,
+        multiline=multiline,
+        output_mode=output_mode,
+        show_line_numbers=show_line_numbers,
+        before_context=before_context,
+        after_context=after_context,
+        context=context,
+        include_hidden=include_hidden,
+        time_budget=time_budget,
+    )
+
+
+def _check_length(kind: str, value: str) -> None:
+    if len(value) > MAX_PATTERN_LENGTH:
+        raise ValueError(
+            f"{kind} is {len(value):,} characters, over the limit of "
+            f"{MAX_PATTERN_LENGTH:,}. Search for something shorter and more specific."
+        )
+
+
+def _compile(
+    pattern: str, *, case_insensitive: bool, multiline: bool
+) -> regex.Pattern[str]:
+    flags = regex.MULTILINE
+    if case_insensitive:
+        flags |= regex.IGNORECASE
+    if multiline:
+        flags |= regex.DOTALL
+    try:
+        return regex.compile(pattern, flags)
+    except regex.error as exc:
+        raise ValueError(f"Invalid regex {pattern!r}: {exc}") from exc
+
+
+def _remaining(deadline: float) -> float:
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError
+    return left
 
 
 def _relative_parts(path: Path, root: Path) -> tuple[str, ...] | None:
@@ -206,22 +319,39 @@ def _split_lines(text: str) -> list[str]:
 
 
 def _match_spans(
-    regex: re.Pattern[str], text: str, lines: list[str], *, multiline: bool
+    compiled: regex.Pattern[str],
+    text: str,
+    lines: list[str],
+    *,
+    multiline: bool,
+    first_only: bool,
+    deadline: float,
 ) -> list[tuple[int, int]]:
     """
     0-based inclusive line spans that contain a match.
 
     Line mode yields one single-line span per matching line. Multiline mode
     yields one span per match, with overlapping or touching spans merged.
+    ``first_only`` stops at the first span. Once ``deadline`` (a
+    :func:`time.monotonic` value) has passed, :class:`TimeoutError`
+    propagates.
     """
+    spans: list[tuple[int, int]] = []
     if not multiline:
-        return [(i, i) for i, line in enumerate(lines) if regex.search(line)]
+        for i, line in enumerate(lines):
+            if compiled.search(line, concurrent=True, timeout=_remaining(deadline)):
+                spans.append((i, i))
+                if first_only:
+                    break
+        return spans
 
     starts: list[int] = []
     offset = 0
     for line in lines:
         starts.append(offset)
         offset += len(line) + 1
+    if not starts:
+        return spans
 
     def line_of(pos: int) -> int:
         lo, hi = 0, len(starts) - 1
@@ -233,16 +363,15 @@ def _match_spans(
                 hi = mid - 1
         return lo
 
-    spans: list[tuple[int, int]] = []
-    for m in regex.finditer(text):
-        if not starts:
-            break
+    for m in compiled.finditer(text, concurrent=True, timeout=_remaining(deadline)):
         first = line_of(m.start())
         last = line_of(max(m.start(), m.end() - 1))
         if spans and first <= spans[-1][1]:
             spans[-1] = (spans[-1][0], max(spans[-1][1], last))
         else:
             spans.append((first, last))
+        if first_only:
+            break
     return spans
 
 
@@ -330,4 +459,10 @@ class _GlobFilter:
         return False
 
 
-__all__ = ["FILE_TYPE_GLOBS", "grep_texts"]
+__all__ = [
+    "DEFAULT_GREP_TIME_BUDGET",
+    "FILE_TYPE_GLOBS",
+    "MAX_PATTERN_LENGTH",
+    "grep_texts",
+    "grep_texts_async",
+]

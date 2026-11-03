@@ -1324,6 +1324,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
+    { name = "regex" },
     { name = "rich" },
 ]
 
@@ -1460,6 +1461,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.11,<3" },
     { name = "python-dotenv", specifier = ">=1.0,<2" },
     { name = "pyyaml", specifier = ">=6.0.2,<7" },
+    { name = "regex", specifier = ">=2024.11.6" },
     { name = "rich", specifier = ">=14.0,<15" },
     { name = "rich-pixels", marker = "extra == 'tui'", specifier = ">=3.0,<4" },
     { name = "textual", marker = "extra == 'tui'", specifier = ">=8.0,<9" },

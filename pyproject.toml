@@ -19,6 +19,7 @@ dependencies = [
     "litellm>=1.82,<2",
     "httpx>=0.27.0,<1",
     "pyyaml>=6.0.2,<7",
+    "regex>=2024.11.6",
     "pydantic>=2.11,<3",
     "opentelemetry-sdk>=1.37.0,<2",
     "rich>=14.0,<15",

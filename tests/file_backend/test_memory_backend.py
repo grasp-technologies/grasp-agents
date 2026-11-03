@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import stat as stat_module
+import time
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +32,7 @@ from grasp_agents.tools.file_search import (
     GrepInput,
     GrepResult,
 )
-from tests._helpers import _make_agent_ctx
+from tests._helpers import _make_agent_ctx, max_loop_gap
 
 pytestmark = pytest.mark.asyncio
 
@@ -199,6 +200,28 @@ async def test_grep_uses_the_shared_text_grep() -> None:
 
     assert result.lines == ["/mem/a.md:2:TODO two"]
     assert result.num_files_matched == 1
+
+
+async def test_a_catastrophic_pattern_does_not_stall_the_event_loop() -> None:
+    backend = _backend(**{"a.md": "a" * 24 + "!\n"})
+
+    result, gap = await max_loop_gap(backend.grep(ROOT, "(a+)+$"))
+
+    assert result.files == []
+    assert gap < 0.5
+
+
+async def test_grep_stops_at_the_backends_time_budget() -> None:
+    backend = InMemoryFileBackend(
+        [ROOT], files={"/mem/a.md": "x" * 5_000 + "\n"}, grep_time_budget=0.3
+    )
+
+    started = time.monotonic()
+    result = await backend.grep(ROOT, "(x+x+)+y")
+
+    assert time.monotonic() - started < 2
+    assert result.files == []
+    assert "stopped after 0.3s" in result.notes[0]
 
 
 async def test_file_tools_work_end_to_end() -> None:

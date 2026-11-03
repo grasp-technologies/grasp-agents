@@ -43,7 +43,7 @@ if TYPE_CHECKING:
         resolve_safe,
         sensitive_path_rules,
     )
-    from .text_grep import grep_texts
+    from .text_grep import grep_texts, grep_texts_async
 
 
 _LAZY: dict[str, str] = {
@@ -60,6 +60,7 @@ _LAZY: dict[str, str] = {
     "MCPFileBackend": "mcp",
     "InMemoryFileBackend": "memory",
     "grep_texts": "text_grep",
+    "grep_texts_async": "text_grep",
     "PathAccessError": "paths",
     "SensitivePathRules": "paths",
     "check_sensitive_path": "paths",
@@ -97,6 +98,7 @@ __all__ = [
     "atomic_write_text",
     "check_sensitive_path",
     "grep_texts",
+    "grep_texts_async",
     "has_binary_extension",
     "is_blocked_device",
     "resolve_safe",

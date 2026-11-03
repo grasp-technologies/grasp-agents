@@ -19,7 +19,15 @@ import shutil
 import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
 import tempfile
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
+import time
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -413,3 +421,29 @@ async def _until(pred: Callable[[], bool]) -> None:
             return
         await asyncio.sleep(0.01)
     raise AssertionError("condition not met within timeout")
+
+
+async def max_loop_gap[T](awaitable: Awaitable[T]) -> tuple[T, float]:
+    """
+    Await ``awaitable`` while a ticker runs every 10ms; return its result and
+    the longest gap between ticks, i.e. how long the event loop was blocked.
+    """
+    gaps: list[float] = []
+
+    async def tick() -> None:
+        last = time.monotonic()
+        while True:
+            await asyncio.sleep(0.01)
+            now = time.monotonic()
+            gaps.append(now - last)
+            last = now
+
+    ticker = asyncio.create_task(tick())
+    await asyncio.sleep(0.02)
+    try:
+        result = await awaitable
+        # Let the ticker record a gap the awaitable caused before it returned.
+        await asyncio.sleep(0.02)
+    finally:
+        ticker.cancel()
+    return result, max(gaps)

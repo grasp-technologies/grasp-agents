@@ -25,7 +25,7 @@ from .base import (
 )
 from .local import glob_filter_entries
 from .paths import PathAccessError, normalize_posix
-from .text_grep import grep_texts
+from .text_grep import DEFAULT_GREP_TIME_BUDGET, grep_texts_async
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -50,6 +50,8 @@ class InMemoryFileBackend(FileBackend):
         allowed_roots: Absolute POSIX directories the backend accepts paths
             under. Each root exists as an empty directory from the start.
         files: Optional seed content, path → text or bytes.
+        grep_time_budget: Seconds one :meth:`grep` may search before it
+            returns what it found so far with a note (see :func:`grep_texts`).
 
     Writes are atomic and ``expected_mtime`` checks are exact: nothing
     awaits between the check and the write. Every write gets an mtime
@@ -64,7 +66,9 @@ class InMemoryFileBackend(FileBackend):
         allowed_roots: Sequence[Path | str],
         *,
         files: Mapping[str | Path, str | bytes] | None = None,
+        grep_time_budget: float = DEFAULT_GREP_TIME_BUDGET,
     ) -> None:
+        self._grep_time_budget = grep_time_budget
         self._allowed_roots: list[Path] = [
             Path(normalize_posix(r)) for r in allowed_roots
         ]
@@ -243,13 +247,16 @@ class InMemoryFileBackend(FileBackend):
         context: int | None = None,
     ) -> GrepRawResult:
         base = normalize_posix(root)
-        pairs = [
-            (Path(key), entry.data.decode("utf-8", errors="replace"))
+        snapshot = [
+            (key, entry.data)
             for key, entry in self._files.items()
             if key == base or base in key.parents
         ]
-        return grep_texts(
-            pairs,
+        return await grep_texts_async(
+            (
+                (Path(key), data.decode("utf-8", errors="replace"))
+                for key, data in snapshot
+            ),
             pattern,
             root=Path(base),
             glob=glob,
@@ -261,6 +268,7 @@ class InMemoryFileBackend(FileBackend):
             before_context=before_context,
             after_context=after_context,
             context=context,
+            time_budget=self._grep_time_budget,
         )
 
     # ---- internals ----------------------------------------------------------
