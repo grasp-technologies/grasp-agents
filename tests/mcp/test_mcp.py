@@ -809,7 +809,7 @@ class TestOmittedOptionalsNotSent:
         assert session.calls == [{"required_field": "x"}]
 
 
-# ---------- file backend: ".." collapse + same-surface mtimes ----------
+# ---------- file backend: ".." collapse + same-surface mtime ----------
 
 
 @dataclass
