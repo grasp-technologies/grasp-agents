@@ -36,8 +36,6 @@ if TYPE_CHECKING:
 
 _DIR_MODE = stat_module.S_IFDIR | 0o755
 
-# cspell:ignore EFBIG ENOSPC
-
 
 @dataclass
 class _File:

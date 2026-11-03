@@ -39,8 +39,6 @@ pytestmark = pytest.mark.asyncio
 
 ROOT = Path("/mem")
 
-# cspell:ignore EFBIG ENOSPC
-
 
 def _backend(**files: str) -> InMemoryFileBackend:
     return InMemoryFileBackend([ROOT], files={f"/mem/{k}": v for k, v in files.items()})
