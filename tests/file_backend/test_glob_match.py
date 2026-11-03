@@ -5,7 +5,7 @@ The hostile-pattern tests run the match in a daemon thread and fail if it is
 still running after a deadline, so an exponential matcher fails the test
 instead of hanging the suite. ``LocalFileBackend.find_files`` uses the same
 matcher as :func:`glob_filter_entries` but walks in an executor thread, which
-the interpreter would wait for at exit, so it is not driven here.
+the interpreter would wait for at exit, so no hostile pattern goes through it.
 """
 
 from __future__ import annotations
