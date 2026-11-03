@@ -35,7 +35,7 @@ if TYPE_CHECKING:
         E2BTemplateConfig,
         load_e2b_config,
     )
-    from .e2b.environment import E2BEnvironment, e2b_environment
+    from .e2b.environment import FRESH_SNAPSHOT_REF, E2BEnvironment, e2b_environment
     from .e2b.exec import E2BExecBackend
     from .e2b.file_backend import E2BFileBackend
     from .local.environment import LocalEnvironment, local_environment
@@ -56,6 +56,7 @@ _LAZY: dict[str, str] = {
     "NetworkConfig": "config",
     "load_environment_config": "config",
     "E2BEnvironment": "e2b.environment",
+    "FRESH_SNAPSHOT_REF": "e2b.environment",
     "E2BEnvironmentConfig": "e2b.config",
     "E2BTemplateConfig": "e2b.config",
     "load_e2b_config": "e2b.config",
@@ -88,6 +89,7 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "FRESH_SNAPSHOT_REF",
     "E2BEnvironment",
     "E2BEnvironmentConfig",
     "E2BExecBackend",

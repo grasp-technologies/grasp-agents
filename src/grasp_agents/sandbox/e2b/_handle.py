@@ -8,6 +8,7 @@ translate paths, detect command timeouts, and read entry metadata.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import posixpath
 import shlex
@@ -17,6 +18,7 @@ from typing import TYPE_CHECKING
 from e2b import TimeoutException
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
     from e2b import AsyncSandbox, EntryInfo
@@ -110,12 +112,42 @@ class SandboxHandle:
     Both backends and the environment reference the *same* holder, so a
     ``restore()`` (reconnect/resume) swaps the live sandbox under the file and
     exec surfaces at once.
+
+    A lazily started environment *arms* the handle with a factory instead of
+    creating the sandbox on entry; :meth:`ensure` then creates it on the first
+    file or exec call, once, even when several calls race.
     """
 
-    __slots__ = ("sandbox",)
+    __slots__ = ("_factory", "_lock", "sandbox")
 
     def __init__(self, sandbox: AsyncSandbox | None = None) -> None:
         self.sandbox: AsyncSandbox | None = sandbox
+        self._factory: Callable[[], Awaitable[AsyncSandbox]] | None = None
+        self._lock = asyncio.Lock()
+
+    @property
+    def armed(self) -> bool:
+        """True while a factory is waiting to start the sandbox on first use."""
+        return self._factory is not None
+
+    def arm(self, factory: Callable[[], Awaitable[AsyncSandbox]]) -> None:
+        """Start the sandbox with ``factory`` on the first :meth:`ensure`."""
+        self._factory = factory
+
+    def disarm(self) -> None:
+        """Stop starting sandboxes on demand (the environment was exited)."""
+        self._factory = None
+
+    async def ensure(self) -> AsyncSandbox:
+        """Return the live sandbox, starting it first when the handle is armed."""
+        if self.sandbox is not None:
+            return self.sandbox
+        if self._factory is None:
+            return self.require()
+        async with self._lock:
+            if self.sandbox is None and self._factory is not None:
+                self.sandbox = await self._factory()
+        return self.require()
 
     def require(self) -> AsyncSandbox:
         if self.sandbox is None:
