@@ -98,11 +98,16 @@ class E2BKernel(KernelSession):
     from a checkpoint keep its in-memory variables instead of starting fresh.
     The notebook artifact lives on the same sandbox FS via the paired
     :class:`E2BFileBackend`.
+
+    The kernel is bound to the sandbox it was opened on. Once a restore or an
+    exit replaces that sandbox, it counts as closed, and its holder reopens it
+    on the live sandbox: re-attached to a seeded context id (a rollback seeds
+    the one its snapshot kept), else fresh.
     """
 
     def __init__(
         self,
-        require_sandbox: Callable[[], AsyncSandbox],
+        get_sandbox: Callable[[], AsyncSandbox | None],
         *,
         cwd: str,
         env: dict[str, str] | None,
@@ -110,7 +115,9 @@ class E2BKernel(KernelSession):
         default_timeout: float = DEFAULT_EXEC_TIMEOUT,
         context_id: str | None = None,
     ) -> None:
-        self._require = require_sandbox
+        # Returns the sandbox the kernel was opened on while it is still the
+        # live one, else None.
+        self._get_sandbox = get_sandbox
         self._cwd = cwd
         self._env = env
         self._backend = backend
@@ -126,7 +133,7 @@ class E2BKernel(KernelSession):
 
     @property
     def closed(self) -> bool:
-        return self._closed
+        return self._closed or self._get_sandbox() is None
 
     @property
     def context_id(self) -> str | None:
@@ -142,7 +149,9 @@ class E2BKernel(KernelSession):
 
     def _sandbox(self) -> CodeInterpreterSandbox:
         """The live sandbox, narrowed to the code-interpreter type (has run_code)."""
-        sandbox = self._require()
+        sandbox = self._get_sandbox()
+        if sandbox is None:
+            raise RuntimeError("kernel session is closed; open a new one")
         if not hasattr(sandbox, "run_code"):
             raise RuntimeError(
                 "E2B sandbox is not a code-interpreter sandbox (no run_code); "
@@ -153,7 +162,7 @@ class E2BKernel(KernelSession):
     async def _bind_context(self, sandbox: CodeInterpreterSandbox) -> Context:
         """Re-attach to a persisted context id (resume), else create a fresh one."""
         if self._context_id is not None:
-            from e2b_code_interpreter.models import (
+            from e2b_code_interpreter.models import (  # ruff: ignore[import-outside-top-level]
                 Context,
             )
 
@@ -165,7 +174,7 @@ class E2BKernel(KernelSession):
     async def execute(
         self, code: str, *, timeout: float | None = None
     ) -> AsyncIterator[CellOutput | CellResult]:
-        if self._closed:
+        if self.closed:
             raise RuntimeError("kernel session is closed; open a new one")
         eff_timeout = timeout if timeout is not None else self._default_timeout
         start = time.monotonic()

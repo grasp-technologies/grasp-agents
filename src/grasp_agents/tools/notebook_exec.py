@@ -83,11 +83,14 @@ class KernelHolder:
             if current is None:
                 current = await backend.open_kernel(context_id=self._context_id)
             elif current.closed:
-                # Kernel died (e.g. a cell timeout killed it) — a fresh kernel
-                # loses the REPL namespace (variables / imports / definitions),
-                # so flag it for the tool to surface to the model.
+                # Kernel died (e.g. a cell timeout killed it, or a restore
+                # replaced its sandbox). A fresh kernel loses the REPL namespace
+                # (variables / imports / definitions), so flag it for the tool
+                # to surface to the model; re-attaching to the seeded context
+                # keeps it.
                 current = await backend.open_kernel(context_id=self._context_id)
-                self._was_reset = True
+                if self._context_id is None or current.context_id != self._context_id:
+                    self._was_reset = True
             self._kernel = current
             return current
 
