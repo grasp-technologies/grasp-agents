@@ -208,6 +208,7 @@ class LocalFileBackend(FileBackend):
         def _write() -> float:
             if expected_mtime is not None:
                 _check_expected_mtime(path, expected_mtime)
+            path.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_bytes(path, data, mode=mode, overwrite=overwrite)
             # ``resolve`` after the write so a brand-new file's parent
             # symlinks (if any) follow the same canonicalization as

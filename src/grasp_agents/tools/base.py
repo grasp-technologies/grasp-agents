@@ -168,9 +168,11 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         # and a call's result is larger, the agent sees a head+tail excerpt plus
         # a pointer to an on-disk ``.grasp/tasks/<call_id>.result`` file holding
         # the full output for ``Read`` / ``Grep`` (a backgrounded call's
-        # completion note also names it). Spilling needs a ``file_backend``;
-        # with none, or if the write fails, the result is inlined whole
-        # (truncating with no recovery path would hide output unrecoverably).
+        # completion note also names it). In a result of several parts, each
+        # text part is capped this way and images stay inline. Spilling needs a
+        # ``file_backend``; with none, or if the write fails, the result is
+        # inlined whole (truncating with no recovery path would hide output
+        # unrecoverably).
         # Cap tools with large mechanical output (shell logs); leave ``None``
         # where the result *is* the answer (a sub-agent).
         self.max_inline_result_chars = max_inline_result_chars

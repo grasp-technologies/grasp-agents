@@ -8,7 +8,7 @@ Invariants enforced on every call:
    baseline; MCP backends trust their server's containment policy.
 2. **Read-before-write** on existing files. The model must have ``Read``
    the target within this session; otherwise the write is refused.
-   Fresh files (parent exists, target doesn't) skip this check.
+   Fresh files skip this check; missing parent directories are created.
 3. **mtime staleness refusal** on existing files. If the file's current
    ``mtime`` differs from the one recorded at the last ``Read``, the
    write is refused with guidance to re-read.
@@ -80,7 +80,7 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
         "is lost.\n"
         "* For an existing file you must have `Read` it earlier this session "
         "and it must not have changed on disk since, or the write is refused. "
-        "The parent directory must exist.\n"
+        "Missing parent directories are created.\n"
         "* Atomic: a crash leaves either the old or the new content, never "
         "partial bytes.\n"
         "* Returns `bytes_written` and `created` (true for a new file, false "
@@ -174,14 +174,6 @@ class WriteTool(BaseTool[WriteInput, WriteResult, Any]):
                 mode = current_stat.mode & 0o7777
         else:
             mode = self._new_file_mode
-
-        # Parent directory must exist — refuse to silently create missing
-        # intermediate dirs.
-        if not await backend.parent_exists(resolved):
-            raise ValueError(
-                f"Parent directory for {resolved} does not exist. "
-                "Create it explicitly first."
-            )
 
         data = inp.content.encode("utf-8")
         with refuse_if_stale(resolved, action="writing"):

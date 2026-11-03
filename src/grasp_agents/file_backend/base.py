@@ -221,7 +221,8 @@ class FileBackend(ABC):
         expected_mtime: float | None = None,
     ) -> float:
         """
-        Atomically write ``data``. Returns the post-write mtime.
+        Atomically write ``data``, creating missing parent directories. Returns the
+        post-write mtime. ``path`` is one the caller has validated.
 
         The caller refreshes its :class:`FileEditSessionState` read
         record with the returned mtime so a following :class:`EditTool`
