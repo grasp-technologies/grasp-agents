@@ -2,10 +2,11 @@
 Pure-Python grep over ``(path, text)`` pairs.
 
 Backends that hold file text themselves (:class:`InMemoryFileBackend`, a
-database-backed backend after its SQL prefilter) call :func:`grep_texts`
-and return its :class:`GrepRawResult` from their ``grep`` method. The result
-is shaped exactly like the ripgrep-driven local backend's, so the ``Grep``
-tool renders it the same way:
+database-backed backend after its SQL prefilter) await
+:func:`grep_texts_async` in their ``grep`` method and return its
+:class:`GrepRawResult`. The result is shaped exactly like the
+ripgrep-driven local backend's, so the ``Grep`` tool renders it the same
+way:
 
 * ``files_with_matches``: ``files`` lists matching paths; ``num_matches``
   equals the number of files.
