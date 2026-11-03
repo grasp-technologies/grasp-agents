@@ -754,6 +754,14 @@ class BackgroundTaskManager[CtxT]:
         return any(not bt.consumer.done() for bt in self._tasks.values())
 
     @property
+    def has_tracked_tasks(self) -> bool:
+        """
+        True while any task is tracked: still running, or finished with its
+        completion not yet taken by :meth:`pop_completions`.
+        """
+        return bool(self._tasks)
+
+    @property
     def has_blocking_tasks(self) -> bool:
         """
         True while any *answer-blocking* background task is undelivered.

@@ -9,7 +9,9 @@ filesystem at ``<first allowed root>/.grasp/tasks/<call_id>.<ext>``:
   :func:`spill_if_large` when it exceeds the inline cap: a foreground call's
   result, or a backgrounded task's outcome when it finishes. The streamed log
   holds text; this holds the structured result (e.g. a ``BashResult`` with split
-  stdout / stderr / exit code) — what the inline excerpt points at.
+  stdout / stderr / exit code) — what the inline excerpt points at. A result
+  with several parts (text and images) spills each oversized text part, the
+  second and later as ``<call_id>-<n>.result``.
 
 A backgrounded task's ``TaskRecord`` indexes its log via ``log_path``.
 """
@@ -21,8 +23,13 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from grasp_agents.types.content import InputText
+
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from grasp_agents.file_backend.base import FileBackend
+    from grasp_agents.types.content import InputFile, InputImage
 
 logger = logging.getLogger(__name__)
 
@@ -150,3 +157,38 @@ async def spill_if_large(
         return text, None
     excerpt, _ = excerpt_for_inline(text, cap, file=result_path, file_kind=file_kind)
     return excerpt, result_path
+
+
+async def spill_parts_if_large(
+    file_backend: FileBackend | None,
+    *,
+    name: str,
+    parts: Sequence[InputText | InputImage | InputFile],
+    cap: int | None,
+    file_kind: str = "full output",
+) -> list[InputText | InputImage | InputFile]:
+    """
+    :func:`spill_if_large` for a result with several parts: each text part over
+    ``cap`` is spilled to its own ``.result`` file and replaced by an excerpt that
+    points at it; images and files stay inline.
+    """
+    out = list(parts)
+    if cap is None or file_backend is None:
+        return out
+    large = [
+        i
+        for i, part in enumerate(out)
+        if isinstance(part, InputText) and len(part.text) > cap
+    ]
+    for n, i in enumerate(large):
+        part = out[i]
+        assert isinstance(part, InputText)
+        text, _ = await spill_if_large(
+            file_backend,
+            name=name if n == 0 else f"{name}-{n + 1}",
+            text=part.text,
+            cap=cap,
+            file_kind=file_kind,
+        )
+        out[i] = part.model_copy(update={"text": text})
+    return out

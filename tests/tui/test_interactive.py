@@ -49,6 +49,22 @@ async def test_interactive_submit_runs_agent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_prompt_grows_with_wrapped_text_up_to_its_cap() -> None:
+    app = GraspAgentsApp(on_submit=_fake_agent, main_agent="analyst")
+    async with app.run_test(size=(60, 30)) as pilot:
+        await pilot.pause()
+        prompt = app.query_one("#prompt", PromptArea)
+        prompt.insert("word " * 40)
+        await pilot.pause()
+        assert prompt.document.line_count == 1
+        assert prompt.size.height == prompt.wrapped_document.height > 1
+
+        await pilot.resize_terminal(30, 30)
+        await pilot.pause()
+        assert prompt.size.height == PromptArea._MAX_ROWS
+
+
+@pytest.mark.asyncio
 async def test_newline_keys_insert_newline_and_do_not_submit() -> None:
     app = GraspAgentsApp(on_submit=_fake_agent, main_agent="analyst")
     async with app.run_test() as pilot:

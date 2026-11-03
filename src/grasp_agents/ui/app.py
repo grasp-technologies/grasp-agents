@@ -17,10 +17,11 @@ Run the demo::
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import re
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from rich.align import Align
 from rich.console import Group
@@ -155,6 +156,35 @@ _GLYPH: dict[str, str] = {
 # being sent to the agent. Also bound to ctrl+r.
 _ROLLBACK_COMMAND = "/rollback"
 
+# How often the TUI checks an idle agent's background tasks for progress.
+_BACKGROUND_POLL_S = 0.25
+
+
+class AgentBackground(Protocol):
+    """
+    An agent's background tasks, as the TUI watches them between the agent's
+    runs: their progress streams into the panes, and a finished one starts a turn
+    so the agent receives its result.
+    """
+
+    @property
+    def outstanding(self) -> bool:
+        """A task is running, or has finished and awaits delivery."""
+        ...
+
+    @property
+    def finished(self) -> bool:
+        """A finished task awaits delivery to the agent."""
+        ...
+
+    def progress(self) -> AsyncIterator[Event[Any]]:
+        """The tasks' events since the last call, without waiting."""
+        ...
+
+    def deliver(self) -> AsyncIterator[Event[Any]]:
+        """Run a turn that delivers the finished tasks' results to the agent."""
+        ...
+
 
 def _slug(source: str) -> str:
     base = re.sub(r"[^0-9A-Za-z_-]+", "-", source).strip("-").lower() or "x"
@@ -223,6 +253,7 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
         agents: Sequence[str | Processor[Any, Any, Any]] | None = None,
         ctx: SessionContext[Any] | None = None,
         restore_history: bool = True,
+        background: AgentBackground | None = None,
     ) -> None:
         super().__init__()
         if on_submit is not None and on_post is not None:
@@ -288,6 +319,12 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
         # the worker driving the current interactive turn; cancelled by Esc
         self._ga_run_worker: Worker[None] | None = None
         self._ga_running = False
+        # The agent's background tasks (``on_submit`` mode): they never hold the
+        # prompt. Between runs a worker streams their progress, and a finished
+        # one starts a turn that delivers its result (see _watch_background).
+        self._ga_background = background
+        self._ga_background_worker: Worker[None] | None = None
+        self._ga_background_deliver = True
         # Approval gate (interactive mode): when the session ctx carries a
         # TuiApprovalStore, a worker drains its pending queue and pops a dialog
         # per gated tool call (see _consume_approvals). Any other ApprovalStore
@@ -564,7 +601,55 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
         prompt.text = ""
         prompt.sync_height()
         prompt.disabled = True
+        # Marked here, not in the worker, so a background wake-up can't start a
+        # second run in between.
+        self._ga_running = True
         self._ga_run_worker = self._run_turn(text)
+
+    # ── background tasks between runs (on_submit mode) ──
+
+    def _watch_background(self, *, deliver: bool = True) -> None:
+        """
+        Watch the agent's background tasks while it is idle, if it has any:
+        stream their progress, and with ``deliver``, run a turn when one finishes.
+        """
+        background = self._ga_background
+        if background is None or self._ga_running or not background.outstanding:
+            return
+        self._ga_background_deliver = deliver
+        worker = self._ga_background_worker
+        if worker is not None and worker.state in {
+            WorkerState.PENDING,
+            WorkerState.RUNNING,
+        }:
+            return
+        self._ga_background_worker = self._background_watch()
+
+    @work(exclusive=False)
+    async def _background_watch(self) -> None:
+        background = self._ga_background
+        assert background is not None
+        while not self._ga_running and background.outstanding:
+            async for event in background.progress():
+                await self._feed(event)
+            if (
+                self._ga_background_deliver
+                and background.finished
+                and not self._ga_running
+            ):
+                self._deliver_background()
+                return
+            await asyncio.sleep(_BACKGROUND_POLL_S)
+
+    def _deliver_background(self) -> None:
+        """Run a turn, with no message of the user's, to deliver finished tasks."""
+        background = self._ga_background
+        assert background is not None
+        with contextlib.suppress(NoMatches):
+            # Keeps any draft the user is typing.
+            self.query_one("#prompt", PromptArea).disabled = True
+        self._ga_running = True
+        self._ga_run_worker = self._run_turn(None)
 
     # ── fire-and-forget input (on_post mode) ──
 
@@ -631,14 +716,23 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
         strip.update(Group(*lines))
 
     @work
-    async def _run_turn(self, text: str) -> None:
-        if self._ga_on_submit is None:
+    async def _run_turn(self, text: str | None) -> None:
+        # ``None``: a turn that delivers finished background tasks.
+        if text is not None and self._ga_on_submit is None:
+            self._ga_running = False
             return
         self._ga_running = True
-        stream = self._ga_on_submit(text)
+        if text is None:
+            assert self._ga_background is not None
+            stream = self._ga_background.deliver()
+        else:
+            assert self._ga_on_submit is not None
+            stream = self._ga_on_submit(text)
+        completed = False
         try:
             async for event in stream:
                 await self._feed(event)
+            completed = True
         finally:
             self._ga_running = False
             # Re-enable the prompt (suppress NoMatches: the app may be tearing
@@ -655,6 +749,9 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
             if aclose is not None:
                 with contextlib.suppress(Exception):
                     await aclose()
+            # After an interrupted or failed turn, a finished task waits for the
+            # user's next message rather than starting a turn of its own.
+            self._watch_background(deliver=completed)
 
     # ── approval gate ──
 
@@ -1519,6 +1616,24 @@ class _AgentTurns:
             await self._agent.rollback_to_step(step)
         del self._steps[index:]
 
+    # The agent's background tasks, watched between its runs (AgentBackground).
+
+    @property
+    def outstanding(self) -> bool:
+        return self._agent.agent_ctx.bg_tasks.has_tracked_tasks
+
+    @property
+    def finished(self) -> bool:
+        return self._agent.agent_ctx.bg_tasks.has_undelivered_completions
+
+    def progress(self) -> AsyncIterator[Event[Any]]:
+        return self._agent.agent_ctx.bg_tasks.bubble_events()
+
+    async def deliver(self) -> AsyncIterator[Event[Any]]:
+        # Not a submission: it adds no message to roll back to.
+        async for event in self._agent.run_stream():
+            yield event
+
 
 def run_tui_interactive(
     agent: LLMAgent[Any, Any, Any] | None = None,
@@ -1541,7 +1656,9 @@ def run_tui_interactive(
     inferred from it: each message runs as its own step so ``/rollback`` (or
     ``ctrl+r``) can rewind to a previous message, the slash-command palette picks
     up ``agent.ctx.skills``, and the token meter tracks the agent's context
-    window (its compaction budget).
+    window (its compaction budget). The agent's background tasks never hold the
+    prompt: once a run ends, their progress keeps streaming into the panes, and
+    when one finishes, a turn runs on its own so the agent receives the result.
 
     For custom per-turn orchestration — a multi-agent ``Runner``, input
     pre/post-processing, calling several agents — pass ``on_submit`` instead (a
@@ -1581,8 +1698,11 @@ def run_tui_interactive(
     partials of an in-flight turn.
     """
     window: int | None = None
+    background: AgentBackground | None = None
     if agent is not None:
         turns = _AgentTurns(agent)
+        if on_post is None:
+            background = turns
         if on_submit is None and on_post is None:
             on_submit = turns.on_submit
         if on_rollback is None and hasattr(agent, "rollback_to_step"):
@@ -1610,6 +1730,7 @@ def run_tui_interactive(
         agents=agents,
         ctx=ctx,
         restore_history=restore_history,
+        background=background,
     )
     if window and main_agent:
         # Seed the meter against the agent's managed context window; later updates

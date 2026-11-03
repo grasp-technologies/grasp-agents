@@ -98,7 +98,7 @@ async def test_write_registers_post_write_mtime(
     assert record.mtime == target.stat().st_mtime
 
 
-async def test_write_refuses_when_parent_missing(
+async def test_write_creates_missing_parents(
     tmp_path: Path,
     ctx: SessionContext[Any],
     agent_ctx: AgentContext,
@@ -108,8 +108,22 @@ async def test_write_refuses_when_parent_missing(
     result = await write_tool.run(
         WriteInput(path=str(target), content="x"), ctx=ctx, agent_ctx=agent_ctx
     )
-    assert "Parent directory" in _error_message(result)
-    assert "does not exist" in _error_message(result)
+    assert result.created
+    assert target.read_text() == "x"
+
+
+async def test_write_creates_no_parents_outside_its_roots(
+    tmp_path: Path,
+    ctx: SessionContext[Any],
+    agent_ctx: AgentContext,
+    write_tool: WriteTool,
+) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}-outside" / "f.txt"
+    result = await write_tool.run(
+        WriteInput(path=str(outside), content="x"), ctx=ctx, agent_ctx=agent_ctx
+    )
+    assert _error_message(result)
+    assert not outside.parent.exists()
 
 
 # ---------------------------------------------------------------------------

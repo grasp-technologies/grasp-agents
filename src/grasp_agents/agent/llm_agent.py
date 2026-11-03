@@ -1360,10 +1360,15 @@ class LLMAgent[InT, OutT, CtxT](
         # attribute the rendered turn (``None`` for a human turn / direct run).
         self._current_input_source = in_packet.sender if in_packet is not None else None
 
-        # No inputs is allowed on resume (a checkpoint store is bound) and for
-        # a resident (attached inbox), whose turns arrive from the inbox.
+        # No inputs is allowed on resume (a checkpoint store is bound), for a
+        # resident (attached inbox), whose turns arrive from the inbox, and when a
+        # finished background task awaits delivery: the run delivers it.
         has_input = any(x is not None for x in [chat_inputs, in_args, in_packet])
-        if not has_input and (self.is_resumable or self._agent_ctx.inbox is not None):
+        if not has_input and (
+            self.is_resumable
+            or self._agent_ctx.inbox is not None
+            or self._agent_ctx.bg_tasks.has_undelivered_completions
+        ):
             return None
 
         # Fan-in: a multi-payload packet (e.g. a ParallelProcessor's output)
