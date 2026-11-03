@@ -129,16 +129,20 @@ class E2BFileBackend(FileBackend):
             return True
         return bool(await self._holder.require().files.exists(str(parent)))
 
+    # Both reads take the mtime before the content: a write landing in between
+    # then makes the next conditional write refuse, instead of letting an
+    # mtime newer than the content pass over that write.
+
     async def read_text(self, path: Path) -> tuple[str, float]:
         sb = self._holder.require()
-        content = await sb.files.read(wire(path), "text")
         info = await sb.files.get_info(wire(path))
+        content = await sb.files.read(wire(path), "text")
         return str(content), mtime(info)
 
     async def read_bytes(self, path: Path) -> tuple[bytes, float]:
         sb = self._holder.require()
-        content = await sb.files.read(wire(path), "bytes")
         info = await sb.files.get_info(wire(path))
+        content = await sb.files.read(wire(path), "bytes")
         return bytes(content), mtime(info)
 
     async def write_bytes(

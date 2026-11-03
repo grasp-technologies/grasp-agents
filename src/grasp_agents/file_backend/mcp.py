@@ -218,6 +218,13 @@ class MCPFileBackend(FileBackend):
 
     async def read_text(self, path: Path) -> tuple[str, float]:
         uri = self._to_uri(path)
+        # Report the mtime from the SAME surface the staleness guard later
+        # consults via ``stat`` (the list index) — mixing it with the
+        # read-meta surface causes spurious edit refusals whenever the two
+        # disagree. Read-meta is the fallback for files the index doesn't
+        # know yet. Look the entry up before reading, so a listing fetched
+        # now cannot carry an mtime newer than the content.
+        entry = await self._index.get(uri)
         session = self._client.session
         try:
             result = await session.read_resource(AnyUrl(uri))
@@ -225,12 +232,6 @@ class MCPFileBackend(FileBackend):
             raise OSError(f"MCP resources/read for {uri!r} failed: {exc}") from exc
         for content in result.contents:
             if isinstance(content, TextResourceContents):
-                # Report the mtime from the SAME surface the staleness guard
-                # later consults via ``stat`` (the list index) — mixing it
-                # with the read-meta surface causes spurious edit refusals
-                # whenever the two disagree. Read-meta is the fallback for
-                # files the index doesn't know yet.
-                entry = await self._index.get(uri)
                 if entry is not None:
                     mtime = entry.mtime_seconds
                 else:

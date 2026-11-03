@@ -378,7 +378,7 @@ async def test_stat_maps_fields_and_mtime() -> None:
     st = await _env(fake).file_backend.stat(Path(f"{_WS}/f"))
     assert st.size == 42
     assert st.mode == 0o600
-    assert st.mtime == 999.0  # datetime -> epoch float
+    assert st.mtime == pytest.approx(999.0)  # datetime -> epoch float
 
 
 async def test_read_text_and_bytes() -> None:
@@ -390,9 +390,33 @@ async def test_read_text_and_bytes() -> None:
     backend = _env(fake).file_backend
     text, mtime = await backend.read_text(Path(f"{_WS}/f"))
     assert text == "body"
-    assert mtime == 777.0
+    assert mtime == pytest.approx(777.0)
     data, _ = await backend.read_bytes(Path(f"{_WS}/f"))
     assert data == b"body"
+
+
+class _WriteAfterReadFiles(_FakeFiles):
+    """Another writer replaces each file right after its content is served."""
+
+    async def read(self, path: str, fmt: str = "text") -> Any:
+        data = await super().read(path, fmt)
+        self.reads[path] = "theirs"
+        self.infos[path] = _FakeEntry(
+            name=Path(path).name, path=path, mtime_epoch=3000.0
+        )
+        return data
+
+
+@pytest.mark.parametrize("method", ["read_text", "read_bytes"])
+async def test_read_mtime_is_never_newer_than_content(method: str) -> None:
+    files = _WriteAfterReadFiles()
+    files.reads[f"{_WS}/f"] = "ours"
+    files.infos[f"{_WS}/f"] = _FakeEntry(name="f", path=f"{_WS}/f", mtime_epoch=1000.0)
+    backend = _env(_FakeSandbox(files=files)).file_backend
+    content, mtime = await getattr(backend, method)(Path(f"{_WS}/f"))
+    assert content in {"ours", b"ours"}
+    # A newer mtime would let a conditional write pass over "theirs".
+    assert mtime == pytest.approx(1000.0)
 
 
 async def test_write_bytes_returns_post_write_mtime() -> None:
@@ -400,7 +424,8 @@ async def test_write_bytes_returns_post_write_mtime() -> None:
     backend = _env(fake).file_backend
     mtime = await backend.write_bytes(Path(f"{_WS}/new.txt"), b"data", mode=0o644)
     assert fake.files.written[f"{_WS}/new.txt"] == b"data"
-    assert mtime == 2000.0  # _FakeFiles.write stamps a fresh get_info mtime
+    # _FakeFiles.write stamps a fresh get_info mtime
+    assert mtime == pytest.approx(2000.0)
 
 
 async def test_delete_and_mkdir() -> None:

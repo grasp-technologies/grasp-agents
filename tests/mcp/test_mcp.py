@@ -543,7 +543,7 @@ class TestMCPClient:
             assert not result.isError
             # structuredContent has the validated data
             assert result.structuredContent is not None
-            assert result.structuredContent["result"] == 12.0
+            assert result.structuredContent["result"] == pytest.approx(12.0)
             assert result.structuredContent["operation"] == "multiply"
 
     @pytest.mark.asyncio
@@ -824,9 +824,7 @@ class TestMcpPathNormalization:
             cast("Any", _FakeClient()), allowed_roots=[Path("/memdir")]
         )
         with pytest.raises(PathAccessError, match="outside allowed roots"):
-            await backend.validate_path(
-                Path("/memdir/../etc/passwd"), must_exist=False
-            )
+            await backend.validate_path(Path("/memdir/../etc/passwd"), must_exist=False)
 
     @pytest.mark.asyncio
     async def test_inner_dotdot_collapsed(self) -> None:
@@ -874,6 +872,32 @@ class _ReadSession:
         return SimpleNamespace(contents=[contents])
 
 
+class _WriteAfterReadSession:
+    """Lists one resource; another writer replaces it right after it is read."""
+
+    def __init__(self) -> None:
+        self.mtime_ms = 1_000_000
+
+    async def list_resources(self, params: Any = None) -> Any:
+        del params
+        resource = SimpleNamespace(
+            uri="file:///m/a.md",
+            name="a",
+            description=None,
+            mimeType="text/markdown",
+            size=4,
+            meta={"mtime_ms": self.mtime_ms},
+        )
+        return SimpleNamespace(resources=[resource], nextCursor=None)
+
+    async def read_resource(self, uri: Any) -> Any:
+        contents = TextResourceContents.model_validate(
+            {"uri": str(uri), "mimeType": "text/markdown", "text": "ours"}
+        )
+        self.mtime_ms = 3_000_000
+        return SimpleNamespace(contents=[contents])
+
+
 class TestMcpStalenessSurface:
     @pytest.mark.asyncio
     async def test_read_text_uses_index_mtime(self) -> None:
@@ -886,7 +910,7 @@ class TestMcpStalenessSurface:
         text, mtime = await backend.read_text(Path("/m/a.md"))
         assert text == "hello"
         # The list-index surface (what stat() reports) wins over read-meta.
-        assert mtime == 111.0
+        assert mtime == pytest.approx(111.0)
 
     @pytest.mark.asyncio
     async def test_read_text_falls_back_to_meta(self) -> None:
@@ -896,7 +920,18 @@ class TestMcpStalenessSurface:
             index=cast("Any", _StubIndex(None)),
         )
         _, mtime = await backend.read_text(Path("/m/a.md"))
-        assert mtime == 999.0
+        assert mtime == pytest.approx(999.0)
+
+    @pytest.mark.asyncio
+    async def test_read_text_mtime_is_never_newer_than_content(self) -> None:
+        session = _WriteAfterReadSession()
+        backend = MCPFileBackend(
+            cast("Any", _FakeClient(session=session)), allowed_roots=[Path("/m")]
+        )
+        text, mtime = await backend.read_text(Path("/m/a.md"))
+        assert text == "ours"
+        # A newer mtime would let a conditional write pass over the change.
+        assert mtime == pytest.approx(1000.0)
 
 
 # ---------- SSE server config ----------
