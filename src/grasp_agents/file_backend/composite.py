@@ -369,14 +369,18 @@ class CompositeFileBackend(FileBackend):
         )
         results: list[GrepRawResult] = []
         notes: list[str] = []
-        failures: list[BaseException] = []
+        failures: list[Exception] = []
         for m, outcome in zip(below, outcomes, strict=True):
             if isinstance(outcome, GrepRawResult):
                 results.append(outcome)
                 notes.extend(outcome.notes)
-            elif isinstance(outcome, (NotImplementedError, OSError)):
+            elif isinstance(outcome, Exception):
+                # One mount's failure (an rg-only file type, rg missing, an
+                # offline server) must not hide the others' results.
+                logger.warning("Could not grep mount %s", m.path, exc_info=outcome)
                 failures.append(outcome)
-                notes.append(f"{m.path} was not searched: {outcome}")
+                reason = str(outcome) or type(outcome).__name__
+                notes.append(f"{m.path} was not searched: {reason}")
             else:
                 raise outcome
         if failures and not results:

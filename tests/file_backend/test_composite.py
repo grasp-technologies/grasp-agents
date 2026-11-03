@@ -309,6 +309,22 @@ class _NoGrep(InMemoryFileBackend):
         raise NotImplementedError("this backend cannot grep")
 
 
+class _FailingGrep(InMemoryFileBackend):
+    def __init__(self, root: Path, error: Exception) -> None:
+        super().__init__([root], files={str(root / "a.md"): "TODO\n"})
+        self.error = error
+
+    async def grep(self, root: Path, pattern: str, **kwargs: Any) -> GrepRawResult:
+        raise self.error
+
+
+GREP_FAILURES = [
+    ValueError("unrecognized file type: cs"),
+    RuntimeError("index unavailable"),
+    OSError("rg not found"),
+]
+
+
 async def test_grep_spans_mounts() -> None:
     backend = _composite()
     await backend.write_bytes(MEMORY / "todo.md", b"TODO memory\n", mode=0o644)
@@ -338,6 +354,34 @@ async def test_grep_reports_mounts_it_could_not_search(mode: GrepOutputMode) -> 
     assert result.num_files_matched == 1
     assert len(result.notes) == 1
     assert "/user/memory" in result.notes[0]
+
+
+@pytest.mark.parametrize("error", GREP_FAILURES, ids=lambda e: type(e).__name__)
+async def test_grep_turns_a_failing_mount_into_a_note(error: Exception) -> None:
+    backend = CompositeFileBackend(
+        [
+            Mount(MEMORY, _FailingGrep(MEMORY, error)),
+            Mount(NOTES, _mem(NOTES, **{"b.md": "TODO\n"})),
+        ]
+    )
+
+    result = await backend.grep(Path("/user"), "TODO")
+
+    assert result.files == [NOTES / "b.md"]
+    assert result.notes == [f"/user/memory was not searched: {error}"]
+
+
+@pytest.mark.parametrize("error", GREP_FAILURES, ids=lambda e: type(e).__name__)
+async def test_grep_raises_when_every_mount_failed(error: Exception) -> None:
+    backend = CompositeFileBackend(
+        [
+            Mount(MEMORY, _FailingGrep(MEMORY, error)),
+            Mount(NOTES, _FailingGrep(NOTES, RuntimeError("second"))),
+        ]
+    )
+
+    with pytest.raises(type(error), match=str(error)):
+        await backend.grep(Path("/user"), "TODO")
 
 
 async def test_grep_raises_when_no_mount_could_search() -> None:
