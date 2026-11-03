@@ -38,17 +38,12 @@ def _is_directory(stat: FileStat) -> bool:
     """
     Best-effort isdir check.
 
-    POSIX ``S_ISDIR`` works on local-FS stat results. MCP backends that
-    don't ship a true ``S_IFDIR`` mode bit should still return non-zero
-    sizes / valid mtimes for directories; fall back to "non-empty mtime
-    treated as directory" only when ``mode`` carries no type bits.
+    The built-in backends report POSIX file-type bits, so ``S_ISDIR``
+    decides. A backend whose ``mode`` carries no type bits gets the benefit
+    of the doubt: rooting Glob at a non-directory is the unusual case.
     """
     if stat.mode and stat_module.S_IFMT(stat.mode):
         return stat_module.S_ISDIR(stat.mode)
-    # Backend didn't populate the file-type bits — accept anything that
-    # validate_path returned. Most MCP servers stat individual files
-    # explicitly via stat_file (which returns ``is_dir``); rooting Glob
-    # at a non-dir is the unusual case.
     return True
 
 

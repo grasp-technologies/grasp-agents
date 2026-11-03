@@ -24,6 +24,7 @@ import datetime as dt
 import importlib.util
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -47,6 +48,8 @@ from grasp_agents.sandbox.e2b import environment as e2b_env
 from grasp_agents.sandbox.e2b import file_backend as e2b_file_backend
 from grasp_agents.sandbox.exec_backend import ExecChunk, ExecResult, TerminationReason
 from grasp_agents.session_context import SessionContext
+from grasp_agents.tools.file_edit import DeleteInput, DeleteTool
+from grasp_agents.types.events import ToolErrorInfo
 
 from ._bg_harness import (
     background,
@@ -377,8 +380,32 @@ async def test_stat_maps_fields_and_mtime() -> None:
     )
     st = await _env(fake).file_backend.stat(Path(f"{_WS}/f"))
     assert st.size == 42
-    assert st.mode == 0o600
+    assert stat.S_IMODE(st.mode) == 0o600
     assert st.mtime == pytest.approx(999.0)  # datetime -> epoch float
+
+
+async def test_stat_adds_file_type_bits() -> None:
+    # envd reports permission bits only; the entry type supplies the rest.
+    fake = _FakeSandbox()
+    fake.files.infos[f"{_WS}/pkg"] = _FakeEntry(
+        name="pkg", path=f"{_WS}/pkg", type_value="dir", mode=0o755
+    )
+    fake.files.infos[f"{_WS}/f"] = _FakeEntry(name="f", path=f"{_WS}/f", mode=0o600)
+    backend = _env(fake).file_backend
+    assert (await backend.stat(Path(f"{_WS}/pkg"))).mode == stat.S_IFDIR | 0o755
+    assert (await backend.stat(Path(f"{_WS}/f"))).mode == stat.S_IFREG | 0o600
+
+
+async def test_delete_tool_refuses_a_directory() -> None:
+    fake = _FakeSandbox()
+    fake.files.infos[f"{_WS}/pkg"] = _FakeEntry(
+        name="pkg", path=f"{_WS}/pkg", type_value="dir", mode=0o755
+    )
+    ctx = SessionContext[Any](file_backend=_env(fake).file_backend)
+    result = await DeleteTool().run(DeleteInput(path=f"{_WS}/pkg"), ctx=ctx)
+    assert isinstance(result, ToolErrorInfo)
+    assert "refuses directories" in result.error
+    assert fake.files.removed == []
 
 
 async def test_read_text_and_bytes() -> None:

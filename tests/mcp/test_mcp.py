@@ -6,6 +6,7 @@ Uses the test MCP server at tests/mcp/mcp_test_server.py via stdio transport.
 
 import asyncio
 import math
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -870,6 +871,48 @@ class _ReadSession:
             }
         )
         return SimpleNamespace(contents=[contents])
+
+
+class _ListingSession:
+    """Lists the given resources: ``{uri: meta}``."""
+
+    def __init__(self, resources: dict[str, dict[str, Any]]) -> None:
+        self._resources = resources
+
+    async def list_resources(self, params: Any = None) -> Any:
+        del params
+        listed = [
+            SimpleNamespace(
+                uri=uri,
+                name=uri.rsplit("/", 1)[-1],
+                description=None,
+                mimeType=None,
+                size=None,
+                meta=meta,
+            )
+            for uri, meta in self._resources.items()
+        ]
+        return SimpleNamespace(resources=listed, nextCursor=None)
+
+
+class TestMcpStatFileType:
+    @pytest.mark.asyncio
+    async def test_stat_reports_file_type_bits(self) -> None:
+        session = _ListingSession(
+            {
+                "file:///m/notes": {"is_dir": True},
+                "file:///m/notes/a.md": {"mtime_ms": 1000},
+                "file:///m/topics/b.md": {"mtime_ms": 1000},
+            }
+        )
+        backend = MCPFileBackend(
+            cast("Any", _FakeClient(session=session)), allowed_roots=[Path("/m")]
+        )
+        assert stat.S_ISDIR((await backend.stat(Path("/m/notes"))).mode)
+        assert stat.S_ISREG((await backend.stat(Path("/m/notes/a.md"))).mode)
+        # No resource of its own, but resources under it: an implicit directory.
+        assert stat.S_ISDIR((await backend.stat(Path("/m/topics"))).mode)
+        assert (await backend.stat(Path("/m/missing"))).mode == 0
 
 
 class _WriteAfterReadSession:

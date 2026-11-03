@@ -9,6 +9,7 @@ handle: it cannot exist without an entered :class:`E2BEnvironment`.
 from __future__ import annotations
 
 import shlex
+import stat as stat_module
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -33,6 +34,8 @@ from ._handle import (
 )
 
 if TYPE_CHECKING:
+    from e2b import EntryInfo
+
     from grasp_agents.file_backend.base import GrepOutputMode
     from grasp_agents.file_backend.paths import AccessMode
     from grasp_agents.sandbox.policy import SandboxPolicy
@@ -116,7 +119,7 @@ class E2BFileBackend(FileBackend):
         info = await self._holder.require().files.get_info(wire(path))
         return FileStat(
             mtime=mtime(info),
-            mode=int(getattr(info, "mode", 0o644) or 0o644),
+            mode=_file_mode(info),
             size=int(getattr(info, "size", 0) or 0),
         )
 
@@ -238,6 +241,21 @@ class E2BFileBackend(FileBackend):
         if code >= 2:
             raise OSError(f"remote grep failed (exit {code}) for pattern {pattern!r}")
         return _parse_grep(stdout, output_mode)
+
+
+def _file_mode(info: EntryInfo) -> int:
+    """
+    Return the entry's mode with its file-type bits.
+
+    envd reports permission bits only, so without the type bits from the
+    entry type every directory would look like a regular file.
+    """
+    mode = int(getattr(info, "mode", 0) or 0)
+    if stat_module.S_IFMT(mode):
+        return mode
+    if is_dir(info):
+        return stat_module.S_IFDIR | (mode or 0o755)
+    return stat_module.S_IFREG | (mode or 0o644)
 
 
 async def _run_capture(
