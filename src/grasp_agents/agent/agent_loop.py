@@ -202,8 +202,10 @@ class AgentLoop[CtxT]:
     """
     The agentic execution loop: generate → check → tools → repeat.
 
-    Holds the LLM, tools, memory, and all loop mechanics. Hooks are optional
-    callback slots set by the owning LLMAgent.
+    A per-run executor over the owning agent's :class:`AgentContext`, which
+    holds the tools and the transcript (via its context-window manager). The
+    loop holds the LLM and the loop mechanics; hooks are optional callback
+    slots set by the owning LLMAgent. It releases no resources at run end.
     """
 
     stream_llm: Final[bool]

@@ -6,7 +6,7 @@ limits and builds a ready :class:`LocalEnvironment`.
 Example::
 
     {
-      "confinement": "auto",
+      "confinement": "none",
       "filesystem": {
         "allowed_roots": ["."], "deny_read": [], "allow_read": [], "deny_write": []
       },
@@ -17,6 +17,9 @@ Example::
 
     env = load_environment_config("sandbox.json").build()
     ctx = SessionContext(environment=env)
+
+``confinement`` defaults to ``"none"`` (no OS isolation); see
+:func:`~grasp_agents.sandbox.local_environment` for the other modes.
 """
 
 from __future__ import annotations

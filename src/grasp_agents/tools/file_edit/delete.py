@@ -15,8 +15,8 @@ Same safety family as :class:`WriteTool` and :class:`EditTool`:
    removing a directory tree should be an explicit user-level action
    outside the agent loop.
 
-Successful deletion clears the corresponding read record in the
-backend's session state so a later ``Write`` to the same path creates a
+Successful deletion clears the corresponding read record in the agent's
+``FileEditSessionState`` so a later ``Write`` to the same path creates a
 fresh file.
 """
 

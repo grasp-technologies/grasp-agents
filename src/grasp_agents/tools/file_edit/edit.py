@@ -19,8 +19,9 @@ Invariants (same family as :class:`WriteTool`, plus matching rules):
 8. Atomic write (backend-specific).
 9. Mode preservation — the file keeps its permission bits across the
    edit (local backend only).
-10. Post-write mtime refresh by the backend so a following ``Edit``
-    doesn't see its own write as external drift.
+10. Post-write mtime refresh of the agent's ``FileEditSessionState`` read
+    record so a following ``Edit`` doesn't see its own write as external
+    drift.
 
 The fuzzy-match chain is **9 strategies deep** — see :mod:`fuzzy_match`
 for the detailed contract.

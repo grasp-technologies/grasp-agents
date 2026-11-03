@@ -15,7 +15,7 @@ Run (needs ``OPENAI_API_KEY`` in ``.env``; the sandbox kernel needs ``numpy`` +
 
     python -m grasp_agents.examples.tui.data_copilot
 
-Requires the ``tui`` + ``notebook-exec`` extras and a local sandbox backend
+Requires the ``tui`` + ``code-exec`` extras and a local sandbox backend
 (the ``srt`` CLI, or macOS ``sandbox-exec`` for ``seatbelt``).
 """
 

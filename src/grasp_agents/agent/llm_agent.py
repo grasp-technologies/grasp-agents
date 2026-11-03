@@ -172,16 +172,15 @@ class LLMAgent[InT, OutT, CtxT](
         # Memory feature toggle (opt-in). When True, the agent gets:
         # - the ``memory`` system-prompt section (taxonomy + index)
         # - the ``relevant_memories_attachment`` (per-turn surfacing)
-        # - in agentic mode, a :class:`FileToolkit` auto-attached so the
-        #   agent can search, author, and maintain memory files via the
-        #   generic file tools.
+        # - a :class:`FileToolkit` auto-attached so the agent can search,
+        #   author, and maintain memory files via the generic file tools.
         # Default is False — the agent should know it's adding memory
         # to its system prompt before it happens.
         enable_memory: bool = False,
         # Skills feature toggle (opt-in). When True, the agent gets:
         # - the ``skills`` system-prompt section (catalog of available
         #   skills, when ``ctx.skills`` is set)
-        # - in agentic mode, the ``load_skill`` tool appended
+        # - the ``load_skill`` tool auto-attached
         # Default is False — same rationale as ``enable_memory``.
         enable_skills: bool = False,
         # Per-agent scoping over the session-shared skill catalog (only
@@ -1752,8 +1751,8 @@ class LLMAgent[InT, OutT, CtxT](
 
     # --- Decorator API ---
     #
-    # Preferred over subclassing. Each decorator sets a callback slot
-    # on the appropriate component (AgentLoop or PromptBuilder).
+    # Preferred over subclassing. Each decorator registers its callback on the
+    # appropriate component (AgentLoop, PromptBuilder, or ContextWindowManager).
 
     def add_output_parser(
         self, func: OutputParser[InT, OutT]
@@ -1793,9 +1792,8 @@ class LLMAgent[InT, OutT, CtxT](
 
         Sections are rendered after the static ``sys_prompt``, in registration
         order. Skills, env info, MCP instructions, and memory plug in via this
-        method.
-        Names are not enforced unique — the same section may appear twice if
-        you register it twice; deduplicate on the caller side if needed.
+        method. Re-registering the same ``name`` replaces the prior section in
+        place, so an auto-attached section can be overridden by name.
         """
         self._prompt_builder.add_system_prompt_section(section)
 
@@ -1887,7 +1885,7 @@ class LLMAgent[InT, OutT, CtxT](
     #
     # Override these in subclasses for customization.
     # Alternatively, use the @agent.add_* decorators (preferred).
-    # These read the run context off ``self.ctx`` (the single shared
+    # These read the session context off ``self.ctx`` (the single shared
     # session instance); ``on_before_tool_impl`` keeps an explicit ``ctx``
     # for symmetry with the standalone approval-hook factories.
 
@@ -1961,8 +1959,8 @@ class LLMAgent[InT, OutT, CtxT](
 
     def _register_overridden_implementations(self) -> None:
         """
-        Detect subclass overrides and set them as callback slots
-        on the appropriate components (AgentLoop, PromptBuilder).
+        Detect subclass overrides and register them as callbacks on the
+        appropriate components (AgentLoop, PromptBuilder, ContextWindowManager).
         """
         base_cls = LLMAgent[Any, Any, Any]
 
@@ -1974,10 +1972,10 @@ class LLMAgent[InT, OutT, CtxT](
                 self.build_initial_context_impl
             )
 
-        # Agent loop. ``final_answer_extractor`` / ``view_projector`` are
-        # single-slot (replace); the observer / decision hooks stack — a
-        # subclass ``*_impl`` override is appended first so it runs before
-        # any decorator-registered hook.
+        # ``final_answer_extractor`` is single-slot (replace); view projectors
+        # and the observer / decision hooks stack — a subclass ``*_impl``
+        # override is registered first so it runs before any
+        # decorator-registered one.
         if is_method_overridden("extract_final_answer_impl", self, base_cls):
             self._loop.final_answer_extractor = self.extract_final_answer_impl
         if is_method_overridden("project_view_impl", self, base_cls):

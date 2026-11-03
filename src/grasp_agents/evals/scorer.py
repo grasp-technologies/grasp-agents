@@ -79,7 +79,7 @@ class Scorer[InT, OutT, RefT](ABC):
     configuration that affects judgments from :meth:`config` so it is
     recorded too.
 
-    ``evaluate`` may be sync or async. Sync scorers run in a worker
+    :meth:`score` may be sync or async. Sync scorers run in a worker
     thread, so a slow one (a blocking HTTP judge, a subprocess) does not
     stall concurrent trials; keep them thread-safe.
     """
@@ -88,7 +88,7 @@ class Scorer[InT, OutT, RefT](ABC):
     version: str = "1"
     # Who produces the judgments; recorded with the run and sent to Phoenix.
     annotator: Literal["CODE", "LLM", "HUMAN"] = "CODE"
-    # Also evaluate trials whose task raised (e.g. transcript checks of
+    # Also score trials whose task raised (e.g. transcript checks of
     # failed runs). Off by default: scores of failed trials are missing.
     scores_errors: bool = False
 
