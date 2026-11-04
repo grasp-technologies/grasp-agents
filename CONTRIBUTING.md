@@ -66,8 +66,17 @@ Shared helpers (a scripted `MockLLM`, response builders, sample tools) are in
 
 Each subsystem has a reference page in [docs/](docs/README.md) describing its
 current design and the contracts changes must preserve. Read the relevant page
-before changing a subsystem, and update it in the same pull request.
-[CLAUDE.md](CLAUDE.md) summarizes the code conventions.
+before changing a subsystem. Update the page in the same pull request.
+
+Also update any text that describes what you changed:
+- the README;
+- the skills in `.claude/skills/`;
+- `CLAUDE.md`;
+- the examples;
+- tool descriptions and prompt files.
+
+[CLAUDE.md](CLAUDE.md) ("Keep documentation in sync") lists what to check, and
+summarizes the code conventions.
 
 ## Releasing a New Version (Maintainers Only)
 

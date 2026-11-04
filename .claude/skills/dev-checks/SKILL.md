@@ -1,6 +1,6 @@
 ---
 name: dev-checks
-description: Run grasp-agents' lint, format, type-check and test commands correctly before handing work back — scoped ruff (the config autofixes), pyright strict, the default vs integration test suites, cspell, and checking real outputs instead of trusting green tests. Use after editing Python in this repo, before committing, or when a check fails unexpectedly.
+description: Run grasp-agents' lint, format, type-check and test commands correctly before handing work back — scoped ruff (the config autofixes), pyright strict, the default vs integration test suites, cspell, checking real outputs instead of trusting green tests, and making sure docs/, skills, README, CLAUDE.md, examples and model-facing text still match the change. Use after editing code in this repo, before committing, or when a check fails unexpectedly.
 ---
 
 # Dev checks
@@ -70,13 +70,37 @@ Green tests routinely pass on wrong output:
 - **Console/UI changes.** Render real events through `EventConsole` into a truecolor
   `rich.Console(record=True)` and read the result. Strip ANSI to check text and
   layout; keep it to check colors.
-- **Agent behaviour.** Read the agent's actual tool calls (`ToolCallItemEvent`
+- **Agent behavior.** Read the agent's actual tool calls (`ToolCallItemEvent`
   arguments) and its final answer, and confirm it did the intended thing.
 - **Notebooks.** Read the executed cells' outputs.
 
 Then encode what you saw as assertions.
 
-## 6. Never
+## 6. Documentation matches the change
+
+CLAUDE.md, "Keep documentation in sync", lists every text that can describe what
+you changed: `docs/`, `.claude/skills/`, `README.md`, `CLAUDE.md`, examples,
+model-facing strings and prompt files, and `CONTRIBUTING.md`.
+
+1. **Search for what you renamed or removed.** For each public symbol, CLI flag, env
+   var, default value or file path, search every place it could be described:
+
+   ```bash
+   grep -rn -e 'old_name' docs .claude/skills README.md CLAUDE.md CONTRIBUTING.md src/grasp_agents/examples
+   grep -rn -e 'old_name' src/grasp_agents --include='*.py' --include='*.md'   # docstrings, tool descriptions, prompt files
+   ```
+
+   Fix every hit in the same change.
+2. **Reread when behavior changed without a rename.** Read the matching `docs/`
+   page's Contracts and Limitations, and any skill pitfall or workflow that
+   covers the behavior. Update whatever now reads wrong.
+3. **Check the examples.** Code examples in docs and skills must still run against
+   the new signatures.
+
+Write only the current behavior: no "previously" or "now" (see the
+`public-writing` skill).
+
+## 7. Never
 
 - `git stash` / `git reset --hard` to test something. Work on the tree as it is.
 - Blanket reformatting, or "fixing" lint in files you didn't otherwise touch.

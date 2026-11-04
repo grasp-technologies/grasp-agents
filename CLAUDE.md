@@ -24,12 +24,34 @@ Key principles. The full list is in [docs/concepts.md](docs/concepts.md).
 ## Where things are documented
 
 - `docs/`: one reference page per subsystem (current design, contracts,
-  limitations). **Read the relevant page before changing a subsystem, and update
-  it in the same change.** The index is `docs/README.md`.
+  limitations). **Read the relevant page before changing a subsystem.** The index
+  is `docs/README.md`.
 - `.claude/skills/`: workflows for working on this repo (checks, tests,
   tools, providers, durability changes, releases, public writing) and for
   using `grasp_agents.evals` (`evals`).
 - `src/grasp_agents/examples/`: runnable notebooks and TUI demos.
+
+## Keep documentation in sync
+
+A change to behavior, public API, defaults, CLI flags, env vars, commands or file
+layout is not done until every text that describes it matches, **in the same
+change**:
+
+| If you changed | Update |
+|---|---|
+| A subsystem's behavior, contracts or limitations | Its page in `docs/` (Contracts and Limitations included) |
+| Something a skill teaches (a workflow, pitfall, command, test helper) | That skill in `.claude/skills/`, reference files included |
+| Headline features, install extras, quick examples, package layout | `README.md` |
+| Architecture, commands, conventions, invariants, the hook list | This `CLAUDE.md` |
+| Example code or its instructions | `src/grasp_agents/examples/` (READMEs, notebooks, scripts) |
+| What the model is told | Tool `description=` and `Field(description=...)` strings, and prompt files (`*_instructions.md`) |
+| Contributor setup or checks | `CONTRIBUTING.md` |
+
+- When you rename, remove or change a public symbol, flag, env var or default,
+  search all of the above for it and fix every hit (`dev-checks` skill, step 6).
+- Describe only the new behavior (`public-writing` skill).
+- If you notice a doc that is wrong for reasons unrelated to your change, fix it
+  or report it. Don't leave it silently.
 
 ## Build & dev commands
 
