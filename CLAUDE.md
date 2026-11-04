@@ -27,7 +27,8 @@ Key principles. The full list is in [docs/concepts.md](docs/concepts.md).
   limitations). **Read the relevant page before changing a subsystem, and update
   it in the same change.** The index is `docs/README.md`.
 - `.claude/skills/`: workflows for working on this repo (checks, tests,
-  tools, providers, durability changes, releases, public writing).
+  tools, providers, durability changes, releases, public writing) and for
+  using `grasp_agents.evals` (`evals`).
 - `src/grasp_agents/examples/`: runnable notebooks and TUI demos.
 
 ## Build & dev commands

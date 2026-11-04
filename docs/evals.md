@@ -58,8 +58,11 @@ input_fn=, output_fn=, output_type=)` runs each trial in its own
 - the output is the run's single payload, or whatever `output_fn(packet, ctx)`
   derives (e.g. a value from `ctx.state`).
 
-Each trial records duration, usage and cost per agent, the models used, the
-event stream (without token deltas) and, when traced, the trace id.
+For a `ProcessorTask`, each trial records duration, usage and cost per agent,
+the models used, the event stream (without token deltas) and, when traced, the
+trace id. A `FunctionTask` records duration and the trace id; it records usage
+and models only if the function fills its `TrialContext`, and it never records
+events.
 
 ## Scorers
 
@@ -132,8 +135,12 @@ runs/<run_id>/report.md
 records provenance (git commit/branch/dirty state, source hashes, Python and
 package versions, observed models). `evaluate(..., resume=run)` continues an
 unfinished run in place, or retries a completed run's failed trials in a new
-`retry` child; it refuses if the task's or scorers' code changed (`force=True`
-overrides). `rescore(run, scorers)` scores stored outputs again in a child run;
+`retry` child (a completed run with nothing to redo is returned as is). A
+resume must use the same task identity, scorers, selection and repetitions;
+that cannot be forced. It is also refused when the git commit or diff of the
+repository containing the current directory changed (any file, not only the
+task's) or when the task's or scorers' source files changed; `force=True`
+overrides those two checks. A model that the run never used stops the resume. `rescore(run, scorers)` scores stored outputs again in a child run;
 unchanged scorers keep their scores. Runs are addressed by id, unique id prefix,
 run directory, `latest` or `latest:<name>`.
 
@@ -141,9 +148,13 @@ run directory, `latest` or `latest:<name>`.
 
 `compare(base, candidate)` pairs the examples both runs share with unchanged
 content, reduces repetitions per example, and reports per target the mean
-paired difference with a confidence interval and a p-value (exact McNemar for
-pass/fail, paired t-test otherwise; Holm-adjusted). Task errors count as
-failures of pass/fail scores.
+paired difference with a confidence interval and a p-value. Exact McNemar is
+used only when every paired per-example value is 0 or 1 and nothing is
+clustered; with repetitions > 1 or `cluster_by` it is a paired (or clustered)
+t-test. `significant` reads the Holm-adjusted p-value. Task errors count as
+failures of pass/fail scores. Default targets are the numeric scores present
+in both runs, so a score that is missing from the candidate is not compared
+unless named.
 
 `pairwise(base, candidate, judge)` asks a `PairwiseJudge` which of two outputs
 is better. The judge sees them only as `first` and `second`; with
@@ -167,13 +178,14 @@ A judge is validated like any other system:
   "same")` changes an output and states what must happen to the verdict.
 - `ValidationGate(min_accuracy=, min_kappa=, min_tpr=, min_tnr=,
   max_missing=0.0, labels=, bound="ci_low")` on
-  `Evaluation.validation_gates={score_name: gate}` blocks scoring unless the
+  `Evaluation.validation_gates={score_name: gate}` blocks the whole run (and
+  `Evaluation.rescore`) before any trial, unless the
   newest validation run of the judge, exactly as it is now, on the sealed split
   of its labels, meets the thresholds (lower interval bound by default). A
   changed judge (version, prompt, model, settings, code) needs a new validation.
   Gated scores also report a pass rate corrected for the judge's measured error
   rates (`CorrectedPassRate`). The check raises `UnvalidatedJudgeError`
-  (`--allow-unvalidated` overrides).
+  (`--allow-unvalidated` overrides; a `--no-score` run skips the check).
 - `sample_for_labeling(run, n, score=, against=)` picks outputs worth labeling
   (disagreements with a cheaper check first, never sealed trials);
   `import_labels(paths, into)` merges filled-in files with labeler and time.
@@ -185,7 +197,7 @@ A judge is validated like any other system:
 | Command | Does |
 |---|---|
 | `run SPEC [--split --ids --sample --limit -r -c --timeout --max-cost --resume --baseline --fail-under M=V --fail-on-regression --push]` | run an `Evaluation` |
-| `rescore RUN --spec SPEC [--rerun]` | score stored outputs again |
+| `rescore RUN [--spec SPEC --rerun --allow-unvalidated]` | score stored outputs again (`--spec` defaults to the run's recorded spec) |
 | `show RUN [--failures --trials --outputs --example ID]` | inspect a run |
 | `compare BASE CANDIDATE [--fail-on-regression --gate T --min-effect X]` | paired comparison |
 | `pairwise BASE CANDIDATE --judge MODULE:ATTR [--one-order]` | A/B judging |
@@ -200,8 +212,8 @@ progress goes to stderr (`--progress json` for one object per trial).
 | Exit code | Meaning |
 |---|---|
 | 0 | done |
-| 1 | a gate failed: invalid or incomplete run, missed `--fail-under`, significant regression, unvalidated judge, invalid dataset |
-| 2 | usage error: bad arguments, spec, dataset file or run reference |
+| 1 | a gate failed: invalid or incomplete run, missed `--fail-under`, significant regression, unvalidated judge; `datasets validate` found problems |
+| 2 | usage error: bad arguments, spec, dataset file or run reference; dataset problems found by `run`; resume refused |
 | 3 | unexpected error, or Phoenix failed |
 
 ## Phoenix
@@ -217,13 +229,32 @@ the spec module (`init_tracing` + `init_phoenix`; see
 
 ## Contracts
 
-1. A completed run is never modified; retries and rescoring create child runs
-   (`EvaluationRun.parent_run_id`).
+1. A completed run's trials and results are never modified; retries and
+   rescoring create child runs (`EvaluationRun.parent_run_id`). `push` only adds
+   the Phoenix link and digests to `run.json`.
 2. Examples pair across runs only by id with an unchanged `content_hash`.
 3. Unscored values are never counted as numbers in metrics.
 4. A run that includes a sealed split includes all of it.
 5. A gated score is never computed by a judge that did not pass its gate,
    unless explicitly allowed.
+
+## Common pitfalls
+
+- Default metrics give `bool` scores a pass rate (task errors count as
+  failures) but numeric scores a mean (task errors are dropped as missing).
+  Return `bool` for pass/fail, and always read `error_rate`.
+- A run is invalid only when no trial ran, every trial failed, or
+  `max_error_rate` is exceeded; set `max_error_rate` to fail on errors.
+- A run without `--split` includes sealed splits in its headline metrics.
+- In an `Evaluation`, pass `task=FunctionTask(fn)`: a bare function is treated
+  as a zero-argument factory.
+- Bare `rescore()` and `pairwise()` re-validate stored outputs only with
+  `output_type=`; otherwise scorers receive plain JSON.
+- A `ProcessorScorer` whose judge returns a structured verdict needs
+  `to_scores=`. `judge_validation` expects a `test` split unless
+  `sealed_splits=()`.
+
+The `evals` skill in `.claude/skills/evals/` lists these and more, with fixes.
 
 ## Limitations
 
