@@ -5,7 +5,8 @@ from operator import itemgetter
 from typing import Any, cast
 
 from .compare import Comparison, TargetComparison
-from .types import EvaluationRun, MetricResult, Score, Trial
+from .metrics import group_label
+from .types import EvaluationRun, MetricResult, Score, Trial, Usage
 
 _MAX_TEXT = 300
 # Groups holding fewer held-out examples than this are not reported: their
@@ -57,9 +58,7 @@ def sealed_groups(run: EvaluationRun) -> set[str]:
     for key in run.config.group_by:
         members: dict[str, set[str]] = {}
         for example_id, example in by_id.items():
-            members.setdefault(f"{key}={example.metadata.get(key)}", set()).add(
-                example_id
-            )
+            members.setdefault(group_label(example, key), set()).add(example_id)
         for label, ids in members.items():
             if 0 < len(ids & sealed_ids) < MIN_SEALED_GROUP:
                 hidden.add(label)
@@ -182,12 +181,18 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
         f"scorer failures {counts.scorer_failures} · unscored {counts.unscored}"
     )
     usage = run.usage
-    if not usage.is_empty:
-        cost = f" · ${usage.cost_usd:.4f}" if usage.cost_usd is not None else ""
-        lines.append(
-            f"- **Usage:** {usage.input_tokens} in / {usage.output_tokens} out "
-            f"tokens{cost}"
-        )
+    # Tokens per side (models differ, so they are never added up); cost total.
+    usage_parts: list[str] = []
+    scorer_usage = sum(run.scorer_usage.values(), Usage())
+    for side, part in (("task", run.task_usage), ("scorers", scorer_usage)):
+        if part.total_tokens:
+            usage_parts.append(
+                f"{side} {part.input_tokens} in / {part.output_tokens} out tokens"
+            )
+    if usage.cost_usd is not None:
+        usage_parts.append(f"${usage.cost_usd:.4f}")
+    if usage_parts:
+        lines.append(f"- **Usage:** {' · '.join(usage_parts)}")
     budget = run.config.max_cost_usd
     if budget is not None:
         spent = usage.cost_usd or 0.0

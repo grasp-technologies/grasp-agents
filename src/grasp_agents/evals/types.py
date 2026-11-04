@@ -493,7 +493,13 @@ class EvaluationRun(BaseModel):
     provenance: Provenance
     config_hash: str
     counts: RunCounts = Field(default_factory=RunCounts)
+    # What this run spent, superseded attempts included: ``usage`` is the
+    # total (its cost is what ``max_cost_usd`` limits); ``task_usage`` and
+    # ``scorer_usage`` (per scorer) are its parts. Rescoring and retrying
+    # count only what the child run itself spent.
     usage: Usage = Field(default_factory=Usage)
+    task_usage: Usage = Field(default_factory=Usage)
+    scorer_usage: dict[str, Usage] = Field(default_factory=dict[str, Usage])
     metrics: list[MetricResult] = Field(default_factory=list[MetricResult])
     # Set when the run finished but its numbers should not be trusted (e.g.
     # the task error rate exceeded ``config.max_error_rate``).

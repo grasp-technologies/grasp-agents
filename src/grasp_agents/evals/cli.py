@@ -2,7 +2,8 @@
 ``grasp-evals`` — run, inspect and compare evaluations from the shell.
 
 Designed for coding agents as much as for people: every command accepts
-``--json`` (one JSON document on stdout, also for errors), progress goes to
+``--json`` (one JSON document on stdout, also for errors; whatever else
+prints meanwhile goes to stderr), progress goes to
 stderr (``--progress json``: one JSON object per finished trial), runs are
 addressed by id, unique id prefix, run directory,
 ``latest`` or ``latest:<name>`` (a run name or the spec attribute), and the
@@ -18,12 +19,14 @@ exit code says what happened:
 
 import argparse
 import asyncio
+import contextlib
 import json
 import sys
 import traceback
 from collections.abc import Sequence
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, NoReturn, cast, override
+from typing import Any, NoReturn, TextIO, cast, override
 
 from pydantic import ValidationError
 from rich.console import Console
@@ -73,8 +76,18 @@ class _Parser(argparse.ArgumentParser):
         raise CLIError(message, usage=self.format_usage())
 
 
+# Commands whose output is always JSON.
+_JSON_COMMANDS = frozenset({"datasets", "labels"})
+# The real stdout while a JSON command runs with ``sys.stdout`` sent to stderr.
+_JSON_STDOUT: ContextVar[TextIO | None] = ContextVar(
+    "grasp_evals_json_stdout", default=None
+)
+
+
 def _print_json(data: Any) -> None:
-    sys.stdout.write(json.dumps(data, indent=2, default=str) + "\n")
+    out = _JSON_STDOUT.get() or sys.stdout
+    out.write(json.dumps(data, indent=2, default=str) + "\n")
+    out.flush()
 
 
 def _print_markdown(text: str) -> None:
@@ -1110,6 +1123,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write(exc.usage)
         _report_error(exc, EXIT_USAGE, as_json="--json" in arguments)
         return EXIT_USAGE
+    if not (getattr(args, "json", False) or args.command in _JSON_COMMANDS):
+        return _run(args)
+    # Stdout carries only the JSON document: anything else that prints (the
+    # code under evaluation, a dependency) goes to stderr.
+    token = _JSON_STDOUT.set(sys.stdout)
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            return _run(args)
+    finally:
+        _JSON_STDOUT.reset(token)
+
+
+def _run(args: argparse.Namespace) -> int:
     try:
         return _dispatch(args)
     except KeyboardInterrupt:

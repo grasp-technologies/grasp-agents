@@ -21,9 +21,9 @@ from grasp_agents.evals import (
     compute_metrics,
     default_metrics,
 )
-from grasp_agents.evals.metrics import all_pass, max_
+from grasp_agents.evals.metrics import all_pass, max_, trial_value
 from grasp_agents.evals.stats import bounded_mean_estimate
-from grasp_agents.evals.types import ErrorInfo
+from grasp_agents.evals.types import ErrorInfo, ScorerFailure
 
 _T0 = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -322,6 +322,64 @@ class TestAccounting:
         assert result.n_na == 1
         assert result.n_missing == 0
 
+    def test_a_failure_of_another_scorer_keeps_not_applicable(self) -> None:
+        def scored(
+            example_id: str, *, ok: bool | None, failed: tuple[str, ...] = ()
+        ) -> Trial:
+            ran = [s for s in ("maybe", "judge", "boom") if s not in failed]
+            scores = (
+                [] if ok is None else [Score(name="maybe", value=ok, scorer="maybe")]
+            )
+            return _trial(example_id).model_copy(
+                update={
+                    "scores": scores,
+                    "scorers_run": ran,
+                    "scorer_failures": [
+                        ScorerFailure(scorer=s, error=ErrorInfo(type="E", message="x"))
+                        for s in failed
+                    ],
+                }
+            )
+
+        trials = [
+            scored("a", ok=True, failed=("boom",)),
+            scored("b", ok=None, failed=("boom",)),  # maybe ran: not applicable
+            scored("c", ok=None, failed=("maybe",)),  # maybe failed: missing
+            scored("d", ok=None),
+        ]
+        result = PassRate("maybe").compute(trials)
+        assert (result.n, result.n_na, result.n_missing) == (1, 2, 1)
+
+    def test_scores_of_mapping_scorers_follow_their_producer(self) -> None:
+        def judged(example_id: str, *, verdict: bool | None, failed: str) -> Trial:
+            scores = (
+                []
+                if verdict is None
+                else [Score(name="specific", value=verdict, scorer="judge")]
+            )
+            return _trial(example_id).model_copy(
+                update={
+                    "scores": scores,
+                    "scorers_run": [s for s in ("judge", "boom") if s != failed],
+                    "scorer_failures": [
+                        ScorerFailure(
+                            scorer=failed, error=ErrorInfo(type="E", message="x")
+                        )
+                    ],
+                }
+            )
+
+        trials = [
+            judged("a", verdict=True, failed="boom"),
+            judged("b", verdict=None, failed="boom"),  # the judge abstained
+            judged("c", verdict=None, failed="judge"),
+        ]
+        result = PassRate("specific").compute(trials)
+        assert (result.n, result.n_na, result.n_missing) == (1, 1, 1)
+        # Without a trial showing who produces it, a score is missing.
+        alone = PassRate("specific").compute(trials[1:])
+        assert (alone.n_na, alone.n_missing) == (0, 2)
+
     def test_trials_that_never_ran_are_missing(self) -> None:
         trials = [_trial("a", scores={"ok": True})]
         (rate, errors) = compute_metrics(
@@ -357,3 +415,27 @@ def test_repetitions_count_towards_share_intervals() -> None:
     # When every unit passes, each example still counts once.
     saturated = bounded_mean_estimate([1.0] * 20, observations=60)
     assert saturated.ci_low == pytest.approx(bounded_mean_estimate([1.0] * 20).ci_low)
+
+
+class TestUsageMeasures:
+    def test_tokens_are_per_side_and_cost_is_the_total(self) -> None:
+        trial = _trial("a").model_copy(
+            update={
+                "usage": Usage(input_tokens=10, output_tokens=5, cost_usd=0.1),
+                "scorer_usage": {
+                    "judge": Usage(input_tokens=100, output_tokens=20, cost_usd=1.0),
+                    "check": Usage(input_tokens=1, output_tokens=1),
+                },
+            }
+        )
+        assert trial_value(trial, Measure.INPUT_TOKENS) == 10
+        assert trial_value(trial, Measure.OUTPUT_TOKENS) == 5
+        assert trial_value(trial, Measure.TOTAL_TOKENS) == 15
+        assert trial_value(trial, Measure.SCORER_INPUT_TOKENS) == 101
+        assert trial_value(trial, Measure.SCORER_OUTPUT_TOKENS) == 21
+        assert trial_value(trial, Measure.SCORER_TOTAL_TOKENS) == 122
+        assert trial_value(trial, Measure.COST) == pytest.approx(1.1)
+        assert Mean("scorer_total_tokens").compute([trial]).value == 122
+        # No scorer usage reads as zero, like the task's token measures.
+        assert trial_value(_trial("b"), Measure.SCORER_TOTAL_TOKENS) == 0
+        assert trial_value(_trial("b"), Measure.TOTAL_TOKENS) == 0

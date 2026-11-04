@@ -25,7 +25,7 @@ from grasp_agents.types.content import (
     InputText,
 )
 from grasp_agents.types.errors import InputPromptBuilderError
-from grasp_agents.utils.generics import AutoInstanceAttributesMixin
+from grasp_agents.utils.generics import AutoInstanceAttributesMixin, is_model_class
 
 from .system_reminder import wrap_in_system_reminder
 
@@ -415,7 +415,7 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
             return Content(parts=[val_in_args])
 
         # 3. BaseModel with in_prompt template (text-only)
-        if issubclass(self._in_type, BaseModel) and isinstance(val_in_args, BaseModel):
+        if is_model_class(self._in_type) and isinstance(val_in_args, BaseModel):
             val_in_args_map = self._format_pydantic_prompt_args(val_in_args)
             if self.in_prompt is not None:
                 return Content.from_formatted_prompt(self.in_prompt, **val_in_args_map)

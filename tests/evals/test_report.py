@@ -4,12 +4,14 @@ from grasp_agents.evals import (
     Dataset,
     Example,
     ScoreContext,
+    TrialContext,
+    Usage,
     evaluate,
     render_run_markdown,
     run_summary,
     scorer,
 )
-from grasp_agents.evals.report import trial_summary
+from grasp_agents.evals.report import sealed_groups, trial_summary
 
 
 @scorer
@@ -107,3 +109,43 @@ async def test_groups_with_a_few_sealed_members_are_hidden() -> None:
     assert "band=mixed" not in groups
     assert "band=visible" in groups
     assert "band=mixed" not in render_run_markdown(run)
+
+
+@pytest.mark.asyncio
+async def test_small_sealed_split_groups_are_hidden() -> None:
+    run = await evaluate(
+        wrong_on_odd,
+        _data(),
+        [correct],
+        sealed_splits=["test"],
+        group_by=["split"],
+        persist=False,
+    )
+    assert "split=test" in run.metric("pass_rate(correct)").groups  # type: ignore[union-attr]
+    assert sealed_groups(run) == {"split=test"}
+    assert "split=test" not in render_run_markdown(run)
+    assert "split=dev" in render_run_markdown(run)
+    groups = run_summary(run)["metrics"]["pass_rate(correct)"].get("groups", {})
+    assert set(groups) == {"split=dev"}
+
+
+@pytest.mark.asyncio
+async def test_usage_is_reported_per_side() -> None:
+    async def paid_task(x: int, trial: TrialContext) -> int:
+        trial.usage_by_agent["solver"] = Usage(
+            input_tokens=10, output_tokens=5, cost_usd=0.01
+        )
+        return x * 2
+
+    @scorer
+    def paid_judge(ctx: ScoreContext[int, int, int]) -> bool:
+        ctx.record_usage(Usage(input_tokens=100, output_tokens=20, cost_usd=0.1))
+        return True
+
+    run = await evaluate(paid_task, _data(), [paid_judge], persist=False)
+    assert run.task_usage.input_tokens == 60
+    assert run.scorer_usage["paid_judge"].output_tokens == 120
+    assert run.usage.cost_usd == pytest.approx(0.66)
+    text = render_run_markdown(run)
+    assert "task 60 in / 30 out tokens · scorers 600 in / 120 out tokens" in text
+    assert "660 in" not in text

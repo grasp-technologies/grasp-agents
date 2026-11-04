@@ -2,7 +2,18 @@ from __future__ import annotations
 
 import threading
 import types
-from typing import Any, ClassVar, Self, TypeVar, cast, get_args
+from typing import (
+    Any,
+    ClassVar,
+    Self,
+    TypeAliasType,
+    TypeGuard,
+    TypeVar,
+    cast,
+    get_args,
+)
+
+from pydantic import BaseModel
 
 # Concrete specializations built by ``__class_getitem__``, keyed by
 # ``(origin class, params)`` so repeated subscriptions return the same class.
@@ -12,6 +23,18 @@ _SPECIALIZATIONS_LOCK = threading.Lock()
 
 def _param_name(param: Any) -> str:
     return getattr(param, "__name__", None) or repr(param)
+
+
+def unalias(tp: Any) -> Any:
+    """The value of a PEP 695 ``type`` alias (of an alias…); other types as is."""
+    while isinstance(tp, TypeAliasType):
+        tp = tp.__value__
+    return tp
+
+
+def is_model_class(tp: object) -> TypeGuard[type[BaseModel]]:
+    """Whether ``tp`` is a pydantic model class (unions, literals etc. are not)."""
+    return isinstance(tp, type) and issubclass(tp, BaseModel)
 
 
 class AutoInstanceAttributesMixin:
@@ -43,6 +66,8 @@ class AutoInstanceAttributesMixin:
     intermediate subclass that is itself generic in a mapped position
     (``class Mid[T](MyBase[T, str])``) must therefore redeclare the map —
     otherwise types bound by *its* subclasses resolve to ``object``.
+
+    A PEP 695 ``type`` alias argument resolves to the type it names.
 
     """
 
@@ -151,7 +176,7 @@ class AutoInstanceAttributesMixin:
                 if attr_name in resolved:
                     continue
                 if index < len(generic_args):
-                    arg = generic_args[index]
+                    arg = unalias(generic_args[index])
                     if not isinstance(arg, TypeVar):
                         resolved[attr_name] = arg
 

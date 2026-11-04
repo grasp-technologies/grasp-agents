@@ -110,7 +110,9 @@ class TestEvaluate:
         assert mean is not None
         assert mean.value == pytest.approx(0.5)
         assert mean.n == 1
-        assert mean.n_missing == 3
+        # n1 errored and n2 is unscored; on n0 the judge itself ran fine.
+        assert mean.n_missing == 2
+        assert mean.n_na == 1
 
     @pytest.mark.asyncio
     async def test_duplicate_score_names_are_a_failure(self) -> None:
@@ -793,6 +795,20 @@ class TestRescoreRules:
         assert all(t.total_usage.cost_usd == pytest.approx(1.0) for t in child.trials)
 
     @pytest.mark.asyncio
+    async def test_the_child_records_the_spec_it_was_scored_with(
+        self, store: LocalRunStore
+    ) -> None:
+        parent = await evaluate(
+            double, _numbers(2), [correct], store=store, evaluation="specs.py:first"
+        )
+        inherited = await rescore(parent.id, [correct], store=store)
+        assert inherited.evaluation == "specs.py:first"
+        child = await rescore(
+            parent.id, [correct], store=store, evaluation="specs.py:second"
+        )
+        assert store.load(child.id).evaluation == "specs.py:second"
+
+    @pytest.mark.asyncio
     async def test_running_parents_are_refused(self, store: LocalRunStore) -> None:
         parent = await evaluate(double, _numbers(2), [correct], store=store)
         loaded = store.load(parent.id)
@@ -800,3 +816,21 @@ class TestRescoreRules:
         store.save(loaded)
         with pytest.raises(ValueError, match="not finished"):
             await rescore(parent.id, [correct], store=store)
+
+
+@pytest.mark.asyncio
+async def test_a_failing_scorer_leaves_other_scores_not_applicable() -> None:
+    @scorer
+    def maybe(ctx: Ctx) -> bool | None:
+        return True if ctx.input % 2 == 0 else None
+
+    @scorer
+    def boom_odd(ctx: Ctx) -> bool:
+        if ctx.input % 2:
+            raise RuntimeError("judge down")
+        return True
+
+    run = await evaluate(double, _numbers(6), [maybe, boom_odd], persist=False)
+    result = run.metric("pass_rate(maybe)")
+    assert result is not None
+    assert (result.n, result.n_na, result.n_missing) == (3, 3, 0)

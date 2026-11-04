@@ -14,6 +14,9 @@ _RESOURCES = frozenset(
         Measure.INPUT_TOKENS,
         Measure.OUTPUT_TOKENS,
         Measure.TOTAL_TOKENS,
+        Measure.SCORER_INPUT_TOKENS,
+        Measure.SCORER_OUTPUT_TOKENS,
+        Measure.SCORER_TOTAL_TOKENS,
     }
 )
 _RESOURCE_NAMES = frozenset(str(m) for m in _RESOURCES)
@@ -88,6 +91,10 @@ class Comparison(BaseModel):
     # Significance level of ``TargetComparison.significant``.
     alpha: float = 0.05
     cluster_by: str | None = None
+    # With default targets: numeric scores of the base run that the candidate
+    # has no numeric value for. The regression gate fails on them unless its
+    # targets are named.
+    missing_scores: list[str] = Field(default_factory=list[str])
     warnings: list[str] = Field(default_factory=list[str])
     targets: list[TargetComparison] = Field(default_factory=list[TargetComparison])
 
@@ -279,7 +286,9 @@ def compare(
     error rate) and separately among resource targets (duration, cost);
     targets where no example changed are left out of the adjustment.
     Examples in sealed splits contribute to the statistics but are never
-    listed.
+    listed. With default targets, a numeric score found in only one run is
+    not compared but warned about; one the candidate lacks is also listed in
+    ``missing_scores``.
     """
     base_views = _views(base)
     candidate_views = _views(candidate)
@@ -291,6 +300,20 @@ def compare(
     errored_one_side = sum(
         1 for i in paired if base_views[i].errored != candidate_views[i].errored
     )
+    base_scores, candidate_scores = _numeric_scores(base), _numeric_scores(candidate)
+    missing: list[str] = []
+    score_warnings: list[str] = []
+    if targets is None:
+        missing = [n for n in base_scores if n not in candidate_scores]
+        score_warnings = [
+            f"Score {name!r} is missing from the candidate (no numeric value): "
+            "the regression gate fails on it unless its targets are named."
+            for name in missing
+        ] + [
+            f"Score {name!r} is only in the candidate run; it is not compared."
+            for name in candidate_scores
+            if name not in base_scores
+        ]
     comparisons: list[TargetComparison] = []
     for raw_target in (
         targets if targets is not None else _default_targets(base, candidate)
@@ -398,6 +421,7 @@ def compare(
         n_paired=len(paired),
         errored_one_side=errored_one_side,
     )
+    warnings.extend(score_warnings)
     if cluster_key is not None and paired:
         clusters = set(_clusters(base, cluster_key, paired) or ())
         if len(clusters) < 2:
@@ -416,6 +440,7 @@ def compare(
         n_candidate_only=sum(1 for i in candidate_views if i not in base_views),
         alpha=alpha,
         cluster_by=cluster_key,
+        missing_scores=missing,
         warnings=warnings,
         targets=comparisons,
     )
@@ -432,11 +457,18 @@ def regressions(
     direction of at least ``min_effect`` in a gated target — the outcome
     targets (scores and the error rate) unless ``targets`` names others, e.g.
     ``"duration_s"`` — or a gated target that cannot be tested (nothing
-    paired, or too few examples or clusters).
+    paired, or too few examples or clusters). Without ``targets``, a numeric
+    score of the base run that the candidate lacks (its scorer failed
+    everywhere, or the score was renamed) fails too.
     """
     failures: list[str] = []
     if comparison.n_paired_examples == 0:
         failures.append("no example could be paired with the baseline")
+    if targets is None:
+        failures.extend(
+            f"score {name!r} is missing from the candidate"
+            for name in comparison.missing_scores
+        )
     for target in comparison.targets:
         gated = target.target in targets if targets is not None else not target.resource
         if not gated:

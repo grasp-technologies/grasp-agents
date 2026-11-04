@@ -14,7 +14,7 @@ from typing import (
 from uuid import uuid4
 
 from opentelemetry import trace
-from pydantic import BaseModel, TypeAdapter
+from pydantic import TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from grasp_agents import grasp_logging
@@ -47,7 +47,7 @@ from grasp_agents.types.events import (
 from grasp_agents.types.io import ProcName
 from grasp_agents.types.packet import Packet
 from grasp_agents.utils.callbacks import is_method_overridden
-from grasp_agents.utils.generics import AutoInstanceAttributesMixin
+from grasp_agents.utils.generics import AutoInstanceAttributesMixin, is_model_class
 
 if TYPE_CHECKING:
     from grasp_agents.tools.processor_tool import ProcessorTool
@@ -668,7 +668,7 @@ class Processor[InT, OutT, CtxT](
             ProcessorTool as _ProcessorTool,
         )
 
-        if not issubclass(self.in_type, BaseModel):
+        if not is_model_class(self.in_type):
             raise TypeError(
                 "Cannot create a tool from an agent with "
                 f"non-BaseModel input type: {self.in_type}"

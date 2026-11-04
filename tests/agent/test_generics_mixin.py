@@ -1,11 +1,13 @@
 """AutoInstanceAttributesMixin resolution with PEP 695 type parameters."""
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 import pytest
 from pydantic import BaseModel
 
+from grasp_agents import LLMAgent
 from grasp_agents.utils.generics import AutoInstanceAttributesMixin
+from tests._helpers import MockLLM, _text_response
 
 
 class Base[T, U](AutoInstanceAttributesMixin):
@@ -100,9 +102,7 @@ def test_pydantic_consumer_without_private_attrs_raises_cleanly() -> None:
 
 def test_bounded_param_resolution() -> None:
     class Bounded[M: BaseModel](AutoInstanceAttributesMixin):
-        _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {
-            0: "model_type"
-        }
+        _generic_arg_to_instance_attr_map: ClassVar[dict[int, str]] = {0: "model_type"}
 
         model_type: type[Any]
 
@@ -188,3 +188,45 @@ def test_dunder_introspection_preserved() -> None:
     # And it is a real subclass — isinstance works (it raised on the alias).
     assert issubclass(specialized, Base)
     assert isinstance(specialized(), Base)
+
+
+# ---------------------------------------------------------------------------
+# PEP 695 ``type`` aliases and non-class type arguments
+# ---------------------------------------------------------------------------
+
+
+class Note(BaseModel):
+    text: str
+
+
+type NoteAlias = Note
+type NestedNoteAlias = NoteAlias
+
+
+def test_type_alias_arguments_resolve_to_their_values() -> None:
+    obj = Base[NoteAlias, NestedNoteAlias]()
+    assert obj.elem_type is Note
+    assert obj.meta_type is Note
+
+    class FromAlias(Base[NestedNoteAlias, int]):
+        pass
+
+    assert FromAlias().elem_type is Note
+
+
+@pytest.mark.asyncio
+async def test_agent_with_aliased_input_and_output_types() -> None:
+    llm = MockLLM(responses_queue=[_text_response('{"text": "out"}')])
+    agent = LLMAgent[NoteAlias, NestedNoteAlias, None](name="aliased", llm=llm)
+    assert agent.in_type is Note
+    assert agent.out_type is Note
+    out = await agent.run(in_args=Note(text="in"))
+    assert out.payloads == [Note(text="out")]
+
+
+@pytest.mark.asyncio
+async def test_agent_with_literal_and_union_type_arguments() -> None:
+    llm = MockLLM(responses_queue=[_text_response('"yes"')])
+    agent = LLMAgent[int | str, Literal["yes", "no"], None](name="special", llm=llm)
+    out = await agent.run(in_args=3)
+    assert out.payloads == ["yes"]

@@ -17,7 +17,7 @@ Also tests:
 - None input type
 """
 
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from pydantic import BaseModel, Field
@@ -269,6 +269,37 @@ class TestJSONFallback:
 
         text = content.parts[0].text  # type: ignore[union-attr]
         assert "42" in text
+
+
+type SimpleInputAlias = SimpleInput
+
+
+class TestTypeArguments:
+    """Type aliases and non-class input types."""
+
+    def test_aliased_model_uses_in_prompt_template(self):
+        builder = _make_builder(SimpleInputAlias)  # type: ignore[arg-type]
+        builder._in_prompt = "Q: {query} / C: {context}"
+
+        content = builder.build_input_content(
+            in_args=SimpleInput(query="a", context="b"), exec_id="c1"
+        )
+
+        assert content.parts[0].text == "Q: a / C: b"  # type: ignore[union-attr]
+
+    def test_literal_input_renders(self):
+        builder = _make_builder(Literal["red", "blue"])  # type: ignore[arg-type]
+
+        content = builder.build_input_content(in_args="red", exec_id="c1")
+
+        assert content.parts[0].text == "red"  # type: ignore[union-attr]
+
+    def test_union_input_renders_as_json(self):
+        builder = _make_builder(int | SimpleInput)  # type: ignore[arg-type]
+
+        content = builder.build_input_content(in_args=7, exec_id="c1")
+
+        assert content.parts[0].text == "7"  # type: ignore[union-attr]
 
 
 class TestNoneInputType:

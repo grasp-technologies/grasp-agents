@@ -11,7 +11,7 @@ every trial, with uncertainty clustered on the example.
 
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from itertools import combinations
@@ -37,13 +37,24 @@ _MIN_TAIL_UNITS = 5
 
 
 class Measure(StrEnum):
-    """Built-in per-trial measurements, usable as a metric target."""
+    """
+    Built-in per-trial measurements, usable as a metric target.
+
+    Tokens are per side: ``input_tokens`` / ``output_tokens`` /
+    ``total_tokens`` count the task's model usage, and ``scorer_*_tokens``
+    the usage scorers and judges reported (both 0 when nothing was reported).
+    ``cost_usd`` is the total of task and scorers. ``duration_s`` covers the
+    task only.
+    """
 
     DURATION = "duration_s"
     COST = "cost_usd"
     INPUT_TOKENS = "input_tokens"
     OUTPUT_TOKENS = "output_tokens"
     TOTAL_TOKENS = "total_tokens"
+    SCORER_INPUT_TOKENS = "scorer_input_tokens"
+    SCORER_OUTPUT_TOKENS = "scorer_output_tokens"
+    SCORER_TOTAL_TOKENS = "scorer_total_tokens"
     ERROR = "error"
 
 
@@ -78,6 +89,12 @@ def trial_value(trial: Trial, of: Target) -> float | None:
                 return float(trial.usage.output_tokens)
             case Measure.TOTAL_TOKENS:
                 return float(trial.usage.total_tokens)
+            case Measure.SCORER_INPUT_TOKENS:
+                return float(sum(u.input_tokens for u in trial.scorer_usage.values()))
+            case Measure.SCORER_OUTPUT_TOKENS:
+                return float(sum(u.output_tokens for u in trial.scorer_usage.values()))
+            case Measure.SCORER_TOTAL_TOKENS:
+                return float(sum(u.total_tokens for u in trial.scorer_usage.values()))
             case Measure.ERROR:
                 return 0.0 if trial.ok else 1.0
     score = trial.score(of)
@@ -158,12 +175,38 @@ def _group_by_example(trials: Iterable[Trial]) -> dict[str, list[Trial]]:
     return groups
 
 
-def _not_applicable(trial: Trial, target: Target | None) -> bool:
+def _producers(trials: Iterable[Trial], target: Target | None) -> frozenset[str]:
+    """Scorers seen producing the score ``target`` among ``trials``."""
+    if target is None or isinstance(target, Measure):
+        return frozenset()
+    return frozenset(
+        s.scorer for t in trials for s in t.scores if s.name == target and s.scorer
+    )
+
+
+def _not_applicable(
+    trial: Trial, target: Target | None, producers: Collection[str] = ()
+) -> bool:
+    """
+    Whether ``target`` is absent from an OK trial because it does not apply
+    (rather than missing). It does when no scorer failed on the trial, or when
+    every scorer that produces it ran there without failing. ``producers``
+    are the scorers seen emitting the score among the trials being
+    aggregated; when none was seen, a scorer of the same name is assumed (a
+    scalar result is named after its scorer). A score whose producer failed,
+    did not run, or cannot be determined is missing.
+    """
     if target is None or isinstance(target, Measure) or not trial.ok:
         return False
-    if trial.scorer_failures or target in trial.measurements:
+    if target in trial.measurements or trial.score(target) is not None:
         return False
-    return trial.score(target) is None
+    if not trial.scorer_failures:
+        return True
+    failed = {f.scorer for f in trial.scorer_failures}
+    return all(
+        name in trial.scorers_run and name not in failed
+        for name in producers or (target,)
+    )
 
 
 @dataclass
@@ -188,6 +231,7 @@ def _collect(
     target: Target | None = None,
 ) -> _Collected:
     collected = _Collected(values=[], keys=[])
+    producers = _producers(trials, target)
     if unit == "trial":
         for trial in trials:
             value = value_of(trial)
@@ -195,7 +239,7 @@ def _collect(
                 collected.values.append(value)
                 collected.keys.append(trial.example_id)
                 collected.observations += 1
-            elif _not_applicable(trial, target):
+            elif _not_applicable(trial, target, producers):
                 collected.na += 1
             else:
                 collected.missing += 1
@@ -208,9 +252,11 @@ def _collect(
             collected.keys.append(example_id)
             collected.observations += len(found)
             unusable = [t for t, v in per_trial if v is None]
-            if unusable and not all(_not_applicable(t, target) for t in unusable):
+            if unusable and not all(
+                _not_applicable(t, target, producers) for t in unusable
+            ):
                 collected.partial += 1
-        elif all(_not_applicable(t, target) for t in group):
+        elif all(_not_applicable(t, target, producers) for t in group):
             collected.na += 1
         else:
             collected.missing += 1
@@ -469,6 +515,7 @@ class _KMetric(Metric):
         keys: list[str] = []
         observations = 0
         missing = na = 0
+        producers = _producers(trials, self.of)
         for example_id, group in _group_by_example(trials).items():
             try:
                 n, c = self._counts(group)
@@ -478,7 +525,7 @@ class _KMetric(Metric):
                 # Too few repetitions for k is a configuration matter, not
                 # missing data; too few *usable* ones (failed scoring) is missing.
                 if len(group) < self.k or all(
-                    _not_applicable(t, self.of) for t in group
+                    _not_applicable(t, self.of, producers) for t in group
                 ):
                     na += 1
                 else:
@@ -815,10 +862,13 @@ class Consistency(Metric):
         keys: list[str] = []
         pair_agreement: list[float] = []
         missing = na = 0
+        producers = _producers(trials, self.of)
         for example_id, group in _group_by_example(trials).items():
             labels = [label for t in group if (label := _label(t, self.of)) is not None]
             if len(labels) < 2:
-                if len(group) < 2 or all(_not_applicable(t, self.of) for t in group):
+                if len(group) < 2 or all(
+                    _not_applicable(t, self.of, producers) for t in group
+                ):
                     na += 1
                 else:
                     missing += 1
@@ -850,12 +900,15 @@ def _label_pairs(
     pairs: list[tuple[str, str]] = []
     keys: list[str] = []
     missing = na = 0
+    truth_producers, of_producers = _producers(trials, truth), _producers(trials, of)
     for trial in trials:
         expected, judged = _label(trial, truth), _label(trial, of)
         if expected is not None and judged is not None:
             pairs.append((expected, judged))
             keys.append(trial.example_id)
-        elif _not_applicable(trial, truth) or _not_applicable(trial, of):
+        elif _not_applicable(trial, truth, truth_producers) or _not_applicable(
+            trial, of, of_producers
+        ):
             na += 1
         else:
             missing += 1
@@ -1119,19 +1172,26 @@ def compute_metrics(
             buckets: dict[str, list[Trial]] = {}
             for trial in trials:
                 example = by_id.get(trial.example_id)
-                value = None if example is None else _group_value(example, key)
-                buckets.setdefault(f"{key}={value}", []).append(trial)
+                buckets.setdefault(group_label(example, key), []).append(trial)
             for label, bucket in sorted(buckets.items()):
                 result.groups[label] = metric.compute(bucket, clusters=clusters)
         results.append(result)
     return results
 
 
-def _group_value(example: Example[Any, Any], key: str) -> Any:
-    # ``split`` groups by the example's splits unless its metadata has one.
-    if key == "split" and key not in example.metadata:
-        return "+".join(example.splits) or None
-    return example.metadata.get(key)
+def group_label(example: Example[Any, Any] | None, key: str) -> str:
+    """
+    The ``group_by`` label (``"<key>=<value>"``) of ``example``: the value of
+    ``metadata[key]``, except that ``split`` groups by the example's splits
+    joined with ``+`` unless its metadata has a ``split`` key.
+    """
+    value: Any = None
+    if example is not None:
+        if key == "split" and key not in example.metadata:
+            value = "+".join(example.splits) or None
+        else:
+            value = example.metadata.get(key)
+    return f"{key}={value}"
 
 
 def _hashable(value: Any) -> Hashable:

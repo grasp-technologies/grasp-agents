@@ -13,9 +13,12 @@ Code: `evals/metrics.py`, `evals/stats.py`, `evals/compare.py`.
 | task error | The task raises or times out, its output is not JSON-serializable, or `trial.record` got a non-finite value | `trial.error`; scorers are skipped unless `scores_errors=True` | A failure (0), unless `errors_as_failures=False` | `n_missing` |
 | never ran | The budget ran out, or the run was cancelled | No trial | `n_missing` | `n_missing` |
 
-- A score that is absent from an OK trial counts as not applicable only when *no*
-  scorer failed on that trial. Otherwise it counts as missing, because score names are
-  not tied to scorers.
+- A score that is absent from an OK trial counts as not applicable when no scorer
+  failed on that trial, or when the scorer that produces it ran there without failing.
+  The producer is the scorer seen emitting that score name in the trials being
+  aggregated (`Score.scorer`), or else a scorer of the same name (a scalar result is
+  named after its scorer). If the producer failed, did not run, or cannot be told, the
+  score counts as missing.
 - `counts.unscored` and `counts.scorer_failures` on the run add these up across trials.
 
 ## Default metrics (`metrics=None`)
@@ -59,8 +62,11 @@ Always added: `error_rate`, `p50(duration_s)` and `p95(duration_s)`, plus
      the same name wins);
   3. a `Measure`:
      - `duration_s`: the task only, not scoring;
-     - `cost_usd`: the task *plus* scorers and judges;
+     - `cost_usd`: the task *plus* scorers and judges (dollars add up across models);
      - `input_tokens`, `output_tokens`, `total_tokens`: the task only;
+     - `scorer_input_tokens`, `scorer_output_tokens`, `scorer_total_tokens`: scorers
+       and judges only (the sum of `trial.scorer_usage`). Tokens are never added
+       across the two sides; each side reads 0 when no usage was reported;
      - `error`: 1 when the task errored.
 - **Custom metric:** subclass `Metric`, set `name` and `unit`, and implement
   `compute(trials, *, clusters=None) -> MetricResult`.
@@ -84,9 +90,8 @@ Always added: `error_rate`, `p50(duration_s)` and `p95(duration_s)`, plus
   `example.metadata`. A missing key gives `topic=None`.
 - **The `split` key is special.** Unless the metadata has a `split` key, it groups by the
   example's splits joined with `+` (`split=dev`, `split=dev+test`).
-- **Small sealed groups.** Reports hide groups that hold 1 to 4 sealed examples. This
-  check reads metadata keys only, so groups made by the `split` key are shown even when
-  they are small.
+- **Small sealed groups.** Reports (Markdown, `--json`, `show`) hide groups that hold 1
+  to 4 sealed examples, including groups made by the `split` key.
 - **`cluster_by="course"`** uses clustered standard errors (CR1) keyed by
   `metadata["course"]` (the example id when the key is missing). With fewer than 2
   clusters, there is no interval. Trial-level metrics always cluster repetitions on the
@@ -112,7 +117,9 @@ cluster_by=None)`:
    hash. `n_changed_examples`, `n_base_only` and `n_candidate_only` count the rest.
 2. **Default targets**: numeric scores (bool or number) found in *both* runs, then
    `error`, `duration_s`, and `cost_usd` when any trial has a cost. Label scores are
-   never compared. From Python, pass `targets=[...]` to choose others.
+   never compared. A numeric score in only one run gets a warning instead; one the
+   candidate lacks is also listed in `missing_scores` and fails the regression gate.
+   From Python, pass `targets=[...]` to choose others.
 3. **Per example**: repetitions are reduced with `reduce`.
    - For scores that are always `bool`, a task-errored trial counts as 0.
    - Numeric scores skip errored trials, so `n_pairs` drops. The `error` target catches
@@ -144,6 +151,7 @@ cluster_by=None)`:
    - a scorer changed version, config or code;
    - repetitions differ;
    - task errors appear in only one run;
+   - a numeric score is in only one run (with default targets);
    - a run is invalid or incomplete;
    - all paired examples sit in one cluster.
 
@@ -156,7 +164,11 @@ failure messages (an empty list means pass). It fails when:
 - a gated target has no paired values, or has pairs but no p-value;
 - a gated target shows a significant change in the bad direction with
   `|diff| >= min_effect`;
+- without `targets`: a numeric score of the base run is missing from the candidate
+  (`comparison.missing_scores`; "score 'x' is missing from the candidate");
 - a target named in `targets` is not in the comparison.
 
-The default gated targets are the comparison's outcome targets. A score missing from
-either run is not a target, so it is not gated unless you name it.
+The default gated targets are the comparison's outcome targets (scores and `error`)
+plus the base's scores the candidate lacks. A score only the candidate has is not a
+regression. Resources are gated only when named in `targets`, which replaces the
+default set.

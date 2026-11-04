@@ -18,8 +18,7 @@ class Verdict(BaseModel):
     explanation: str
 
 
-# A class. A `type Judged = ...` alias makes LLMAgent fail at its first call.
-Judged = JudgedOutput[Submission, Grade, TeacherGrade]
+type Judged = JudgedOutput[Submission, Grade, TeacherGrade]
 
 
 def build_judge() -> LLMAgent[Judged, Verdict, None]:
@@ -46,7 +45,7 @@ judge = ProcessorScorer(
 | Input | By default a `JudgedOutput(input, output, reference, metadata)` built from the trial. `to_input(ctx)` replaces it |
 | Verdict | `to_scores(verdict)` must return what a scorer returns. Without it, the processor's output must already be a `Score`, scalar, list or mapping; a pydantic model fails every call |
 | Isolation | Each call runs a fresh copy (or a factory product) in its own session |
-| Usage | Goes to `trial.scorer_usage[<judge name>]`, not `trial.usage`. It counts toward `cost_usd`, the budget and `run.usage`, but not the token measures. Models land in `trial.models` |
+| Usage | Goes to `trial.scorer_usage[<judge name>]` and `run.scorer_usage`, not `trial.usage` or `run.task_usage`. It counts toward `cost_usd`, the budget and `run.usage`. Its tokens appear in the `scorer_*_tokens` measures, never in the task's `input_tokens`/`output_tokens`/`total_tokens`. Models land in `trial.models` |
 | Failure | A raise, or a verdict that does not parse, is a scorer failure. Rescore retries it |
 | Identity | `describe().fingerprint` covers a template's models, settings, prompts, output schema and tools. `describe().source` covers the code of `to_input`, `to_scores`, custom classes, hooks and tool functions. Any change makes rescore re-run the judge and voids earlier validations. A factory-built judge has no fingerprint, so put its model and prompt version in `version` or `config` |
 | Load | All scorers of a trial run concurrently, so judge calls in flight = trials in flight (`concurrency`) × judges. A pairwise judge makes 2 calls per pair |

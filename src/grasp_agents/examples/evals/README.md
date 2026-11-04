@@ -38,7 +38,7 @@ grasp-evals show latest --failures
 grasp-evals show latest --example bio-3        # input, reference, outputs, transcript
 
 # 4. Fix, rerun, compare (paired by example; exit 1 if a score or the error rate
-#    regresses significantly).
+#    regresses significantly, or a score of v1 is missing from v2).
 grasp-evals run "${SPEC}:grader_v2" --split dev --baseline latest:grader_v1 --fail-on-regression
 grasp-evals compare latest:grader_v1 latest:grader_v2
 

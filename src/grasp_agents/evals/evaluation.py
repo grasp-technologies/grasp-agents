@@ -18,7 +18,7 @@ from .runner import evaluate as evaluate_task
 from .runner import rescore
 from .scorer import Scorer
 from .store import LocalRunStore, RunStore
-from .task import Task, as_task
+from .task import Task, TaskFn, as_task
 from .types import EvaluationRun, Trial
 from .validation import (
     CorrectedPassRate,
@@ -71,8 +71,14 @@ async def load_phoenix_dataset(
 type TaskSource = (
     Task[Any, Any]
     | Processor[Any, Any, Any]
+    | TaskFn[Any, Any]
     | Callable[[], Task[Any, Any] | Processor[Any, Any, Any]]
 )
+"""
+A task, a processor, an async function (``async def fn(input)`` or
+``async def fn(input, trial)``, or a ``functools.partial`` of one), or a
+zero-argument factory returning a task or processor (any other callable).
+"""
 type DatasetSource = (
     Dataset[Any, Any]
     | str
@@ -87,9 +93,11 @@ class Evaluation:
     A named, importable evaluation: the question it answers, the task, where
     its data comes from, how outputs are judged and which numbers to report.
 
-    Definitions are cheap to import: ``task`` may be a zero-argument factory
-    (called on the first run, so no clients are built at import time) and
-    ``dataset`` a path, a ``phoenix:NAME[@VERSION]`` reference or a loader.
+    ``task`` is a :class:`Task`, a processor, an async function (the task
+    itself, as in :func:`evaluate`) or a zero-argument factory of a task or
+    processor. Definitions are cheap to import: a factory is called on the
+    first run, so no clients are built at import time, and ``dataset`` may be
+    a path, a ``phoenix:NAME[@VERSION]`` reference or a loader.
     Run with :meth:`run`, or from the CLI as ``grasp-evals run
     package.module:attr``.
     """
@@ -136,12 +144,21 @@ class Evaluation:
     def build_task(self) -> Task[Any, Any]:
         if self._task is None:
             source = self.task
-            if isinstance(source, Task | Processor):
+            if isinstance(source, Task | Processor) or inspect.iscoroutinefunction(
+                source
+            ):
+                # An async function is the task itself, as in ``evaluate``.
                 self._task = as_task(
-                    cast("Task[Any, Any] | Processor[Any, Any, Any]", source)
+                    cast(
+                        "Task[Any, Any] | Processor[Any, Any, Any] | TaskFn[Any, Any]",
+                        source,
+                    )
                 )
             else:
-                self._task = as_task(source())
+                factory = cast(
+                    "Callable[[], Task[Any, Any] | Processor[Any, Any, Any]]", source
+                )
+                self._task = as_task(factory())
         return self._task
 
     @property
@@ -369,7 +386,8 @@ class Evaluation:
         Re-score a stored run of this evaluation with its current scorers:
         changed ones run again, unchanged ones only where they failed or did
         not run (all of them with ``rerun=True``). Gated judges must be
-        validated, as for :meth:`run`.
+        validated, as for :meth:`run`. The child run records this
+        evaluation's spec when it was loaded from one.
         """
         metrics, judges = self.check_judges(store, allow_unvalidated=allow_unvalidated)
         return await rescore(
@@ -387,6 +405,7 @@ class Evaluation:
             store=store,
             persist=persist,
             metadata=judges,
+            evaluation=self.spec,
             progress=progress,
         )
 

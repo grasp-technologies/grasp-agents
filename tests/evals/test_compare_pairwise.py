@@ -316,6 +316,17 @@ class TestGate:
         assert target.worse
 
     @pytest.mark.asyncio
+    async def test_scorer_tokens_are_a_resource(self, store: LocalRunStore) -> None:
+        base = await evaluate(good, _dataset(4), [correct], store=store)
+        result = compare(
+            base, base.model_copy(deep=True), targets=[Measure.SCORER_TOTAL_TOKENS]
+        )
+        target = result.target("scorer_total_tokens")
+        assert target is not None
+        assert target.resource
+        assert not target.higher_is_better
+
+    @pytest.mark.asyncio
     async def test_the_gate_reads_scores_not_timings(
         self, store: LocalRunStore
     ) -> None:
@@ -345,6 +356,44 @@ class TestGate:
         result = compare(base, other)
         assert any("No example could be paired" in w for w in result.warnings)
         assert "no example could be paired with the baseline" in regressions(result)
+
+    @pytest.mark.asyncio
+    async def test_a_score_missing_from_the_candidate_fails_the_gate(
+        self, store: LocalRunStore
+    ) -> None:
+        @scorer(name="correct", version="2")
+        def broken(ctx: Ctx) -> bool:
+            raise RuntimeError("scorer broke")
+
+        base = await evaluate(good, _dataset(6), [correct], store=store)
+        candidate = await evaluate(good, _dataset(6), [broken], store=store)
+        result = compare(base, candidate)
+        assert result.missing_scores == ["correct"]
+        assert any(
+            "'correct' is missing from the candidate" in w for w in result.warnings
+        )
+        assert "'correct' is missing from the candidate" in (
+            render_comparison_markdown(result)
+        )
+        assert "score 'correct' is missing from the candidate" in regressions(result)
+        # Named targets replace the default set; naming the score still fails.
+        assert regressions(result, targets=["error"]) == []
+        assert regressions(result, targets=["correct"])
+
+    @pytest.mark.asyncio
+    async def test_a_score_only_in_the_candidate_is_not_a_regression(
+        self, store: LocalRunStore
+    ) -> None:
+        @scorer
+        def extra(ctx: Ctx) -> bool:
+            return True
+
+        base = await evaluate(good, _dataset(6), [correct], store=store)
+        candidate = await evaluate(good, _dataset(6), [correct, extra], store=store)
+        result = compare(base, candidate)
+        assert result.missing_scores == []
+        assert any("'extra' is only in the candidate" in w for w in result.warnings)
+        assert regressions(result) == []
 
     @pytest.mark.asyncio
     async def test_significance_follows_the_reported_test(

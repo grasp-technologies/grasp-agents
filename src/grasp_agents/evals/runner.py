@@ -472,6 +472,7 @@ async def rescore(
     persist: bool = True,
     tags: Sequence[str] = (),
     metadata: Mapping[str, Any] | None = None,
+    evaluation: str | None = None,
     progress: ProgressCallback | None = None,
 ) -> EvaluationRun:
     """
@@ -489,7 +490,9 @@ async def rescore(
 
     Stored examples and outputs are re-validated as ``input_type`` /
     ``reference_type`` / ``output_type`` before scorers see them. A parent
-    that did not complete yields a ``partial`` child.
+    that did not complete yields a ``partial`` child. The child records
+    ``evaluation`` (the import spec the scorers came from) when given, else
+    the parent's.
     """
     _check_scorers(scorers)
     run_store = resolve_store(store, persist)
@@ -537,7 +540,7 @@ async def rescore(
         kind="rescore",
         created_at=utc_now(),
         description=parent.description,
-        evaluation=parent.evaluation,
+        evaluation=evaluation or parent.evaluation,
         parent_run_id=parent.id,
         dataset=parent.dataset,
         task=parent.task,

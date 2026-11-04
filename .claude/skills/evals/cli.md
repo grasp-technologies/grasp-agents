@@ -70,7 +70,9 @@ These settings live only in the spec and have no CLI override: `max_error_rate`,
 ## Output
 
 - **`--json`** prints one JSON document on stdout, errors included:
-  `{"error": {"type", "message", "exit"}}`.
+  `{"error": {"type", "message", "exit"}}`. Anything else that prints while the
+  command runs (the code under evaluation, a dependency) goes to stderr, so stdout
+  always parses. The same holds for `datasets` and `labels`, which always print JSON.
 - **Without `--json`**, `run` and `show` print Markdown (plain text when stdout is not a
   terminal), and the run directory is written to stderr.
 - **Progress** goes to stderr. `--progress json` prints one object per finished trial:
@@ -103,20 +105,22 @@ stored and reported, and `push_error` is set in the JSON.
 ## Gating recipes
 
 ```bash
-# CI: candidate vs a pinned baseline. Name the gated scores so a vanished score fails.
+# CI: candidate vs a pinned baseline, on the default targets (scores and error).
 grasp-evals run evals/grading.py:grader_llm --split dev --json -q \
-  --baseline "$BASE_ID" --fail-on-regression --gate agrees --gate error \
-  --fail-under 'pass_rate(agrees)=0.8'
+  --baseline "$BASE_ID" --fail-on-regression --fail-under 'pass_rate(agrees)=0.8'
 
 # Latency regression only (resources are not gated unless named).
 grasp-evals compare "$BASE_ID" "$CAND_ID" --fail-on-regression --gate duration_s --min-effect 0.5
 ```
 
-The regression gate fails in three cases:
+The regression gate fails when:
 - nothing pairs;
-- a gated target has pairs but no test (e.g. a single example, or all examples in one
-  `cluster_by` cluster);
-- a significant regression of at least `--min-effect`.
+- a gated target has no paired values, or has pairs but no test (e.g. a single
+  example, or all examples in one `cluster_by` cluster);
+- a significant regression of at least `--min-effect`;
+- without `--gate`: a score of the baseline is missing from the candidate (its scorer
+  failed on every trial, or the score was renamed);
+- a `--gate` target is not in the comparison.
 
 See [metrics.md](metrics.md#regression-gate).
 

@@ -78,6 +78,7 @@ from grasp_agents.types.items import FunctionToolCallItem, InputItem, InputMessa
 from grasp_agents.types.message import USER_SENDER
 from grasp_agents.types.response import Response
 from grasp_agents.utils.callbacks import is_method_overridden
+from grasp_agents.utils.generics import is_model_class
 from grasp_agents.utils.io import get_prompt
 from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
 
@@ -412,7 +413,7 @@ class LLMAgent[InT, OutT, CtxT](
 
         # Tool-calling agents can provide a final answer as a tool call.
         # If so, the final answer type must be a subclass of BaseModel.
-        if issubclass(self._out_type, BaseModel):
+        if is_model_class(self._out_type):
             final_answer_type = self._out_type
         elif not final_answer_as_tool_call:
             final_answer_type = BaseModel

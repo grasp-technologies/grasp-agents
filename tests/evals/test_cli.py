@@ -140,6 +140,12 @@ def test_run_show_compare_rescore(
     assert child["kind"] == "rescore"
     assert child["parent_run_id"] == base["id"]
     assert child["scorers"] == {"correct": "2"}
+    # The child names the spec it was scored with, so ``latest:`` finds it.
+    assert child["evaluation"].endswith(":rejudged")
+    code, latest = _run_json(
+        capsys, "--root", root, "show", "latest:rejudged", "--json"
+    )
+    assert latest["id"] == child["id"]
 
     code, runs = _run_json(capsys, "--root", root, "runs", "--json")
     assert len(runs) == 4
@@ -394,3 +400,38 @@ def test_unvalidated_judges_fail_the_run_gate(
     )
     assert code == 0
     assert listed["gate_failures"] == []
+
+
+_NOISY = """
+from grasp_agents.evals import Dataset, Evaluation, Example, FunctionTask
+
+print("importing the spec")
+
+async def noisy(x: int) -> int:
+    print("Provider List: https://example.invalid")
+    return x
+
+spec = Evaluation(
+    name="noisy",
+    task=FunctionTask(noisy),
+    dataset=Dataset([Example(id="a", input=1)]),
+)
+"""
+
+
+def test_json_stdout_holds_only_the_document(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "noisy_evals.py"
+    path.write_text(_NOISY)
+    root = str(tmp_path / "evals")
+    code = main(["--root", root, "run", f"{path}:spec", "--json", "-q"])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert json.loads(captured.out)["status"] == "completed"
+    assert "importing the spec" in captured.err
+    assert "Provider List" in captured.err
+    code = main(["--root", root, "show", "missing-run", "--json"])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert json.loads(captured.out)["error"]["exit"] == 2

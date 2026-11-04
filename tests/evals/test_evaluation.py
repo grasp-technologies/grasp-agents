@@ -1,3 +1,4 @@
+import functools
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -105,6 +106,30 @@ class TestEvaluation:
         await evaluation.run(limit=1, persist=False)
         await evaluation.run(limit=1, persist=False)
         assert built == 1
+
+    @pytest.mark.asyncio
+    async def test_async_functions_are_tasks(self) -> None:
+        async def add_offset(problem: Problem, offset: int) -> int:
+            return problem.a + problem.b + offset
+
+        dataset = Dataset(
+            [
+                Example(id=f"p{i}", input=Problem(a=i, b=1), reference=i + 1)
+                for i in range(3)
+            ]
+        )
+        direct = Evaluation(name="direct", task=add, dataset=dataset, scorers=[exact])
+        assert direct.resolved_input_type is Problem
+        partial = Evaluation(
+            name="partial",
+            task=functools.partial(add_offset, offset=0),
+            dataset=dataset,
+            scorers=[exact],
+        )
+        for evaluation in (direct, partial):
+            run = await evaluation.run(persist=False)
+            assert run.counts.task_errors == 0
+            assert run.metric("pass_rate(exact)").value == pytest.approx(1.0)  # type: ignore[union-attr]
 
     def test_load_from_file_and_module(self, tmp_path: Path) -> None:
         module = tmp_path / "my_evals.py"
@@ -251,6 +276,21 @@ spec = Evaluation(name="spec", task=task, dataset=Dataset([Example(id="a", input
 
 
 class TestSpecNames:
+    @pytest.mark.asyncio
+    async def test_a_spec_with_a_bare_async_task_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+        import uuid
+
+        path = tmp_path / f"bare_task_{uuid.uuid4().hex[:8]}.py"
+        path.write_text(_SPEC.format(imports=""))
+        monkeypatch.setattr(sys, "path", list(sys.path))
+        run = await load_evaluation(f"{path}:spec").run(persist=False)
+        assert run.counts.trials_done == 1
+        assert run.counts.task_errors == 0
+        assert run.trials[0].output == 1
+
     def test_package_specs_keep_their_package_name(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -295,6 +295,8 @@ class Executor:
         # (a resumed run continues its own total).
         self._base_usage = run.usage
         self._new_usage = Usage()
+        self._task_usage = run.task_usage
+        self._scorer_usage = dict(run.scorer_usage)
         self._trial_costs: list[float] = [
             t.total_usage.cost_usd or 0.0 for t in run.trials
         ]
@@ -309,6 +311,7 @@ class Executor:
 
     def add_task_usage(self, trial: Trial) -> None:
         self._new_usage += trial.usage
+        self._task_usage += trial.usage
         for agent, usage in trial.usage_by_agent.items():
             if usage.total_tokens and usage.cost_usd is None:
                 self._unpriced.add(agent)
@@ -385,6 +388,9 @@ class Executor:
             if not usage.is_empty:
                 trial.scorer_usage[scorer.name] = usage
                 self._new_usage += usage
+                self._scorer_usage[scorer.name] = (
+                    self._scorer_usage.get(scorer.name, Usage()) + usage
+                )
                 if usage.total_tokens and usage.cost_usd is None:
                     self._unpriced.add(f"scorer {scorer.name}")
             merge_models(trial.models, ctx.models)
@@ -488,6 +494,8 @@ class Executor:
             unscored=sum(1 for t in trials for s in t.scores if not s.scored),
         )
         run.usage = self._base_usage + self._new_usage
+        run.task_usage = self._task_usage
+        run.scorer_usage = dict(self._scorer_usage)
         observed: dict[str, list[str]] = {
             agent: list(models)
             for agent, models in run.provenance.observed_models.items()

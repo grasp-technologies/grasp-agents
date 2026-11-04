@@ -107,9 +107,10 @@ defaults are picked from the scores produced.
 
 An `Evaluation(name=, task=, dataset=, scorers=, metrics=, input_type=,
 reference_type=, repetitions=, sealed_splits=, dataset_checks=,
-validation_gates=, ...)` packages all of this. `task` may be a factory and
-`dataset` a path, a `phoenix:NAME[@VERSION]` reference or a loader, so
-importing a definition builds no clients. Run it with `await ev.run(split=...)`
+validation_gates=, ...)` packages all of this. `task` is a task, a processor,
+an async function (the task itself) or a zero-argument factory (any other
+callable), and `dataset` a path, a `phoenix:NAME[@VERSION]` reference or a
+loader, so importing a definition builds no clients. Run it with `await ev.run(split=...)`
 or `grasp-evals run module_or_file.py:attr`.
 
 **Sealed splits.** For a split listed in `sealed_splits`, reports, `show`,
@@ -153,8 +154,16 @@ used only when every paired per-example value is 0 or 1 and nothing is
 clustered; with repetitions > 1 or `cluster_by` it is a paired (or clustered)
 t-test. `significant` reads the Holm-adjusted p-value. Task errors count as
 failures of pass/fail scores. Default targets are the numeric scores present
-in both runs, so a score that is missing from the candidate is not compared
-unless named.
+in both runs, plus the error rate, duration and cost. A numeric score of the
+base run that the candidate lacks is listed in `missing_scores` and warned
+about, and `regressions(comparison)` fails on it unless its targets are named;
+a score only the candidate has is warned about, not gated.
+
+Token measures are per side: `input_tokens`/`output_tokens`/`total_tokens`
+count the task's usage and `scorer_input_tokens`/`scorer_output_tokens`/
+`scorer_total_tokens` the scorers' and judges'; `cost_usd` is the total of
+both. Run records split usage the same way (`task_usage`, `scorer_usage` per
+scorer, and `usage` for the total).
 
 `pairwise(base, candidate, judge)` asks a `PairwiseJudge` which of two outputs
 is better. The judge sees them only as `first` and `second`; with
@@ -206,8 +215,9 @@ A judge is validated like any other system:
 | `labels {sample, import, pull, show}` | label collection |
 | `push RUN` | mirror a finished run to Phoenix |
 
-Every command accepts `--json` (one JSON document on stdout, errors included);
-progress goes to stderr (`--progress json` for one object per trial).
+Every command accepts `--json` (one JSON document on stdout, errors included;
+anything else printed meanwhile goes to stderr); progress goes to stderr
+(`--progress json` for one object per trial).
 
 | Exit code | Meaning |
 |---|---|
@@ -246,8 +256,11 @@ the spec module (`init_tracing` + `init_phoenix`; see
 - A run is invalid only when no trial ran, every trial failed, or
   `max_error_rate` is exceeded; set `max_error_rate` to fail on errors.
 - A run without `--split` includes sealed splits in its headline metrics.
-- In an `Evaluation`, pass `task=FunctionTask(fn)`: a bare function is treated
-  as a zero-argument factory.
+- In an `Evaluation`, an async function is the task itself, but any other
+  callable (a sync function, a lambda wrapping the task) is called as a
+  zero-argument factory.
+- With `--gate`, only the named targets are gated: a score missing from the
+  candidate fails the default gate, not a `--gate` list that leaves it out.
 - Bare `rescore()` and `pairwise()` re-validate stored outputs only with
   `output_type=`; otherwise scorers receive plain JSON.
 - A `ProcessorScorer` whose judge returns a structured verdict needs

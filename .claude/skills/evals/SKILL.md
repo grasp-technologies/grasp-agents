@@ -142,7 +142,7 @@ def agrees(ctx: ScoreContext[Submission, Grade, TeacherGrade]) -> bool:
 grader_rules = Evaluation(
     name="grader",
     description="Does the grader agree with the teacher?",
-    task=FunctionTask(rule_grader, version="rules-1"),  # not task=rule_grader
+    task=FunctionTask(rule_grader, version="rules-1"),  # task=rule_grader has no version
     dataset=DATA,
     reference_type=TeacherGrade,  # input_type comes from rule_grader's annotation
     scorers=[agrees],
@@ -253,8 +253,11 @@ Each item gives the wrong assumption, what actually happens, and what to do.
 3. **"Raising in a scorer is a fail."**
    - Raising records a `ScorerFailure`: the score is missing, and rescoring retries it.
    - `Score.unscored` is also missing, with a reason.
-   - Returning `None` is "not applicable" (`n_na`), except that it becomes missing
-     when any other scorer failed on that trial.
+   - Returning `None` is "not applicable" (`n_na`). When some scorer failed on that
+     trial, the absent score stays not applicable only if the scorer that produces it
+     ran there without failing. If that scorer failed, or its producer cannot be told
+     (no trial shows a scorer emitting that name, and no scorer has that name), the
+     score is missing.
    - When the task errors, scorers are skipped. A scorer that sets
      `scores_errors=True` still runs and sees `ctx.output is None`.
 
@@ -283,14 +286,16 @@ Each item gives the wrong assumption, what actually happens, and what to do.
 
 ### Gates and exit codes
 
-7. **"`--fail-on-regression` catches a broken candidate."** The gate's default targets
-   are the numeric scores present in *both* runs, plus `error`. If the candidate's
-   scorer fails on every trial, or a score is renamed, that score silently drops out
-   and the gate passes.
+7. **"`--fail-on-regression` gates every target `compare` shows."** By default it gates
+   the outcome targets: the numeric scores of the base run, plus `error`. A base score
+   that the candidate lacks (its scorer failed on every trial, or the score was
+   renamed) fails the gate. Resources (`duration_s`, `cost_usd`, tokens) are compared
+   but not gated.
 
-   **Do:** name the targets (`--gate agrees --gate error`; a named target that is
-   missing fails the gate) and add `--fail-under`. `--gate` replaces the default set.
-   Code: `evals/compare.py` → `regressions`.
+   **Do:** gate a resource by naming it (`--gate duration_s`). `--gate` *replaces* the
+   default set, so name the scores as well (`--gate agrees --gate error --gate
+   duration_s`); a named target that is missing fails the gate. Add `--fail-under` for
+   an absolute floor. Code: `evals/compare.py` → `regressions`.
 8. **"Exit 1 means a gate flag fired."**
    - The CLI also exits 1 with no flags at all when the run is `partial` (the
      `--max-cost` budget was hit) or invalid.
@@ -311,7 +316,8 @@ Each item gives the wrong assumption, what actually happens, and what to do.
 
 10. **"`latest:<name>` is my last evaluation run."** It is the newest run with that run
     name or spec attribute, children included. After `rescore`, `latest:grader_rules`
-    resolves to the rescore child, which keeps the parent's name and spec.
+    resolves to the rescore child, which keeps the parent's name, and its spec unless
+    you rescored with another `--spec`.
 
     **Do:** in scripts, capture ids from `--json` output.
 11. **"Resume just continues."**
@@ -362,14 +368,15 @@ Each item gives the wrong assumption, what actually happens, and what to do.
 
 ### Specs, CLI and data
 
-17. **"`Evaluation(task=my_async_fn)` works like `evaluate(my_async_fn, ...)`."** In an
-    `Evaluation`, a value that is neither a `Task` nor a `Processor` is treated as a
-    zero-argument *factory*, so the run fails with
+17. **"Any function works as `Evaluation(task=...)`."** An `async def` function (or a
+    `functools.partial` of one) is the task itself, as in `evaluate`. Any other
+    callable is called as a zero-argument *factory* of a task or processor, so a sync
+    function, or a lambda that wraps the task, fails with
     `missing 1 required positional argument`.
 
-    **Do:** use `FunctionTask(fn)` or `lambda: FunctionTask(fn)`. A `FunctionTask`
-    passes the `TrialContext` only if the function has a second required positional
-    parameter or a parameter named `trial`.
+    **Do:** pass the `async def` function itself, or `FunctionTask(fn, version=...)`.
+    A function task gets the `TrialContext` only if it has a second required
+    positional parameter or a parameter named `trial`.
 18. **"Sealed means excluded."** A run without `--split` evaluates sealed splits too,
     and their trials count in the headline metrics.
     - **What sealing does:** it hides per-example results in reports, `show`, `compare`,
@@ -388,7 +395,8 @@ Each item gives the wrong assumption, what actually happens, and what to do.
     - A `file.py:attr` spec is recorded by absolute path. `rescore` and `pairwise`
       without `--spec` reload it from there, so moving the file breaks them (exit 2).
     - Module specs (`pkg.mod:attr`) are portable.
-    - A rescore child records its parent's spec, not the `--spec` you passed.
+    - A rescore child records the spec its scorers came from: the `--spec` you passed,
+      otherwise the parent's.
 21. **"`--timeout` covers judges."** It is per trial and covers the task only. Scorer
     and judge timeouts come only from `Evaluation.scorer_timeout_s`; there is no CLI
     flag. A sync scorer that times out is abandoned, but its thread keeps running.
@@ -399,14 +407,10 @@ Each item gives the wrong assumption, what actually happens, and what to do.
     pydantic verdict needs `to_scores=`. Without it, every call is a scorer failure
     ("returned an unsupported value ('passed', True)") and the score is absent from the
     metrics.
-23. **"Any type works as an `LLMAgent` type parameter."** They must be real classes.
-    `type Judged = JudgedOutput[...]` fails at the first call
-    (`TypeError: issubclass() arg 1 must be a class`). Write
-    `Judged = JudgedOutput[...]` instead.
-24. **"`--split dev` is enough to validate on dev labels."** `judge_validation` seals
+23. **"`--split dev` is enough to validate on dev labels."** `judge_validation` seals
     `("test",)` by default. A labels file without a `test` split raises `ValueError`,
     even with `--split dev`.
-25. **"A judge that agrees with every label passes its gate."** `ValidationGate`
+24. **"A judge that agrees with every label passes its gate."** `ValidationGate`
     thresholds read the *lower interval bound* and allow zero missing verdicts by
     default.
     - A judge that agrees with all 15 test labels has accuracy `ci_low` ≈ 0.77 and κ
@@ -426,7 +430,8 @@ Each item gives the wrong assumption, what actually happens, and what to do.
    - a scorer's version or code changed;
    - the runs cover different subsets;
    - "identical configuration", which means the differences are noise;
-   - task errors in only one run.
+   - task errors in only one run;
+   - a score missing from one run (not compared).
 4. A non-significant difference whose `mde` is larger than the effect you care about is
    inconclusive, not "no change".
 5. Never quote individual results from a sealed split.
