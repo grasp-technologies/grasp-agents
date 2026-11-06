@@ -45,16 +45,19 @@ _CONTENT_FILTER_PHRASES = (
 
 
 _CONTEXT_WINDOW_CODES = frozenset({"context_length_exceeded"})
-# Anthropic: "prompt is too long: N tokens > M maximum". Gemini: "The input
-# token count (N) exceeds the maximum number of tokens allowed (M)". OpenAI:
-# "Your input exceeds the context window of this model" (Responses) and "This
-# model's maximum context length is N tokens" (Chat Completions, gateways).
+# Substrings of the providers' own overflow messages (lowercased):
+# - Anthropic, 400: "prompt is too long: 208310 tokens > 200000 maximum"
+# - Gemini, 400: "The input token count (N) exceeds the maximum number of tokens
+#   allowed (M)."
+# - OpenAI Responses: "Your input exceeds the context window of this model. Please
+#   adjust your input and try again."
+# - OpenAI Chat Completions (and gateways that mirror it): "This model's maximum
+#   context length is 128000 tokens. However, your messages resulted in ..."
 _CONTEXT_WINDOW_PHRASES = (
     "prompt is too long",
-    "exceeds the maximum number of tokens",
-    "exceeds the context window",
-    "maximum context length",
-    "context_length_exceeded",
+    "exceeds the maximum number of tokens allowed",
+    "your input exceeds the context window of this model",
+    "this model's maximum context length is",
 )
 
 

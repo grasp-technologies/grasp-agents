@@ -82,13 +82,13 @@ class TestAnthropicErrorMapping:
     def test_prompt_too_long_maps_to_context_window(self) -> None:
         # Anthropic rejects an oversized prompt as a plain 400.
         err = anthropic.APIStatusError(
-            "prompt is too long: 213456 tokens > 200000 maximum",
+            "prompt is too long: 208310 tokens > 200000 maximum",
             response=httpx.Response(400, request=_REQUEST),
             body={
                 "type": "error",
                 "error": {
                     "type": "invalid_request_error",
-                    "message": "prompt is too long: 213456 tokens > 200000 maximum",
+                    "message": "prompt is too long: 208310 tokens > 200000 maximum",
                 },
             },
         )

@@ -204,10 +204,12 @@ Providers map every SDK exception to a type in `types/llm_errors.py`
 | `INVALID_RESPONSE` | `LlmResponseSchemaError` (our types rejected the provider's response) | no |
 
 `LlmContextWindowError` is OpenAI's `context_length_exceeded` code, Anthropic's
-400 "prompt is too long" and 413, Gemini's 400 "input token count … exceeds",
-LiteLLM's `ContextWindowExceededError`, and a gateway's "maximum context length"
-message. Anthropic and Gemini give the overflow no structured marker, so it is
-matched on the message (`_http_helpers.is_context_window_message`).
+400 "prompt is too long: … tokens > … maximum" and 413, Gemini's 400 "The input
+token count (…) exceeds the maximum number of tokens allowed (…)", OpenAI's own
+overflow wording when a gateway drops the code, and LiteLLM's
+`ContextWindowExceededError`. Anthropic and Gemini give the overflow no
+structured marker, so it is matched on the message
+(`_http_helpers.is_context_window_message`).
 
 Give your own exception a `recovery_hint` class attribute, or call
 `register_recovery_hint(exc_type, hint)` for types you don't own.

@@ -42,6 +42,7 @@ def _status_error(
     return openai.APIStatusError("boom", response=response, body=body)
 
 
+# The error body OpenAI's Responses API returns for an oversized input.
 _CONTEXT_WINDOW_BODY = {
     "message": (
         "Your input exceeds the context window of this model. Please adjust "
@@ -246,10 +247,11 @@ class TestOpenAIContextWindowDetection:
         assert isinstance(map_api_error(err), LlmContextWindowError)
 
     def test_gateway_message_without_code_maps(self) -> None:
-        # OpenAI-compatible gateways often drop the structured code.
+        # Chat Completions' wording, as relayed by a gateway that drops the code.
         err = openai.APIStatusError(
-            "This model's maximum context length is 8192 tokens. However, your "
-            "messages resulted in 9100 tokens.",
+            "This model's maximum context length is 128000 tokens. However, your "
+            "messages resulted in 700008 tokens. Please reduce the length of the "
+            "messages.",
             response=httpx.Response(400, request=_REQUEST),
             body=None,
         )
