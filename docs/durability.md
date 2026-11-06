@@ -55,7 +55,7 @@ Keys are `"<session_key>/<kind>[/<path>]"`, with kinds `agent`, `workflow`, `par
 - **Agent head** (`AgentCheckpoint`):
   - `current`, a `StepWatermark`: committed message count, log version, turn, step and filesystem ref, plus `AgentContextState` — the read-before-write ledger, shell cwd, deferred task-record flips, launch and mail high-water marks, and kernel context ids.
   - `step_watermarks`: rollback boundaries.
-  - `folds`.
+  - `folds` and `token_anchor` (the last request's reported input tokens, so a resumed agent sizes its context without re-estimating it).
   - `output` (the step's cached answer), `location`, `stop_reason`.
 - **Message log**: the transcript, as an append-only JSONL log next to the head. The head stores only a watermark (`message_count`), never the messages.
 - **Session record** (`SessionCheckpoint`, one per session): serialized `ctx.state` when `serialize_state=True`, the latest filesystem snapshot ref (`fs_snapshot_policy`), and `session_metadata`. `session_metadata` is write-only: persisted for inspection, never restored.

@@ -105,7 +105,14 @@ def _to_chat_messages(items: Sequence[InputItem]) -> list[dict[str, Any]]:
     return messages
 
 
-def _rough_token_estimate(items: Sequence[InputItem]) -> int:
+def estimate_input_tokens(items: Sequence[InputItem]) -> int:
+    """
+    Fast, tokenizer-free token estimate of ``items``: chars / 4 for text, a
+    flat cost per image and per by-reference file, and decoded-size estimates
+    for inline files and encrypted reasoning. Linear in the text length, so it
+    is cheap on a view of any size; it tends to overcount dense text (code,
+    markup) by a few tens of percent.
+    """
     total = 0
     for item in items:
         total += len(_item_text(item)) // _CHARS_PER_TOKEN
@@ -132,6 +139,6 @@ def count_input_tokens(model: str, items: Sequence[InputItem]) -> int:
         extra = sum(_file_tokens(f) for item in items for f in _files(item))
         extra += sum(_reasoning_tokens(item) for item in items)
         return counted + extra
-    rough = _rough_token_estimate(items)
+    rough = estimate_input_tokens(items)
     logger.debug("no tokenizer for %r; rough estimate of %d input tokens", model, rough)
     return rough

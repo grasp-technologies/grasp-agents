@@ -778,35 +778,47 @@ def test_renders_compaction_notice() -> None:
     ev = CompactionEvent(
         source="a",
         data=CompactionInfo(
-            folded_turns=7,
-            preserved_turns=3,
+            folded_rounds=7,
+            kept_rounds=3,
+            pinned_messages=2,
             context_tokens=1850,
             context_window=2000,
             summary="Kept the goal and the key results discovered so far.",
         ),
     )
-    text = _render_to_text(render_event(ev))
+    text = _render_to_text(render_event(ev), width=100)
     assert "compacted" in text
-    assert "7 turns" in text
-    assert "3 recent turns kept" in text
+    assert "7 rounds folded, 3 kept, 2 pinned" in text
     assert "1,850" in text
     assert "2,000" in text
     assert "Kept the goal" in text  # the summary itself is shown
     # shown raw — the exact wrapped message the agent receives (like a skill call)
-    assert "system-reminder" in text
-    assert "summarized" in text  # the injected subject is visible
+    assert "conversation_summary" in text
 
 
-def test_compaction_notice_singular_turn() -> None:
+def test_compaction_notice_singular_round() -> None:
     from grasp_agents.types.events import CompactionEvent, CompactionInfo
 
     ev = CompactionEvent(
         source="a",
-        data=CompactionInfo(folded_turns=1, preserved_turns=1, context_tokens=900),
+        data=CompactionInfo(folded_rounds=1, kept_rounds=1, context_tokens=900),
     )
     text = _render_to_text(render_event(ev))
-    assert "folded 1 turn" in text
-    assert "1 turns" not in text
+    assert "1 round folded" in text
+    assert "1 rounds" not in text
+    assert "pinned" not in text
+
+
+def test_forced_compaction_notice_says_why() -> None:
+    from grasp_agents.types.events import CompactionEvent, CompactionInfo
+
+    ev = CompactionEvent(
+        source="a",
+        data=CompactionInfo(
+            folded_rounds=4, kept_rounds=1, context_tokens=900, forced=True
+        ),
+    )
+    assert "context compacted (overflow)" in _render_to_text(render_event(ev))
 
 
 def test_bg_launched_notice_cites_log_only_when_present() -> None:

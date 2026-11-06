@@ -210,16 +210,20 @@ class GenerationEndEvent(Event[Response], frozen=True):
 
 
 class CompactionInfo(BaseModel):
-    # whole turns folded into a summary by this compaction
-    folded_turns: int
-    # recent turns kept verbatim after the fold
-    preserved_turns: int
-    # the model-facing view's token size right after the fold (the new context size)
+    # rounds folded into the summary by this compaction
+    folded_rounds: int
+    # recent rounds kept verbatim after the summary
+    kept_rounds: int
+    # earlier user messages kept verbatim in front of the summary
+    pinned_messages: int = 0
+    # the model-facing view's estimated token size right after the fold
     context_tokens: int
     # the model's context window in tokens, when known
     context_window: int | None = None
     # the summary the folded span was replaced with in the model-facing view
     summary: str = ""
+    # compacted to recover from a context-window error, not at the threshold
+    forced: bool = False
 
 
 class CompactionEvent(Event[CompactionInfo], frozen=True):

@@ -1,355 +1,490 @@
 """
-Reactive summarization: ``SummarizingCompactor`` + the ``Compaction`` bundle
-(``context.compaction``).
+Summarizing compaction: ``SummarizingCompactor`` and its wiring in the agent loop
+(``context.compaction``, ``agent.context_window``, ``agent.agent_loop``).
 
-Covers reactive gating + turn-boundary span selection (by ``keep_recent_turns``),
-that a summary fold reaches the model-facing view while the durable log keeps
-originals, fold persistence across resume, rollback dropping folds past the
-rewind point, and the context-window-error recovery path.
+Covers rounds and the kept window, the threshold, pinned user messages, the
+summary request sent on the agent's own request (prefix, tools, usage, hooks),
+recovery from tool-call answers and oversized requests, folds superseding each
+other, failure handling, the context-window-error path, restoration after a
+fold, persistence and rollback.
 """
 
+import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 from pydantic import BaseModel
 
-from grasp_agents.agent.llm_agent import LLMAgent
-from grasp_agents.context.compaction import (
-    CollapseToolOutputsProjector,
-    Compaction,
-    ContextBudget,
-    LLMSummarizer,
-    SummarizingCompactor,
+from grasp_agents.agent.context_window import (
+    MAX_COMPACTION_FAILURES,
+    ContextWindowManager,
 )
-from grasp_agents.context.projection import apply_folds
+from grasp_agents.agent.llm_agent import LLMAgent
+from grasp_agents.context import (
+    COMPACTION_REQUEST_TAG,
+    COMPACTION_SECTION_NAME,
+    SUMMARY_TAG,
+    ContextBudget,
+    InputAttachment,
+    SummarizingCompactor,
+    count_rounds,
+)
+from grasp_agents.context.compaction import keep_recent_start, round_starts
+from grasp_agents.context.projection import fold_summary_text, is_fold_summary
+from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.durability.checkpoints import AgentCheckpoint
+from grasp_agents.hooks import ViewTransform
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText, ReasoningSummary
 from grasp_agents.types.events import CompactionEvent
-from grasp_agents.types.folds import FoldSpec
+from grasp_agents.types.folds import FoldSpec, TokenAnchor
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
+    InputItem,
     InputMessageItem,
     OutputMessageItem,
     ReasoningItem,
 )
-from grasp_agents.types.llm_errors import LlmContextWindowError
+from grasp_agents.types.llm_errors import LlmBadRequestError, LlmContextWindowError
+from grasp_agents.types.response import Response
 from tests._helpers import MockLLM, _text_response, _tool_call_response
 
-BIGMSG = "x" * 100
+_REQ = httpx.Request("POST", "https://x")
 
 
 def _user(text: str) -> InputMessageItem:
     return InputMessageItem.from_text(text, role="user")
 
 
-def _mock_llm(text: str = "SUMMARY") -> MockLLM:
-    return MockLLM(responses_queue=[_text_response(text)])
+def _call(call_id: str) -> FunctionToolCallItem:
+    return FunctionToolCallItem(call_id=call_id, name="big", arguments="{}")
 
 
-def _summarizer(text: str = "SUMMARY") -> LLMSummarizer:
-    return LLMSummarizer(_mock_llm(text))
+def _result(call_id: str, output: str = "ok") -> FunctionToolOutputItem:
+    return FunctionToolOutputItem.from_tool_result(call_id=call_id, output=output)
+
+
+def _answer(text: str) -> OutputMessageItem:
+    return OutputMessageItem(content=[OutputMessageText(text=text)], status="completed")
+
+
+def _reasoning() -> ReasoningItem:
+    return ReasoningItem(summary=[ReasoningSummary(text="thinking")])
 
 
 def _budget(max_input: int) -> ContextBudget:
     return ContextBudget("mock", max_input_tokens=max_input, buffer_tokens=0)
 
 
-# --- SummarizingCompactor (reactive) ---
-
-
-@pytest.mark.asyncio
-async def test_under_budget_is_a_noop() -> None:
-    comp = SummarizingCompactor(summarizer=_summarizer(), budget=_budget(10_000_000))
-    msgs = [_user(BIGMSG) for _ in range(10)]
-    assert await comp(msgs, input_tokens=10, folds=[], exec_id="x") is None
-
-
-@pytest.mark.asyncio
-async def test_over_budget_folds_oldest_keeping_recent() -> None:
-    comp = SummarizingCompactor(
-        summarizer=_summarizer("BRIEF"), budget=_budget(100), keep_recent_turns=2
+def _overflow() -> LlmContextWindowError:
+    return LlmContextWindowError(
+        "prompt is too long", response=httpx.Response(400, request=_REQ), body=None
     )
-    msgs = [_user(BIGMSG) for _ in range(10)]
-    fold = await comp(msgs, input_tokens=200, folds=[], exec_id="x")
-    assert fold is not None
-    assert fold.start == 0
-    assert 0 < fold.end < len(msgs)  # recent messages kept verbatim
-    assert fold.summary == "BRIEF"
 
 
-@pytest.mark.asyncio
-async def test_force_folds_regardless_of_budget() -> None:
-    comp = SummarizingCompactor(
-        summarizer=_summarizer(), budget=_budget(100), keep_recent_turns=2
+def _is_summary_request(view: Sequence[InputItem]) -> bool:
+    last = view[-1] if view else None
+    return isinstance(last, InputMessageItem) and last.text.startswith(
+        f"<{COMPACTION_REQUEST_TAG}>"
     )
-    msgs = [_user(BIGMSG) for _ in range(10)]
-    fold = await comp(msgs, input_tokens=1, folds=[], exec_id="x", force=True)
-    assert fold is not None
 
 
-@pytest.mark.asyncio
-async def test_returns_none_when_everything_is_folded() -> None:
-    comp = SummarizingCompactor(summarizer=_summarizer(), budget=_budget(100))
-    msgs = [_user(BIGMSG) for _ in range(4)]
-    fold = await comp(
-        msgs,
-        input_tokens=200,
-        folds=[FoldSpec(start=0, end=4, summary="prev")],
+class _FakeGenerate:
+    """A ``CompactionGenerate`` replying from a queue (an exception is raised)."""
+
+    def __init__(self, *replies: Response | Exception) -> None:
+        self.replies = list(replies)
+        self.calls: list[SimpleNamespace] = []
+
+    async def __call__(
+        self,
+        request: InputMessageItem,
+        *,
+        transform: ViewTransform | None = None,
+        force_text: bool = False,
+    ) -> Response:
+        self.calls.append(
+            SimpleNamespace(request=request, transform=transform, force_text=force_text)
+        )
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+async def _compact(
+    compactor: SummarizingCompactor,
+    messages: Sequence[InputItem],
+    generate: _FakeGenerate,
+    *,
+    input_tokens: int = 1_000_000,
+    folds: Sequence[FoldSpec] = (),
+    force: bool = False,
+) -> FoldSpec | None:
+    return await compactor(
+        messages,
+        input_tokens=input_tokens,
+        folds=folds,
         exec_id="x",
-        force=True,
+        generate=generate,
+        force=force,
     )
+
+
+def _rounds(n: int, output: str = "ok") -> list[InputItem]:
+    """``n`` rounds: a question, then a tool call and its result."""
+    log: list[InputItem] = []
+    for i in range(n):
+        log += [_user(f"q{i}"), _call(f"c{i}"), _result(f"c{i}", output)]
+    return log
+
+
+def _compactor(**kwargs: Any) -> SummarizingCompactor:
+    """A compactor that always fires; the kept window is capped by rounds only."""
+    kwargs.setdefault("budget", _budget(1))
+    kwargs.setdefault("keep_recent_tokens", 10**9)
+    return SummarizingCompactor(**kwargs)
+
+
+# --- Rounds ---
+
+
+def test_a_round_is_inputs_response_and_its_tool_results() -> None:
+    log: list[InputItem] = [
+        _user("q1"),
+        _reasoning(),
+        _call("c1"),
+        _result("c1"),
+        _reasoning(),
+        _answer("a1"),
+        _user("q2"),
+    ]
+    assert round_starts(log) == [0, 4, 6]
+
+
+def test_rounds_do_not_depend_on_reasoning_items() -> None:
+    plain: list[InputItem] = [
+        _user("q1"),
+        _call("c1"),
+        _result("c1"),
+        _answer("a1"),
+        _user("q2"),
+    ]
+    assert count_rounds(plain) == 3
+
+
+def test_no_round_starts_while_a_call_is_open() -> None:
+    log: list[InputItem] = [_user("q"), _call("c1"), _call("c2"), _result("c1")]
+    assert round_starts(log) == [0]
+
+
+def test_kept_window_shrinks_to_its_token_cap_but_keeps_the_latest_round() -> None:
+    log = _rounds(3, output="Z" * 4000)
+    starts = round_starts(log)
+    assert keep_recent_start(log, 3) == 0
+    assert keep_recent_start(log, 3, keep_recent_tokens=1) == starts[-1]
+
+
+# --- SummarizingCompactor: gating and span ---
+
+
+@pytest.mark.asyncio
+async def test_under_threshold_is_a_noop() -> None:
+    generate = _FakeGenerate()
+    compactor = SummarizingCompactor(budget=_budget(1000))
+    assert await _compact(compactor, _rounds(5), generate, input_tokens=10) is None
+    assert generate.calls == []
+
+
+@pytest.mark.asyncio
+async def test_target_tokens_lowers_the_threshold() -> None:
+    compactor = SummarizingCompactor(
+        budget=_budget(10_000_000), target_tokens=100, keep_recent_rounds=2
+    )
+    assert compactor.threshold == 100
+    generate = _FakeGenerate(_text_response("S"))
+    fold = await _compact(compactor, _rounds(5), generate, input_tokens=101)
+    assert fold is not None
+
+
+@pytest.mark.asyncio
+async def test_folds_everything_before_the_recent_rounds() -> None:
+    log = _rounds(5)
+    compactor = _compactor(keep_recent_rounds=2)
+    fold = await _compact(compactor, log, _FakeGenerate(_text_response("SUMMARY")))
+    assert fold is not None
+    assert (fold.start, fold.end) == (0, round_starts(log)[-2])
+    assert fold.summary == "SUMMARY"
+
+
+@pytest.mark.asyncio
+async def test_window_over_its_cap_shrinks_with_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    log = _rounds(3, output="Z" * 4000)
+    compactor = SummarizingCompactor(
+        budget=_budget(1), keep_recent_rounds=8, keep_recent_tokens=1500
+    )
+    with caplog.at_level(logging.WARNING, logger="grasp_agents.context.compaction"):
+        fold = await _compact(compactor, log, _FakeGenerate(_text_response("S")))
+    assert fold is not None
+    assert fold.end == round_starts(log)[-1]
+    assert any("instead of 8" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_force_folds_even_when_everything_is_recent() -> None:
+    log = _rounds(3)
+    compactor = SummarizingCompactor(budget=_budget(10_000_000))
+    generate = _FakeGenerate(_text_response("S"))
+    assert await _compact(compactor, log, generate, input_tokens=1) is None
+    fold = await _compact(compactor, log, generate, input_tokens=1, force=True)
+    assert fold is not None
+    assert fold.end == round_starts(log)[-1]
+
+
+@pytest.mark.asyncio
+async def test_a_single_round_cannot_be_folded() -> None:
+    compactor = SummarizingCompactor(budget=_budget(1))
+    fold = await _compact(compactor, _rounds(1), _FakeGenerate(), force=True)
     assert fold is None
 
 
 @pytest.mark.asyncio
-async def test_fold_end_snaps_off_a_tool_pair() -> None:
-    # keep_recent_turns=2 keeps the last two turns ([call+result], [user]); the
-    # fold ends at the turn boundary before them, never between a call and result.
-    comp = SummarizingCompactor(
-        summarizer=_summarizer(), budget=_budget(100), keep_recent_turns=2
+async def test_a_new_fold_supersedes_the_previous_one() -> None:
+    log = _rounds(6)
+    starts = round_starts(log)
+    previous = FoldSpec(start=0, end=starts[2], summary="OLD")
+    compactor = _compactor(keep_recent_rounds=2)
+    fold = await _compact(
+        compactor, log, _FakeGenerate(_text_response("NEW")), folds=[previous]
     )
-    msgs = [
-        _user(BIGMSG),
-        FunctionToolCallItem(call_id="c1", name="t", arguments="{}"),
-        FunctionToolOutputItem.from_tool_result(call_id="c1", output=BIGMSG),
-        _user(BIGMSG),
+    assert fold is not None
+    assert (fold.start, fold.end) == (0, starts[-2])
+
+
+@pytest.mark.asyncio
+async def test_no_progress_past_the_previous_fold_is_no_fold() -> None:
+    log = _rounds(4)
+    starts = round_starts(log)
+    previous = FoldSpec(start=0, end=starts[-2], summary="OLD")
+    compactor = _compactor(keep_recent_rounds=2)
+    generate = _FakeGenerate()
+    assert await _compact(compactor, log, generate, folds=[previous]) is None
+    assert generate.calls == []
+
+
+# --- Pinned user messages ---
+
+
+@pytest.mark.asyncio
+async def test_pins_the_latest_user_messages_before_the_window() -> None:
+    note = _user(wrap_in_system_reminder("task done", subject="task"))
+    log: list[InputItem] = [
+        _user("first"),
+        _answer("a"),
+        _user("second"),
+        _answer("b"),
+        note,
+        _answer("c"),
+        _user("third"),
+        _answer("d"),
+        _user("fourth"),
+        _answer("e"),
+        _user("now"),
     ]
-    fold = await comp(msgs, input_tokens=200, folds=[], exec_id="x")
+    compactor = _compactor(keep_recent_rounds=1, pinned_user_messages=3)
+    fold = await _compact(compactor, log, _FakeGenerate(_text_response("S")))
     assert fold is not None
-    assert fold.end == 1  # snapped back from 2 (between c1's call and result)
+    # The newest three learner messages; the framework note is not one.
+    assert fold.pinned == [2, 6, 8]
 
 
 @pytest.mark.asyncio
-async def test_fold_keeps_reasoning_with_its_call() -> None:
-    # A reasoning item preceding a tool call must not be folded away while the
-    # call is kept — providers reject a function call sent without its reasoning.
-    comp = SummarizingCompactor(
-        summarizer=_summarizer(), budget=_budget(100), keep_recent_turns=2
-    )
-    msgs = [
-        _user(BIGMSG),
-        ReasoningItem(encrypted_content="enc"),
-        FunctionToolCallItem(call_id="c1", name="t", arguments="{}"),
-        FunctionToolOutputItem.from_tool_result(call_id="c1", output=BIGMSG),
-        _user(BIGMSG),
+async def test_pins_stop_at_the_first_message_over_the_token_cap() -> None:
+    log: list[InputItem] = [
+        _user("short"),
+        _answer("a"),
+        _user("x" * 10_000),
+        _answer("b"),
+        _user("tiny"),
+        _answer("c"),
+        _user("now"),
     ]
-    fold = await comp(msgs, input_tokens=200, folds=[], exec_id="x")
+    compactor = _compactor(keep_recent_rounds=1, pinned_user_tokens=100)
+    fold = await _compact(compactor, log, _FakeGenerate(_text_response("S")))
     assert fold is not None
-    assert fold.end == 1  # pulled back to before the reasoning+call+result turn
-    # In the projected view the call is still immediately preceded by reasoning.
-    view = apply_folds(msgs, [fold])
-    call_idx = next(
-        i for i, m in enumerate(view) if isinstance(m, FunctionToolCallItem)
-    )
-    assert isinstance(view[call_idx - 1], ReasoningItem)
+    assert fold.pinned == [4]
+
+
+# --- The summary request ---
 
 
 @pytest.mark.asyncio
-async def test_fold_keeps_reasoning_with_call_after_text() -> None:
-    # reasoning → assistant text → call: the call still depends on the reasoning,
-    # so a fold cannot drop the reasoning even though text sits between them.
-    comp = SummarizingCompactor(
-        summarizer=_summarizer(), budget=_budget(100), keep_recent_turns=2
+async def test_request_carries_the_instructions_in_a_compaction_tag() -> None:
+    generate = _FakeGenerate(_text_response("S"))
+    compactor = SummarizingCompactor(budget=_budget(1), instructions="Summarize it.")
+    await _compact(compactor, _rounds(3), generate)
+    request = generate.calls[0].request
+    assert request.role == "user"
+    assert request.text == (
+        f"<{COMPACTION_REQUEST_TAG}>\nSummarize it.\n</{COMPACTION_REQUEST_TAG}>"
     )
-    msgs = [
-        _user(BIGMSG),
-        ReasoningItem(encrypted_content="enc"),
-        OutputMessageItem(
-            content=[OutputMessageText(text="let me check")], status="completed"
-        ),
-        FunctionToolCallItem(call_id="c1", name="t", arguments="{}"),
-        FunctionToolOutputItem.from_tool_result(call_id="c1", output=BIGMSG),
-        _user(BIGMSG),
+    assert generate.calls[0].transform is None  # the cache-sharing request
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_answer_is_retried_as_text() -> None:
+    generate = _FakeGenerate(
+        _tool_call_response("big", "{}", "x1"), _text_response("SUMMARY")
+    )
+    compactor = SummarizingCompactor(budget=_budget(1))
+    fold = await _compact(compactor, _rounds(3), generate)
+    assert fold is not None
+    assert fold.summary == "SUMMARY"
+    assert [c.force_text for c in generate.calls] == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_an_echoed_summary_wrapper_is_stripped() -> None:
+    generate = _FakeGenerate(_text_response(f"<{SUMMARY_TAG}>\nS\n</{SUMMARY_TAG}>"))
+    fold = await _compact(SummarizingCompactor(budget=_budget(1)), _rounds(3), generate)
+    assert fold is not None
+    assert fold.summary == "S"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_summary_is_no_fold() -> None:
+    generate = _FakeGenerate(_text_response("  "))
+    assert (
+        await _compact(SummarizingCompactor(budget=_budget(1)), _rounds(3), generate)
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_request_is_shrunk_and_retried() -> None:
+    body: list[InputItem] = [
+        _user("pinned"),
+        _user(fold_summary_text("OLD")),
+        *_rounds(4, output="Z" * 5000),
     ]
-    fold = await comp(msgs, input_tokens=200, folds=[], exec_id="x")
+    seen: list[list[InputItem]] = []
+
+    class _Shrinking(_FakeGenerate):
+        async def __call__(
+            self,
+            request: InputMessageItem,
+            *,
+            transform: ViewTransform | None = None,
+            force_text: bool = False,
+        ) -> Response:
+            seen.append(transform(list(body)) if transform else list(body))
+            return await super().__call__(
+                request, transform=transform, force_text=force_text
+            )
+
+    generate = _Shrinking(_overflow(), _overflow(), _text_response("S"))
+    fold = await _compact(SummarizingCompactor(budget=_budget(1)), _rounds(4), generate)
     assert fold is not None
-    view = apply_folds(msgs, [fold])
-    call_idx = next(
-        i for i, m in enumerate(view) if isinstance(m, FunctionToolCallItem)
-    )
-    assert any(isinstance(m, ReasoningItem) for m in view[:call_idx])
+
+    collapsed, dropped = seen[1], seen[2]
+    outputs = [m for m in collapsed if isinstance(m, FunctionToolOutputItem)]
+    assert all(len(o.text) < 5000 for o in outputs[:-1])  # older outputs collapsed
+    assert len(outputs[-1].text) == 5000  # the latest round in full
+    # The last step also leaves out the oldest half of the rounds not yet summarized,
+    # with a marker, and keeps the summary block in front.
+    assert is_fold_summary(dropped[1])
+    assert "left out of this request" in dropped[2].text  # type: ignore[union-attr]
+    assert count_rounds(dropped[3:]) == 2
 
 
 @pytest.mark.asyncio
-async def test_fold_dense_reasoning_chain_keeps_every_pair() -> None:
-    # A real tool chain: reasoning before every call, only tool results between
-    # turns (no standalone text messages). Folds must land on turn boundaries so
-    # every kept call still has its reasoning item.
-    comp = SummarizingCompactor(
-        summarizer=_summarizer(), budget=_budget(100), keep_recent_turns=2
-    )
-    msgs: list[Any] = [_user(BIGMSG)]
-    for n in range(4):
-        msgs += [
-            ReasoningItem(encrypted_content=f"enc{n}"),
-            FunctionToolCallItem(call_id=f"c{n}", name="t", arguments="{}"),
-            FunctionToolOutputItem.from_tool_result(call_id=f"c{n}", output=BIGMSG),
-        ]
-    fold = await comp(msgs, input_tokens=500, folds=[], exec_id="x")
-    assert fold is not None
-    view = apply_folds(msgs, [fold])
-    reasoning_seen = False
-    for item in view:
-        if isinstance(item, ReasoningItem):
-            reasoning_seen = True
-        elif isinstance(item, FunctionToolCallItem):
-            assert reasoning_seen, "a kept call lost its preceding reasoning item"
-        elif isinstance(item, FunctionToolOutputItem):
-            reasoning_seen = False
+async def test_an_overflow_after_every_shrink_propagates() -> None:
+    generate = _FakeGenerate(_overflow(), _overflow(), _overflow())
+    with pytest.raises(LlmContextWindowError):
+        await _compact(SummarizingCompactor(budget=_budget(1)), _rounds(3), generate)
 
 
-@pytest.mark.asyncio
-async def test_oversized_span_folds_incrementally() -> None:
-    # The fold span is bounded to max_summary_input_tokens so the summary call
-    # can't overflow the summarizer; an over-large backlog folds one chunk now and
-    # the rest on later passes rather than handing the summarizer the whole thing.
-    async def _const(_messages: Any) -> str:
-        return "SUM"
-
-    comp = SummarizingCompactor(
-        summarizer=_const,
-        budget=_budget(100),
-        keep_recent_turns=1,
-        max_summary_input_tokens=50,  # ~200 chars
-    )
-    msgs = [_user(BIGMSG) for _ in range(10)]  # each ~100 chars (~25 tok)
-    fold = await comp(msgs, input_tokens=300, folds=[], exec_id="x")
-    assert fold is not None
-    assert fold.start == 0
-    assert fold.end < 9  # capped well short of the keep-1 boundary
-
-    # The remaining old turns fold on the next pass, resuming where this left off.
-    fold2 = await comp(msgs, input_tokens=300, folds=[fold], exec_id="x")
-    assert fold2 is not None
-    assert fold2.start == fold.end
-    assert fold2.end > fold.end
+# --- ContextWindowManager: failures ---
 
 
-@pytest.mark.asyncio
-async def test_compaction_gate_measures_post_projection_view() -> None:
-    # Escalation: with a collapse projector registered, the fold gate must measure
-    # the POST-projection (collapsed) view, not the raw log — else it would fold
-    # (an LLM call) when free collapse alone fits. Exercises the recount fallback.
-    agent = LLMAgent[str, str, None](
-        name="a", ctx=SessionContext(), llm=MockLLM(responses_queue=[])
-    )
-    cw = agent.agent_ctx.cw
-    cw.initial_context = []
-    agent.replace_transcript(
-        [
-            _user("q"),
-            FunctionToolCallItem(call_id="c1", name="t", arguments="{}"),
-            FunctionToolOutputItem.from_tool_result(call_id="c1", output="Z" * 40_000),
-            _user("next"),
-        ]
-    )
-    cw.add_view_projector(
-        CollapseToolOutputsProjector(
-            proactive=True, keep_recent_turns=1, head_chars=100, tail_chars=50
+class _RaisingCompactor:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self, *_: Any, **__: Any) -> FoldSpec | None:
+        self.calls += 1
+        raise LlmBadRequestError(
+            "boom", response=httpx.Response(400, request=_REQ), body=None
         )
+
+
+@pytest.mark.asyncio
+async def test_failures_are_logged_and_stop_turn_boundary_compaction(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cw = ContextWindowManager(model_name="mock")
+    cw.add_messages(_rounds(3))
+    compactor = _RaisingCompactor()
+    cw.set_compactor(compactor)
+    generate = _FakeGenerate()
+
+    with caplog.at_level(logging.WARNING, logger="grasp_agents.agent.context_window"):
+        for _ in range(MAX_COMPACTION_FAILURES + 2):
+            assert await cw.maybe_compact(exec_id="x", generate=generate) is None
+    assert compactor.calls == MAX_COMPACTION_FAILURES
+    assert any(
+        "turn-boundary compaction stops" in r.getMessage() for r in caplog.records
     )
-    cw.reset_anchor()  # force the projector-blind recount fallback
 
-    raw = cw.effective_input_tokens()
-    projected = await cw.projected_input_tokens(exec_id="x")
-    assert projected < raw  # the big old output is collapsed before the gate reads it
-
-
-# --- Compaction bundle ---
+    # The context-window-error path still tries.
+    assert await cw.maybe_compact(exec_id="x", generate=generate, force=True) is None
+    assert compactor.calls == MAX_COMPACTION_FAILURES + 1
 
 
-def test_compaction_for_model_builds_both_strategies() -> None:
-    compaction = Compaction.for_model("mock", llm=_mock_llm())
-    assert isinstance(compaction.collapse, CollapseToolOutputsProjector)
-    assert compaction.summarize is not None
-
-
-def test_compaction_without_llm_has_no_summarizer() -> None:
-    compaction = Compaction.for_model("mock")
-    assert compaction.collapse is not None
-    assert compaction.summarize is None
-
-
-# --- Budget auto-init from the agent's model (no manual ContextBudget) ---
-
-
-def test_add_compaction_no_arg_auto_configures_from_agent() -> None:
-    agent = LLMAgent[str, str, None](
-        name="a", ctx=SessionContext(), llm=MockLLM(responses_queue=[])
-    )
-    compaction = agent.add_compaction()  # no budget, no model name passed
-    assert compaction.collapse in agent.agent_ctx.cw.view_projectors
-    assert agent.agent_ctx.cw.compactor is compaction.summarize
-    # budgets were injected from the agent's model, not constructed by the caller
-    assert compaction.collapse.budget is not None
-    assert compaction.summarize is not None
-    assert compaction.summarize.budget is not None
-
-
-def test_manager_injects_budget_into_budgetless_projector() -> None:
-    agent = LLMAgent[str, str, None](
-        name="a", ctx=SessionContext(), llm=MockLLM(responses_queue=[])
-    )
-    proj = CollapseToolOutputsProjector(keep_recent_turns=1)
-    assert proj.budget is None
-    agent.add_view_projector(proj)
-    assert proj.budget is not None  # injected on registration
-    assert proj.budget.model == "mock"
-
-
-def test_summarizer_cap_tracks_summarizer_model_not_agent() -> None:
-    # The span fed to the summarizer is bounded by the SUMMARIZER's own window,
-    # inferred from its model — not the agent's budget.
-    comp = SummarizingCompactor(summarizer=LLMSummarizer(_mock_llm()))
-    assert comp._summary_budget is not None
-    assert comp._summary_budget.model == "mock"
-    # An injected (different) agent budget does not override the summarizer's cap.
-    comp.budget = ContextBudget("agent-model", max_input_tokens=999, buffer_tokens=0)
-    assert comp._summary_cap() == comp._summary_budget.soft_limit
-    assert comp._summary_cap() != 999
-
-
-# --- Integration fixtures ---
+# --- Through the agent loop ---
 
 
 @dataclass(frozen=True)
 class _RecordingLLM(MockLLM):
-    """MockLLM that records each call's projected view in ``views``."""
+    """MockLLM recording each call's input, tools, tool_choice and schema."""
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        object.__setattr__(self, "views", [])
+        object.__setattr__(self, "calls", [])
 
-    async def _generate_response_once(self, input: Any, **kwargs: Any) -> Any:
-        self.views.append(list(input))  # type: ignore[attr-defined]
-        return await super()._generate_response_once(input, **kwargs)
-
-
-@dataclass(frozen=True)
-class _OverflowOnceLLM(MockLLM):
-    """Raises a context-window error on its second call, then behaves normally."""
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        object.__setattr__(self, "_calls", 0)
-
-    async def _generate_response_once(self, input: Any, **kwargs: Any) -> Any:
-        object.__setattr__(self, "_calls", self._calls + 1)  # type: ignore[attr-defined]
-        if self._calls == 2:  # type: ignore[attr-defined]
-            raise LlmContextWindowError(
-                "context length exceeded",
-                response=httpx.Response(
-                    400, request=httpx.Request("POST", "https://x")
-                ),
-                body=None,
+    async def _generate_response_once(
+        self,
+        input: Sequence[Any],
+        *,
+        tools: Any = None,
+        output_schema: Any = None,
+        tool_choice: Any = None,
+        **extra_llm_settings: Any,
+    ) -> Response:
+        self.calls.append(  # type: ignore[attr-defined]
+            SimpleNamespace(
+                input=list(input),
+                tools=tools,
+                tool_choice=tool_choice,
+                output_schema=output_schema,
             )
-        return await super()._generate_response_once(input, **kwargs)
+        )
+        return await super()._generate_response_once(
+            input,
+            tools=tools,
+            output_schema=output_schema,
+            tool_choice=tool_choice,
+            **extra_llm_settings,
+        )
 
 
 class _BigInput(BaseModel):
@@ -362,173 +497,328 @@ _BIG = "Z" * 5000
 class _BigTool(BaseTool[_BigInput, str, Any]):
     def __init__(self) -> None:
         super().__init__(name="big", description="Returns a large output.")
+        object.__setattr__(self, "runs", 0)
 
     async def _run(self, inp: _BigInput, **kwargs: Any) -> str:
+        object.__setattr__(self, "runs", self.runs + 1)  # type: ignore[attr-defined]
         return _BIG
 
 
-# --- Integration: fold reaches the view; log keeps originals ---
-
-
-@pytest.mark.asyncio
-async def test_summary_fold_reaches_view_log_keeps_originals() -> None:
-    summary_llm = MockLLM(responses_queue=[_text_response("SUMMARY-OF-EARLIER")])
-    agent_llm = _RecordingLLM(
-        responses_queue=[_tool_call_response("big", "{}", "c1"), _text_response("done")]
-    )
-    ctx: SessionContext[None] = SessionContext()
+def _agent(
+    llm: MockLLM,
+    *,
+    compactor: SummarizingCompactor | None = None,
+    ctx: SessionContext[None] | None = None,
+    stream_llm: bool = False,
+) -> tuple[LLMAgent[str, str, None], _BigTool]:
+    tool = _BigTool()
     agent = LLMAgent[str, str, None](
-        name="a", ctx=ctx, llm=agent_llm, tools=[_BigTool()]
+        name="a",
+        ctx=ctx or SessionContext(),
+        llm=llm,
+        tools=[tool],
+        stream_llm=stream_llm,
     )
-    # Tiny budget + keep the last message only ⇒ compaction fires at turn 1.
-    agent.add_compactor(
-        SummarizingCompactor(
-            summarizer=LLMSummarizer(summary_llm),
-            budget=_budget(5),
-            keep_recent_turns=1,
-        )
+    agent.add_compaction(
+        compactor or SummarizingCompactor(budget=_budget(5), keep_recent_rounds=1)
     )
+    return agent, tool
 
+
+def _summaries(view: Sequence[InputItem]) -> list[str]:
+    return [m.text for m in view if is_fold_summary(m)]
+
+
+@pytest.mark.parametrize("stream_llm", [False, True])
+@pytest.mark.asyncio
+async def test_summary_request_extends_the_agents_own_request(
+    *, stream_llm: bool
+) -> None:
+    llm = _RecordingLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "c1"),
+            _tool_call_response("big", "{}", "c2"),
+            _text_response("SUMMARY"),
+            _text_response("done"),
+        ]
+    )
+    agent, _ = _agent(llm, stream_llm=stream_llm)
     out = await agent.run("go")
     assert out.payloads[0] == "done"
 
-    assert agent.agent_ctx.cw.folds  # a fold was recorded
-    final_view = agent_llm.views[-1]  # type: ignore[attr-defined]
-    assert any(
-        isinstance(m, InputMessageItem) and "SUMMARY-OF-EARLIER" in m.text
-        for m in final_view
-    )
-    # The durable log kept the full original tool output.
-    assert any(
-        isinstance(m, FunctionToolOutputItem) and len(m.text) == len(_BIG)
-        for m in agent.transcript.messages
+    calls = llm.calls  # type: ignore[attr-defined]
+    before, summary_call, after = calls[1], calls[2], calls[3]
+    assert _is_summary_request(summary_call.input)
+    # Same prefix, tools and tool choice as the request before it: the
+    # provider's prompt cache serves it.
+    assert summary_call.input[: len(before.input)] == before.input
+    assert summary_call.tools == before.tools
+    assert summary_call.tool_choice == before.tool_choice
+    assert summary_call.output_schema is None
+
+    # The next generation sees the pinned question, then the summary.
+    assert _summaries(after.input) == [fold_summary_text("SUMMARY")]
+    texts = [m.text for m in after.input if isinstance(m, InputMessageItem)]
+    assert texts.index("go") < texts.index(fold_summary_text("SUMMARY"))
+    assert not _is_summary_request(after.input)
+    # The log keeps every original message and never holds the request.
+    assert not any(
+        isinstance(m, InputMessageItem) and COMPACTION_REQUEST_TAG in m.text
+        for m in agent.transcript
     )
 
 
 @pytest.mark.asyncio
-async def test_run_stream_emits_compaction_event() -> None:
-    agent_llm = MockLLM(
-        responses_queue=[_tool_call_response("big", "{}", "c1"), _text_response("done")]
+async def test_summary_call_is_accounted_like_any_other() -> None:
+    llm = _RecordingLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "c1"),
+            _tool_call_response("big", "{}", "c2"),
+            _text_response("SUMMARY"),
+            _text_response("done"),
+        ]
     )
     ctx: SessionContext[None] = SessionContext()
-    agent = LLMAgent[str, str, None](
-        name="a", ctx=ctx, llm=agent_llm, tools=[_BigTool()]
+    agent, _ = _agent(llm, ctx=ctx)
+    seen: list[str] = []
+
+    @agent.add_after_llm_hook
+    async def _record(response: Response, *, exec_id: str, turn: int) -> None:
+        del exec_id, turn
+        seen.append(response.output_text)
+
+    await agent.run("go")
+    assert seen == ["", "", "SUMMARY", "done"]
+    assert ctx.usage_tracker.total_usage.input_tokens == 4 * 10
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_in_the_summary_answer_is_never_executed() -> None:
+    llm = _RecordingLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "c1"),
+            _tool_call_response("big", "{}", "c2"),
+            _tool_call_response("big", "{}", "sneaky"),
+            _text_response("SUMMARY"),
+            _text_response("done"),
+        ]
     )
-    agent.add_compactor(
-        SummarizingCompactor(
-            summarizer=_summarizer("SUMMARY-OF-EARLIER"),
-            budget=_budget(5),
-            keep_recent_turns=1,
-        )
+    agent, tool = _agent(llm)
+    await agent.run("go")
+    assert tool.runs == 2  # type: ignore[attr-defined]
+    assert llm.calls[3].tool_choice == "none"  # type: ignore[attr-defined]
+    assert agent.agent_ctx.cw.folds[-1].summary == "SUMMARY"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_summary_does_not_fail_the_turn(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    @dataclass(frozen=True)
+    class _FailingSummaryLLM(MockLLM):
+        async def _generate_response_once(self, input: Any, **kwargs: Any) -> Any:
+            if _is_summary_request(input):
+                raise LlmBadRequestError(
+                    "boom", response=httpx.Response(400, request=_REQ), body=None
+                )
+            return await super()._generate_response_once(input, **kwargs)
+
+    llm = _FailingSummaryLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "c1"),
+            _tool_call_response("big", "{}", "c2"),
+            _text_response("done"),
+        ]
     )
+    agent, _ = _agent(llm)
+    with caplog.at_level(logging.WARNING, logger="grasp_agents.agent.context_window"):
+        out = await agent.run("go")
+    assert out.payloads[0] == "done"
+    assert agent.agent_ctx.cw.folds == []
+    assert any("compaction failed" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_summaries_supersede_rather_than_stack() -> None:
+    llm = _RecordingLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "c1"),
+            _tool_call_response("big", "{}", "c2"),
+            _text_response("S1"),
+            _tool_call_response("big", "{}", "c3"),
+            _text_response("S2"),
+            _text_response("done"),
+        ]
+    )
+    agent, _ = _agent(llm)
+    await agent.run("go")
+
+    calls = llm.calls  # type: ignore[attr-defined]
+    second_request = calls[4]
+    assert _is_summary_request(second_request.input)
+    # The second summary is written from a view that holds the first.
+    assert _summaries(second_request.input) == [fold_summary_text("S1")]
+    assert _summaries(calls[-1].input) == [fold_summary_text("S2")]
+    assert [f.start for f in agent.agent_ctx.cw.folds] == [0, 0]
+
+
+@pytest.mark.asyncio
+async def test_compaction_event_reports_rounds_and_pins() -> None:
+    llm = MockLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "c1"),
+            _tool_call_response("big", "{}", "c2"),
+            _text_response("SUMMARY"),
+            _text_response("done"),
+        ]
+    )
+    agent, _ = _agent(llm)
     events = [event async for event in agent.run_stream("go")]
     compactions = [e for e in events if isinstance(e, CompactionEvent)]
-    assert compactions, "a CompactionEvent should be emitted when a fold is recorded"
+    assert len(compactions) == 1
     info = compactions[0].data
-    assert info.folded_turns > 0
-    assert info.summary == "SUMMARY-OF-EARLIER"  # the fold's summary rides along
+    assert (info.folded_rounds, info.kept_rounds, info.pinned_messages) == (1, 1, 1)
+    assert info.summary == "SUMMARY"
+    assert not info.forced
     assert compactions[0].source == "a"
 
 
-# --- LLMSummarizer renders a text transcript (not live messages) ---
+@pytest.mark.asyncio
+async def test_add_compaction_registers_the_section_and_injects_the_budget() -> None:
+    agent = LLMAgent[str, str, None](
+        name="a", ctx=SessionContext(), llm=MockLLM(responses_queue=[])
+    )
+    compactor = agent.add_compaction()
+    assert agent.agent_ctx.cw.compactor is compactor
+    assert compactor.budget is not None
+    names = [s.name for s in agent.system_prompt_sections]
+    assert COMPACTION_SECTION_NAME in names
+
+
+# --- Context-window error → forced compaction + retry ---
+
+
+@dataclass(frozen=True)
+class _OverflowOnceLLM(MockLLM):
+    """Raises a context-window error on its third call, then behaves normally."""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        object.__setattr__(self, "_calls", 0)
+
+    async def _generate_response_once(self, input: Any, **kwargs: Any) -> Any:
+        object.__setattr__(self, "_calls", self._calls + 1)  # type: ignore[attr-defined]
+        if self._calls == 3:  # type: ignore[attr-defined]
+            raise _overflow()
+        return await super()._generate_response_once(input, **kwargs)
 
 
 @pytest.mark.asyncio
-async def test_summarizer_sends_text_transcript_not_live_messages() -> None:
-    rec = _RecordingLLM(responses_queue=[_text_response("SUMMARY")])
-    summary = await LLMSummarizer(rec)(
-        [
-            _user("what is X?"),
-            ReasoningItem(
-                summary=[ReasoningSummary(text="private thoughts")],
-                encrypted_content="enc",
-            ),
-            FunctionToolCallItem(call_id="c1", name="lookup", arguments='{"q": "X"}'),
-            FunctionToolOutputItem.from_tool_result(
-                call_id="c1", output="X is a thing"
-            ),
-            OutputMessageItem(
-                content=[OutputMessageText(text="X is a thing.")],
-                status="completed",
-            ),
+async def test_context_window_error_compacts_and_retries() -> None:
+    llm = _OverflowOnceLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "c1"),
+            _tool_call_response("big", "{}", "c2"),
+            _text_response("SUM"),
+            _text_response("recovered"),
         ]
     )
-    assert summary == "SUMMARY"
-    sent = rec.views[-1]  # type: ignore[attr-defined]
-    # A system instruction + ONE user-role transcript message — not the raw,
-    # replayable conversation items (reasoning/tool-call objects).
-    assert len(sent) == 2
-    assert all(isinstance(m, InputMessageItem) for m in sent)
-    # The instruction frames the task unambiguously as summarizing a transcript.
-    assert "transcript" in sent[0].text.lower()
-    transcript = sent[1].text
-    assert "<transcript>" in transcript  # delimited so it can't read as a request
-    assert "</transcript>" in transcript
-    assert "what is X?" in transcript
-    assert "lookup" in transcript
-    assert "X is a thing" in transcript
-    assert "private thoughts" not in transcript  # reasoning omitted from context
+    # A huge budget: only the forced path compacts.
+    agent, _ = _agent(llm, compactor=SummarizingCompactor(budget=_budget(10_000_000)))
+    events = [event async for event in agent.run_stream("go")]
+
+    assert events[-1].data.payloads[0] == "recovered"  # type: ignore[union-attr]
+    compactions = [e for e in events if isinstance(e, CompactionEvent)]
+    assert [c.data.forced for c in compactions] == [True]
+    assert agent.agent_ctx.cw.folds[-1].summary == "SUM"
 
 
-# --- Persistence: folds round-trip + restore on resume ---
+# --- Restoration after a fold ---
 
 
-def test_folds_round_trip_through_checkpoint() -> None:
+@pytest.mark.asyncio
+async def test_restore_flagged_attachments_rerun_after_a_fold() -> None:
+    llm = _RecordingLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "c1"),
+            _tool_call_response("big", "{}", "c2"),
+            _text_response("SUMMARY"),
+            _text_response("done"),
+        ]
+    )
+    agent, _ = _agent(llm)
+    seen: list[list[str]] = []
+
+    def compute(*, messages: Sequence[InputItem] | None = None, **_: Any) -> str:
+        seen.append([m.text for m in messages or [] if isinstance(m, InputMessageItem)])
+        return "the document"
+
+    agent.add_input_attachment(
+        InputAttachment(name="doc", compute=compute, restore_after_compaction=True)
+    )
+    await agent.run("go")
+
+    # Once for the input, once after the fold — against the folded view.
+    assert len(seen) == 2
+    assert fold_summary_text("SUMMARY") in seen[1]
+    # Delivered as input right after the fold, before the final answer.
+    restored = agent.transcript[-2]
+    assert isinstance(restored, InputMessageItem)
+    assert restored.text == wrap_in_system_reminder("the document", subject="doc")
+    assert restored in llm.calls[-1].input  # type: ignore[attr-defined]
+
+
+# --- Persistence and rollback ---
+
+
+def test_folds_and_anchor_round_trip_through_checkpoint() -> None:
     checkpoint = AgentCheckpoint(
         session_key="s",
         processor_name="a",
         messages=[],
-        folds=[FoldSpec(start=0, end=3, summary="S")],
+        folds=[FoldSpec(start=0, end=3, summary="S", pinned=[1])],
+        token_anchor=TokenAnchor(input_tokens=1234, message_count=3),
     )
     reloaded = AgentCheckpoint.model_validate_json(checkpoint.model_dump_json())
-    assert reloaded.folds == [FoldSpec(start=0, end=3, summary="S")]
+    assert reloaded.folds == checkpoint.folds
+    assert reloaded.token_anchor == checkpoint.token_anchor
 
 
 @pytest.mark.asyncio
-async def test_folds_restored_on_resume_without_resummarizing() -> None:
+async def test_folds_and_anchor_restored_on_resume_without_resummarizing() -> None:
     store = InMemoryCheckpointStore()
-    agent_llm = MockLLM(
-        responses_queue=[_tool_call_response("big", "{}", "c1"), _text_response("done")]
-    )
     ctx: SessionContext[None] = SessionContext(checkpoint_store=store, session_key="s1")
-    agent = LLMAgent[str, str, None](
-        name="a", ctx=ctx, llm=agent_llm, tools=[_BigTool()]
-    )
-    agent.add_compactor(
-        SummarizingCompactor(
-            summarizer=LLMSummarizer(_mock_llm("SUM")),
-            budget=_budget(5),
-            keep_recent_turns=1,
-        )
+    agent, _ = _agent(
+        MockLLM(
+            responses_queue=[
+                _tool_call_response("big", "{}", "c1"),
+                _tool_call_response("big", "{}", "c2"),
+                _text_response("SUM"),
+                _text_response("done"),
+            ]
+        ),
+        ctx=ctx,
     )
     await agent.run("go")
-    saved = [f.summary for f in agent.agent_ctx.cw.folds]
-    assert saved  # folded during the run
+    folds = list(agent.agent_ctx.cw.folds)
+    assert folds
 
-    # Fresh instance, same store → resume restores folds. The summarizer's LLM
-    # has an empty queue, so a re-summarization would raise — proving it doesn't.
     ctx2: SessionContext[None] = SessionContext(
         checkpoint_store=store, session_key="s1"
     )
-    agent2 = LLMAgent[str, str, None](
-        name="a", ctx=ctx2, llm=MockLLM(responses_queue=[_text_response("after")])
+    # One reply: a re-summarization would exhaust the queue and fail the run.
+    agent2, _ = _agent(
+        MockLLM(responses_queue=[_text_response("after")]),
+        ctx=ctx2,
+        compactor=SummarizingCompactor(budget=_budget(10_000_000)),
     )
-    agent2.add_compactor(
-        SummarizingCompactor(
-            summarizer=LLMSummarizer(MockLLM(responses_queue=[])),
-            budget=_budget(10_000_000),
-            keep_recent_turns=1,
-        )
-    )
-    await agent2.run("again")
-    assert [f.summary for f in agent2.agent_ctx.cw.folds][: len(saved)] == saved
-
-
-# --- Rollback drops folds past the rewind point ---
+    out = await agent2.run("again")
+    assert out.payloads[0] == "after"
+    assert agent2.agent_ctx.cw.folds == folds
 
 
 @pytest.mark.asyncio
-async def test_rollback_drops_folds_past_rewind() -> None:
+async def test_rollback_below_the_newest_fold_falls_back_to_the_previous() -> None:
     from tests.durability.test_sessions import _make_agent
 
     store = InMemoryCheckpointStore()
@@ -542,43 +832,30 @@ async def test_rollback_drops_folds_past_rewind() -> None:
     n_after_1 = len(agent.transcript.messages)
     await agent.run("q2", step=2)
 
-    agent.agent_ctx.cw.folds = [
-        FoldSpec(start=0, end=1, summary="early"),  # within step 0
-        FoldSpec(start=n_after_1, end=n_after_1 + 1, summary="late"),  # in step 2
-    ]
+    early = FoldSpec(start=0, end=2, summary="early")
+    late = FoldSpec(start=0, end=n_after_1 + 1, summary="late")
+    agent.agent_ctx.cw.folds = [early, late]
     await agent.rollback_to_step(1)
 
-    summaries = [f.summary for f in agent.agent_ctx.cw.folds]
-    assert "late" not in summaries  # past the rewind → dropped
-    assert "early" in summaries  # within the kept prefix → survives
-
-
-# --- Reactive net: context-window error → force-compact + retry ---
+    assert agent.agent_ctx.cw.folds == [early]
+    view = agent.agent_ctx.cw.folded_messages()
+    assert _summaries(view) == [fold_summary_text("early")]
 
 
 @pytest.mark.asyncio
-async def test_context_window_error_compacts_and_retries() -> None:
-    summary_llm = MockLLM(responses_queue=[_text_response("SUM")])
-    agent_llm = _OverflowOnceLLM(
-        responses_queue=[
-            _tool_call_response("big", "{}", "c1"),
-            _text_response("recovered"),
-        ]
-    )
-    ctx: SessionContext[None] = SessionContext()
+async def test_attachments_see_the_folded_conversation() -> None:
     agent = LLMAgent[str, str, None](
-        name="a", ctx=ctx, llm=agent_llm, tools=[_BigTool()]
+        name="a",
+        ctx=SessionContext(),
+        llm=MockLLM(responses_queue=[_text_response("ok")]),
     )
-    # Huge budget ⇒ proactive compaction never fires; only the reactive (force)
-    # path on the overflow does.
-    agent.add_compactor(
-        SummarizingCompactor(
-            summarizer=LLMSummarizer(summary_llm),
-            budget=_budget(10_000_000),
-            keep_recent_turns=1,
-        )
-    )
+    agent.replace_transcript([_user("old"), _answer("a"), _user("older")])
+    agent.agent_ctx.cw.folds = [FoldSpec(start=0, end=2, summary="S")]
+    seen: list[list[str]] = []
 
-    out = await agent.run("go")
-    assert out.payloads[0] == "recovered"  # recovered via compact + retry
-    assert agent.agent_ctx.cw.folds  # the forced fold was recorded
+    def compute(*, messages: Sequence[InputItem] | None = None, **_: Any) -> None:
+        seen.append([m.text for m in messages or [] if isinstance(m, InputMessageItem)])
+
+    agent.add_input_attachment(InputAttachment(name="probe", compute=compute))
+    await agent.run("new")
+    assert seen == [[fold_summary_text("S"), "older"]]

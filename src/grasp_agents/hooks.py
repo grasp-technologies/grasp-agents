@@ -6,6 +6,7 @@ overrides (*_impl methods). The Protocols here define the callable signatures.
 
 Agent Loop Hooks (registered on AgentLoop via LLMAgent):
     ViewProjector  — derives the per-turn model-facing view from the log
+    Compactor      — records a summary fold under context-window pressure
     BeforeLlmHook  — fires before each LLM call
     AfterLlmHook   — fires after each LLM response
     FinalAnswerExtractor  — determines when the agent should stop
@@ -26,7 +27,7 @@ Processor Hooks:
     WorkflowLoopTerminator — determines when a looped workflow exits
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol
 
 from pydantic import BaseModel
@@ -52,6 +53,7 @@ __all__ = [
     "AfterToolHook",
     "BeforeLlmHook",
     "BeforeToolHook",
+    "CompactionGenerate",
     "Compactor",
     "FinalAnswerExtractor",
     "InitialContextBuilder",
@@ -62,6 +64,7 @@ __all__ = [
     "ToolInputConverter",
     "ToolOutputConverter",
     "ViewProjector",
+    "ViewTransform",
     "WorkflowLoopTerminator",
 ]
 
@@ -154,9 +157,9 @@ class ViewProjector(Protocol):
     before the provider call, then discarded — it is never persisted, so a
     projection must be deterministic enough to re-derive on the next turn and on
     resume. ``input_tokens`` is the current (folded) log's estimated cost: the last
-    response's reported input tokens plus a count of the messages appended since,
-    or a full count before any reported usage (or after a fold / rollback) — the
-    budget signal for size-reactive projectors.
+    response's reported input tokens plus an estimate of the messages appended
+    since, or an estimate of the whole view when there is no reported count (after
+    a fold or rollback) — the budget signal for size-reactive projectors.
     """
 
     async def __call__(
@@ -168,17 +171,49 @@ class ViewProjector(Protocol):
     ) -> Sequence[InputItem]: ...
 
 
+type ViewTransform = Callable[[list[InputItem]], list[InputItem]]
+"""Rewrites a view body (the log with folds and projectors applied)."""
+
+
+class CompactionGenerate(Protocol):
+    """
+    Send a summarization request on the agent's own LLM, supplied to a
+    :class:`Compactor` by the agent loop.
+
+    The request is the agent's current one — the same view, tools and LLM
+    settings as its last call, so the provider's prompt cache serves the shared
+    prefix — with ``request`` appended and no output schema. ``transform``
+    rewrites the view body first (to shrink an oversized request; the cache no
+    longer applies). ``force_text`` sets ``tool_choice="none"`` so the model
+    cannot answer with a tool call. Tool calls in the response are never
+    executed. The call's usage is recorded and the after-LLM hooks see the
+    response, but nothing is written to the transcript. LLM errors propagate,
+    ``LlmContextWindowError`` included.
+    """
+
+    async def __call__(
+        self,
+        request: InputMessageItem,
+        *,
+        transform: ViewTransform | None = None,
+        force_text: bool = False,
+    ) -> Response: ...
+
+
 class Compactor(Protocol):
     """
-    Summarize an old span of the transcript log under context-window pressure.
+    Summarize the transcript log under context-window pressure.
 
-    Called once per turn with ``input_tokens`` (what the last view actually
-    cost) and the ``folds`` already recorded. Returns a new :class:`FoldSpec`
-    (a summarized span, applied to the view by ``apply_folds`` and persisted) or
-    ``None`` to leave the log as is. Single-slot (``@agent.add_compactor``).
-    Unlike a :class:`ViewProjector` it may call an LLM and produce persisted
-    state, so it runs at the turn boundary, not on every view. ``force`` is set
-    on the context-window-error recovery path: fold regardless of the budget.
+    Called once per turn boundary, before generation, with ``input_tokens``
+    (the estimated size of the view about to be sent) and the ``folds`` already
+    recorded. Returns a new :class:`FoldSpec` (applied to the view by
+    ``apply_folds`` and persisted) or ``None`` to leave the view as is.
+    Single-slot (``@agent.add_compactor``). Unlike a :class:`ViewProjector` it
+    may call an LLM — through ``generate`` — and produces persisted state.
+    ``force`` is set on the context-window-error recovery path: fold regardless
+    of the budget. An exception is logged and treated as no fold; after three
+    consecutive failures the agent stops calling it, except on that recovery
+    path.
     """
 
     async def __call__(
@@ -188,6 +223,7 @@ class Compactor(Protocol):
         input_tokens: int,
         folds: Sequence[FoldSpec],
         exec_id: str,
+        generate: CompactionGenerate,
         force: bool = False,
     ) -> FoldSpec | None: ...
 

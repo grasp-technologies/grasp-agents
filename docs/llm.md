@@ -19,7 +19,7 @@ On top of the providers sit the retry layer (`RetryPolicy`), the model cascade
 | `LiteLLM` | `llm_providers/litellm/` | Long-tail providers through `litellm` |
 | `FallbackLLM` | `llm/fallback_llm.py` | Tries member LLMs in order |
 | `RetryPolicy` | `llm/resilience.py` | API and validation retry configuration |
-| `ModelCapabilities`, `get_model_capabilities`, `get_context_window`, `count_tokens`, `count_input_tokens` | `llm/model_info.py`, `llm/token_counting.py` | Metadata and token counting from LiteLLM's model database |
+| `ModelCapabilities`, `get_model_capabilities`, `get_context_window`, `count_tokens`, `count_input_tokens`, `estimate_input_tokens` | `llm/model_info.py`, `llm/token_counting.py` | Metadata and token counting from LiteLLM's model database |
 | `Llm*Error`, `LlmErrorTuple` | `types/llm_errors.py` | Typed provider errors |
 | `RecoveryHint`, `classify_error`, `register_recovery_hint` | `types/recovery.py` | What action recovers from an error |
 | `RateLimiter` | `rate_limiting/` | Requests-per-minute pacing + concurrency cap |
@@ -197,7 +197,7 @@ Providers map every SDK exception to a type in `types/llm_errors.py`
 | `TRANSIENT` | timeout, connection, 5xx, 409, other status errors | yes |
 | `RATE_LIMITED` | `LlmRateLimitError` | yes |
 | `QUOTA_EXCEEDED` | `LlmQuotaExceededError` | no |
-| `NEEDS_COMPACTION` | `LlmContextWindowError` | no (with a compactor registered, the agent loop forces one fold and retries once; see [Context window](context-window.md)) |
+| `NEEDS_COMPACTION` | `LlmContextWindowError` | no (with a compactor registered, the agent loop forces a fold and retries once; see [Context window](context-window.md)) |
 | `REAUTH_REQUIRED` | 401, 403 | no |
 | `CONTENT_REFUSED` | `LlmContentFilterError` | no |
 | `INVALID_REQUEST` | 400, 404, 422 | no |
@@ -244,7 +244,8 @@ The MCP instructions section carries a breakpoint by default.
 the resolved provider. An unknown model gets permissive defaults (every
 feature `True`, no limits) and a warning. `count_input_tokens(model, items)`
 counts a view with LiteLLM's tokenizer and estimates files and encrypted
-reasoning separately, falling back to a character estimate. `CloudLLM`
+reasoning separately, falling back to `estimate_input_tokens(items)`, a
+tokenizer-free character estimate (what compaction uses). `CloudLLM`
 stamps `usage.cost` from LiteLLM pricing when the response is produced.
 
 ## Rate limiting

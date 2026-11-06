@@ -111,8 +111,8 @@ async def test_meter_updates_to_post_fold_size_on_compaction() -> None:
             source="analyst",
             exec_id="e",
             data=CompactionInfo(
-                folded_turns=5,
-                preserved_turns=2,
+                folded_rounds=5,
+                kept_rounds=2,
                 context_tokens=400,
                 context_window=2000,
             ),
@@ -155,8 +155,8 @@ async def test_compaction_event_renders_summary_in_pane() -> None:
             source="analyst",
             exec_id="e",
             data=CompactionInfo(
-                folded_turns=3,
-                preserved_turns=2,
+                folded_rounds=3,
+                kept_rounds=2,
                 context_tokens=400,
                 context_window=2000,
                 summary="KEPT THE GOAL AND KEY FACTS",

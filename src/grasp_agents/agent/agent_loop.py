@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from pydantic import BaseModel
 
+from grasp_agents.context.projection import repair_tool_call_pairing
 from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.context.untrusted_content import wrap_untrusted
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
@@ -98,9 +99,11 @@ if TYPE_CHECKING:
         AfterToolHook,
         BeforeLlmHook,
         BeforeToolHook,
+        CompactionGenerate,
         FinalAnswerExtractor,
         ToolInputConverter,
         ToolOutputConverter,
+        ViewTransform,
     )
     from grasp_agents.inbox import AgentInbox
     from grasp_agents.llm.llm import LLM
@@ -134,6 +137,10 @@ def _truncation_notice(response: Response) -> str:
     details = response.incomplete_details
     reason = details.reason if details and details.reason else "unknown reason"
     return f"\n\n[Response truncated: {reason}]"
+
+
+class RestorationBuilder(Protocol):
+    async def __call__(self, *, exec_id: str) -> InputMessageItem | None: ...
 
 
 class CheckpointCallback(Protocol):
@@ -233,6 +240,7 @@ class AgentLoop[CtxT]:
     tool_input_converters: dict[str, ToolInputConverter]
     final_answer_extractor: FinalAnswerExtractor | None
     checkpoint_callback: CheckpointCallback | None
+    restoration_builder: RestorationBuilder | None
 
     # Properties
 
@@ -321,6 +329,13 @@ class AgentLoop[CtxT]:
         self.after_tool_hooks = []
         self.final_answer_extractor = None
         self.checkpoint_callback = None
+        self.restoration_builder = None
+
+        # The parameters of the last LLM request (all but its input), and the
+        # run's own settings: a compaction summary request reuses them so the
+        # provider's prompt cache serves its prefix.
+        self._last_llm_params: dict[str, Any] | None = None
+        self._run_llm_settings: dict[str, Any] = {}
 
         self._final_answer_tool = self._make_final_answer_tool()
         if final_answer_as_tool_call:
@@ -520,6 +535,7 @@ class AgentLoop[CtxT]:
             "tool_choice": tool_choice,
             **extra_llm_settings,
         }
+        self._last_llm_params = {k: v for k, v in llm_params.items() if k != "input"}
 
         response: Response | None = None
 
@@ -734,16 +750,18 @@ class AgentLoop[CtxT]:
             # The view overflowed the window despite (or without) proactive
             # compaction. Force a fold and retry once; if nothing can be
             # folded, surface the error.
-            fold = await self.cw.maybe_compact(exec_id=exec_id, force=True)
+            fold = await self.cw.maybe_compact(
+                exec_id=exec_id,
+                generate=self._compaction_generate(exec_id),
+                force=True,
+            )
             if fold is None:
                 raise
             yield self.cw.compaction_event(
-                fold, source=self.agent_name, exec_id=exec_id
+                fold, source=self.agent_name, exec_id=exec_id, forced=True
             )
-            logger.warning(
-                "agent '%s' hit the context window; compacted and retrying",
-                self.agent_name,
-            )
+            async for event in self._restore_after_compaction(exec_id=exec_id):
+                yield event
             # Anything streamed for the failed attempt is superseded, exactly
             # as after an LLM-layer retry. Each retry layer counts its own
             # attempts, and this one retries once.
@@ -760,6 +778,100 @@ class AgentLoop[CtxT]:
                 extra_llm_settings=extra_llm_settings,
             ):
                 yield event
+
+    # --- Compaction ---
+
+    def _compaction_generate(self, exec_id: str) -> CompactionGenerate:
+        """The agent's LLM, bound to its current request, for the compactor."""
+
+        async def generate(
+            request: InputMessageItem,
+            *,
+            transform: ViewTransform | None = None,
+            force_text: bool = False,
+        ) -> Response:
+            params = dict(self._last_llm_params or self._first_llm_params())
+            params["output_schema"] = None
+            if force_text and params.get("tools"):
+                params["tool_choice"] = "none"
+            if transform is None:
+                view = await self.cw.project_view(exec_id=exec_id)
+            else:
+                body = transform(list(await self.cw.build_view_body(exec_id=exec_id)))
+                view = repair_tool_call_pairing([*self.cw.initial_context, *body])
+
+            try:
+                response = await self._generate_detached([*view, request], params)
+            except LLMToolCallValidationError as exc:
+                # The calls are discarded anyway; keep any text alongside them.
+                if exc.response is None:
+                    raise
+                response = exc.response
+
+            # A real call of this agent: account for it like any other, minus
+            # the tool calls it was not allowed to make. It never touches the
+            # transcript or the budget anchor.
+            self.ctx.usage_tracker.update(
+                agent_name=self.agent_name, responses=[response]
+            )
+            text_only = response.model_copy(
+                update={
+                    "output": [
+                        item
+                        for item in response.output
+                        if not isinstance(item, FunctionToolCallItem)
+                    ]
+                }
+            )
+            await self.on_after_llm(text_only, exec_id=exec_id, turn=self.turn)
+            return response
+
+        return generate
+
+    def _first_llm_params(self) -> dict[str, Any]:
+        # Before the run's first call: what that call will send, minus hooks.
+        tools = self._agent_ctx.tools or None
+        return {
+            "output_schema": self.llm_output_schema,
+            "tools": tools,
+            "tool_choice": (
+                self._compute_tool_choice(had_tool_calls=False) if tools else None
+            ),
+            **self._run_llm_settings,
+        }
+
+    async def _generate_detached(
+        self, view: Sequence[InputItem], params: dict[str, Any]
+    ) -> Response:
+        if not self.stream_llm:
+            return await self._llm.generate_response(input=view, **params)
+        response: Response | None = None
+        async for event in self._llm.generate_response_stream(input=view, **params):
+            if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
+                response = event.response
+        if response is None:
+            raise MissingLLMResponseError(proc_name=self.agent_name)
+        return response
+
+    async def _restore_after_compaction(
+        self, *, exec_id: str
+    ) -> AsyncIterator[Event[Any]]:
+        """
+        Append the agent's restoration message (state a fold may have hidden),
+        if any, as input to the upcoming generation.
+        """
+        if self.restoration_builder is None:
+            return
+        message = await self.restoration_builder(exec_id=exec_id)
+        if message is None:
+            return
+        self.cw.add_messages([message])
+        yield UserMessageEvent(
+            source=self.agent_name,
+            destination=self.agent_name,
+            exec_id=exec_id,
+            data=message,
+        )
 
     # --- Tool calling ---
 
@@ -1667,6 +1779,8 @@ class AgentLoop[CtxT]:
             )
 
         extra_llm_settings = deepcopy(extra_llm_settings or {})
+        self._run_llm_settings = extra_llm_settings
+        self._last_llm_params = None
 
         # A resident agent (inbox attached) loops until its task is cancelled from
         # outside — it must NOT exit on the lifetime turn budget, which bounds a lone
@@ -1712,20 +1826,25 @@ class AgentLoop[CtxT]:
             async for event in self._drain_bg_completions(exec_id=exec_id):
                 yield event
 
-            if len(self.cw.transcript) > delivered_from:
-                # Side-channel input is made durable before the turn responds to
-                # it, exactly like a step's input; the save also acks the inbox
-                # message and flips the delivered tasks' records.
-                await self.checkpoint(
-                    turn=self.turn, location=AgentCheckpointLocation.AFTER_INPUT
-                )
-
-            # Compaction: fold an old span before generating if the view
-            # approaches the budget (no-op without a compactor / under budget).
-            fold = await self.cw.maybe_compact(exec_id=exec_id)
+            # Compaction: fold the conversation before generating if the view
+            # outgrew the compaction threshold (no-op without a compactor).
+            fold = await self.cw.maybe_compact(
+                exec_id=exec_id, generate=self._compaction_generate(exec_id)
+            )
             if fold is not None:
                 yield self.cw.compaction_event(
                     fold, source=self.agent_name, exec_id=exec_id
+                )
+                async for event in self._restore_after_compaction(exec_id=exec_id):
+                    yield event
+
+            if len(self.cw.transcript) > delivered_from or fold is not None:
+                # Side-channel input is made durable before the turn responds to
+                # it, exactly like a step's input; the save also acks the inbox
+                # message and flips the delivered tasks' records. A new fold is
+                # saved too, so a crash doesn't re-run the summary.
+                await self.checkpoint(
+                    turn=self.turn, location=AgentCheckpointLocation.AFTER_INPUT
                 )
 
             yield TurnStartEvent(

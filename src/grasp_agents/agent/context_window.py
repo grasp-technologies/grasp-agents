@@ -11,25 +11,31 @@ project or compact. This keeps the loop focused on the generate → tools cycle 
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
-from grasp_agents.context.compaction import Budgeted, ContextBudget, count_turns
+from grasp_agents.context.compaction import Budgeted, ContextBudget, count_rounds
 from grasp_agents.context.projection import apply_folds, repair_tool_call_pairing
 from grasp_agents.llm.model_info import get_model_capabilities
-from grasp_agents.llm.token_counting import count_input_tokens
+from grasp_agents.llm.token_counting import estimate_input_tokens
 from grasp_agents.types.events import CompactionEvent, CompactionInfo
+from grasp_agents.types.folds import TokenAnchor
 
 from .llm_agent_transcript import LLMAgentTranscript
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from grasp_agents.hooks import Compactor, ViewProjector
+    from grasp_agents.hooks import CompactionGenerate, Compactor, ViewProjector
     from grasp_agents.llm.model_info import ModelCapabilities
     from grasp_agents.types.folds import FoldSpec
     from grasp_agents.types.items import InputItem
 
 logger = logging.getLogger(__name__)
+
+# Consecutive compactor failures after which the turn-boundary compaction stops
+# (the context-window-error recovery path still calls the compactor).
+MAX_COMPACTION_FAILURES = 3
 
 
 class ContextWindowManager:
@@ -58,9 +64,9 @@ class ContextWindowManager:
         self._messages: list[InputItem] = []
         self._transcript = LLMAgentTranscript(self._messages)
 
-        # Tokenizer selection + budget sizing. ``capabilities`` should be the
-        # LLM's own (a composed LLM reports its conservative merge — a fallback
-        # cascade's smallest member window); omitted, they are looked up by name.
+        # Budget sizing. ``capabilities`` should be the LLM's own (a composed LLM
+        # reports its conservative merge — a fallback cascade's smallest member
+        # window); omitted, they are looked up by name.
         self._model_name = model_name
         self._capabilities = capabilities
 
@@ -78,11 +84,13 @@ class ContextWindowManager:
 
         # Budget anchor: the last response's exact reported input_tokens over the
         # first ``_last_counted_len`` log messages; the turn's new messages are
-        # counted on top via litellm. ``_pending_view_count`` is the basis of the
-        # view being built, promoted when its response reports usage.
+        # estimated on top. ``_pending_view_count`` is the basis of the view being
+        # built, promoted when its response reports usage.
         self._last_input_tokens = 0
         self._last_counted_len = 0
         self._pending_view_count = 0
+
+        self._compaction_failures = 0
 
         # Model-derived budget, built lazily and shared into registered strategies
         # that don't bring their own (so the agent never has to construct one).
@@ -146,10 +154,17 @@ class ContextWindowManager:
             # No compaction: the log is pairing-valid and the header adds no tool
             # calls, so the prepended view needs no repair.
             return [*self.initial_context, *self._messages]
-        body = await self._build_view_body(exec_id=exec_id)
+        body = await self.build_view_body(exec_id=exec_id)
         return repair_tool_call_pairing([*self.initial_context, *body])
 
-    async def _build_view_body(self, *, exec_id: str) -> Sequence[InputItem]:
+    def folded_messages(self) -> list[InputItem]:
+        """
+        The log with folds applied: the conversation as the model sees it,
+        before projectors.
+        """
+        return apply_folds(self._messages, self.folds)
+
+    async def build_view_body(self, *, exec_id: str) -> Sequence[InputItem]:
         """
         The conversation body of the view — folds then the projector pipeline,
         without the header or pairing repair. Folds (summarized spans) apply
@@ -173,45 +188,49 @@ class ContextWindowManager:
         """
         The view's token cost for the compaction budget.
 
-        Anchored on the last response's exact reported ``input_tokens`` plus a
-        single litellm count of the messages appended since (the turn's new
-        input). Before any reported usage — or after a fold/rollback drops the
-        anchor — counts the whole current (folded) view via litellm, which itself
-        falls back to a chars-per-token estimate when no tokenizer is available.
+        Anchored on the last response's exact reported ``input_tokens`` plus an
+        estimate of the messages appended since (the turn's new input). With no
+        anchor — before any reported usage, or after a fold or rollback —
+        estimates the whole current (folded) view. Estimates are
+        :func:`~grasp_agents.llm.token_counting.estimate_input_tokens`.
         """
-        model = self._model_name
         messages = self._messages
         if self._anchor_valid():
             delta = messages[self._last_counted_len :]
             if not delta:
                 return self._last_input_tokens
-            return self._last_input_tokens + count_input_tokens(model, delta)
-        view = [*self.initial_context, *apply_folds(messages, self.folds)]
-        return count_input_tokens(model, view)
+            return self._last_input_tokens + estimate_input_tokens(delta)
+        return estimate_input_tokens([*self.initial_context, *self.folded_messages()])
 
     def _anchor_valid(self) -> bool:
         # The anchor is valid only while it still indexes within the live log
         # (the log is append + suffix-truncate only). A rollback / resume that
-        # cut below it falls through to a full recount rather than mis-slicing.
+        # cut below it falls through to a full estimate rather than mis-slicing.
         return self._last_input_tokens > 0 and self._last_counted_len <= len(
             self._messages
         )
 
     async def projected_input_tokens(self, *, exec_id: str) -> int:
         """
-        Token cost of the view that would actually be sent — folds AND projectors
-        applied — so the compaction gate measures the cheap projector tier (tool-
-        output collapse) before the expensive compactor (summary fold) fires;
-        folding only escalates when projection alone can't get under budget.
-
-        Uses the fast anchor count when valid (the provider already counted the
-        projected view it was sent); only the projector-blind recount fallback
-        re-measures the projected view here.
+        Token cost of the view that would actually be sent — folds and
+        projectors applied. With a valid anchor it is the anchored estimate (the
+        provider already counted the projected view it was sent); otherwise the
+        projected view is estimated.
         """
         if self._anchor_valid() or not self.view_projectors:
             return self.effective_input_tokens()
-        body = await self._build_view_body(exec_id=exec_id)
-        return count_input_tokens(self._model_name, [*self.initial_context, *body])
+        body = await self.build_view_body(exec_id=exec_id)
+        return estimate_input_tokens([*self.initial_context, *body])
+
+    @property
+    def token_anchor(self) -> TokenAnchor | None:
+        """The budget anchor, persisted with the checkpoint; ``None`` if unset."""
+        if not self._anchor_valid():
+            return None
+        return TokenAnchor(
+            input_tokens=self._last_input_tokens,
+            message_count=self._last_counted_len,
+        )
 
     def note_response_usage(self, input_tokens: int) -> None:
         """Promote the budget anchor from a response's reported usage."""
@@ -248,14 +267,18 @@ class ContextWindowManager:
         self._pending_view_count = min(self._pending_view_count, message_count)
 
     def replace_transcript(
-        self, messages: Sequence[InputItem], *, folds: Sequence[FoldSpec] = ()
+        self,
+        messages: Sequence[InputItem],
+        *,
+        folds: Sequence[FoldSpec] = (),
+        token_anchor: TokenAnchor | None = None,
     ) -> None:
         """
         Replace the transcript wholesale (resume from a checkpoint) together
         with its folds — lossy summaries are carried so resume doesn't
-        re-summarize — and recount the budget anchor. A fold reaching past the
-        new log is dropped: once the log grew past it, it would summarize
-        messages it never saw.
+        re-summarize — and its budget anchor, if it still indexes within the new
+        log. A fold reaching past the new log is dropped: once the log grew past
+        it, it would summarize messages it never saw.
         """
         self._messages[:] = list(messages)
         kept = [f for f in folds if f.end <= len(self._messages)]
@@ -267,6 +290,9 @@ class ContextWindowManager:
             )
         self.folds = kept
         self.reset_anchor()
+        if token_anchor is not None and token_anchor.message_count <= len(messages):
+            self._last_input_tokens = token_anchor.input_tokens
+            self._last_counted_len = token_anchor.message_count
         self._pending_view_count = 0
 
     def clear_transcript(self) -> None:
@@ -276,39 +302,72 @@ class ContextWindowManager:
     # --- compaction ---
 
     async def maybe_compact(
-        self, *, exec_id: str, force: bool = False
+        self,
+        *,
+        exec_id: str,
+        generate: CompactionGenerate,
+        force: bool = False,
     ) -> FoldSpec | None:
         """
         Run the compactor at the turn boundary; record a fold if it returns one.
 
-        Gates on the *projected* view size (collapse already applied), so a
-        summary fold fires only when the cheap projector tier can't free enough.
-        The compactor is a no-op while the view is under budget; ``force`` (the
-        context-window-error recovery path) folds regardless. Returns the fold it
-        recorded, or ``None``.
+        The compactor gets the projected view size and ``generate``, the agent's
+        own LLM bound to its current request. It is a no-op under its threshold;
+        ``force`` (the context-window-error recovery path) folds regardless. A
+        compactor exception is logged and counts as no fold; after
+        :data:`MAX_COMPACTION_FAILURES` in a row only forced calls run, until
+        one succeeds. Returns the fold it recorded, or ``None``.
         """
         if self.compactor is None:
             return None
-        fold = await self.compactor(
-            self._messages,
-            input_tokens=await self.projected_input_tokens(exec_id=exec_id),
-            folds=self.folds,
-            exec_id=exec_id,
-            force=force,
-        )
+        if not force and self._compaction_failures >= MAX_COMPACTION_FAILURES:
+            return None
+
+        input_tokens = await self.projected_input_tokens(exec_id=exec_id)
+        started = time.monotonic()
+        try:
+            fold = await self.compactor(
+                self._messages,
+                input_tokens=input_tokens,
+                folds=self.folds,
+                exec_id=exec_id,
+                generate=generate,
+                force=force,
+            )
+        except Exception:
+            self._compaction_failures += 1
+            logger.warning(
+                "context compaction failed (%d in a row)%s",
+                self._compaction_failures,
+                "; turn-boundary compaction stops"
+                if self._compaction_failures >= MAX_COMPACTION_FAILURES
+                else "",
+                exc_info=True,
+            )
+            return None
         if fold is None:
             return None
+
+        self._compaction_failures = 0
         self.folds.append(fold)
         # The fold shrank the view; drop the stale anchor so the next budget count
         # is recomputed over the folded view.
-        self._last_input_tokens = 0
-        logger.debug(
-            "recorded fold [%d, %d) (folds=%d)", fold.start, fold.end, len(self.folds)
+        self.reset_anchor()
+        logger.info(
+            "compacted context%s: ~%d -> ~%d tokens, %d round(s) summarized, "
+            "%d kept, %d user message(s) pinned (%.1fs)",
+            " after a context-window error" if force else "",
+            input_tokens,
+            self.effective_input_tokens(),
+            count_rounds(self._messages[fold.start : fold.end]),
+            count_rounds(self._messages[fold.end :]),
+            len(fold.pinned),
+            time.monotonic() - started,
         )
         return fold
 
     def compaction_event(
-        self, fold: FoldSpec, *, source: str, exec_id: str
+        self, fold: FoldSpec, *, source: str, exec_id: str, forced: bool = False
     ) -> CompactionEvent:
         """The event announcing a recorded fold (the reduced view size + summary)."""
         messages = self._messages
@@ -317,11 +376,13 @@ class ContextWindowManager:
             source=source,
             exec_id=exec_id,
             data=CompactionInfo(
-                folded_turns=count_turns(messages[fold.start : fold.end]),
-                preserved_turns=count_turns(messages[fold.end :]),
+                folded_rounds=count_rounds(messages[fold.start : fold.end]),
+                kept_rounds=count_rounds(messages[fold.end :]),
+                pinned_messages=len(fold.pinned),
                 context_tokens=self.effective_input_tokens(),
                 context_window=getattr(budget, "max_input_tokens", None),
                 summary=fold.summary,
+                forced=forced,
             ),
         )
 

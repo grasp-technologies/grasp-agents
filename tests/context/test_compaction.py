@@ -1,9 +1,9 @@
 """
-Recency-gated collapse of large tool outputs (``context.compaction``).
+Recency-gated collapse of large tool outputs and the context budget
+(``context.compaction``).
 
-Collapse keeps the most recent ``keep_recent_turns`` turns' tool outputs verbatim
-and snippets older ones to head+tail — only ever hiding outputs the model has moved
-past (which it could not recover, there being no spill-to-file). The
+Collapse keeps the most recent ``keep_recent_rounds`` rounds' tool outputs
+verbatim and snippets older ones to head+tail. The
 :class:`CollapseToolOutputsProjector` decides *when*: budget-gated (only over
 budget) by default, or ``proactive`` (every turn). The integration test confirms
 the collapsed view reaches the provider while the durable transcript keeps the
@@ -22,11 +22,13 @@ from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.agent.llm_agent_transcript import LLMAgentTranscript
 from grasp_agents.context.compaction import (
     DEFAULT_MAX_INPUT_TOKENS,
+    MAX_BUFFER_TOKENS,
     CollapseToolOutputsProjector,
     ContextBudget,
     collapse_tool_outputs,
 )
-from grasp_agents.llm import count_input_tokens
+from grasp_agents.llm import estimate_input_tokens
+from grasp_agents.llm.model_info import ModelCapabilities
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import InputImage, InputText
@@ -87,6 +89,39 @@ def test_budget_detects_overflow() -> None:
     assert _budget(100).is_exceeded(180)
 
 
+def _caps(max_input: int | None, max_output: int | None) -> ModelCapabilities:
+    return ModelCapabilities(
+        function_calling=True,
+        vision=True,
+        output_schema=True,
+        prompt_caching=True,
+        reasoning=True,
+        web_search=True,
+        audio_input=True,
+        max_input_tokens=max_input,
+        max_output_tokens=max_output,
+    )
+
+
+def test_buffer_is_capped_below_the_models_max_output() -> None:
+    budget = ContextBudget.from_capabilities("m", _caps(272_000, 128_000))
+    assert budget.buffer_tokens == MAX_BUFFER_TOKENS
+
+
+def test_buffer_never_exceeds_a_quarter_of_the_window() -> None:
+    # A model that allows as much output as input must not get a zero limit.
+    budget = ContextBudget.from_capabilities("m", _caps(16_000, 16_000))
+    assert budget.buffer_tokens == 4_000
+    assert budget.soft_limit == 12_000
+
+
+def test_explicit_buffer_is_kept() -> None:
+    budget = ContextBudget.from_capabilities(
+        "m", _caps(16_000, 16_000), buffer_tokens=10
+    )
+    assert budget.buffer_tokens == 10
+
+
 # --- Fallbacks when litellm lacks metadata ---
 
 
@@ -123,9 +158,9 @@ def test_collapses_older_outputs_keeps_recent() -> None:
         _call("c2"),
         _result("c2", "B" * 5000),
     ]
-    # keep_recent_turns=1 keeps the c2 turn verbatim; the older c1 output collapses.
+    # keep_recent_rounds=1 keeps the c2 round verbatim; the older c1 output collapses.
     out = collapse_tool_outputs(
-        msgs, keep_recent_turns=1, head_chars=100, tail_chars=50
+        msgs, keep_recent_rounds=1, head_chars=100, tail_chars=50
     )
     c1 = next(m for m in _outputs(out) if m.call_id == "c1")
     c2 = next(m for m in _outputs(out) if m.call_id == "c2")
@@ -135,16 +170,16 @@ def test_collapses_older_outputs_keeps_recent() -> None:
 
 
 def test_recent_window_is_kept_verbatim() -> None:
-    # Fewer turns than keep_recent_turns ⇒ nothing is old ⇒ no collapse.
+    # Fewer rounds than keep_recent_rounds ⇒ nothing is old ⇒ no collapse.
     msgs = [_call("c1"), _result("c1", BIG)]
-    out = collapse_tool_outputs(msgs, keep_recent_turns=8)
+    out = collapse_tool_outputs(msgs, keep_recent_rounds=8)
     assert out == msgs
     assert out[1] is msgs[1]  # same object, untouched
 
 
 def test_keep_recent_tokens_shrinks_the_window() -> None:
-    # Three big tool turns; keep_recent_turns=3 would keep all of them, but a token
-    # cap sized to the last two turns shrinks the kept window so the oldest folds.
+    # Three big tool rounds; keep_recent_rounds=3 would keep all of them, but a
+    # token cap sized to the last two shrinks the kept window so the oldest folds.
     msgs = [
         _call("c1"),
         _result("c1", "A" * 5000),
@@ -153,14 +188,13 @@ def test_keep_recent_tokens_shrinks_the_window() -> None:
         _call("c3"),
         _result("c3", "C" * 5000),
     ]
-    cap = count_input_tokens("mock", msgs[2:])  # exactly the last two turns
+    cap = estimate_input_tokens(msgs[2:])  # exactly the last two rounds
     out = collapse_tool_outputs(
         msgs,
-        keep_recent_turns=3,
+        keep_recent_rounds=3,
         keep_recent_tokens=cap,
         head_chars=100,
         tail_chars=50,
-        model="mock",
     )
     by_id = {m.call_id: m for m in _outputs(out)}
     assert NOTICE in by_id["c1"].text  # oldest folds — window shrank from 3 to 2
@@ -171,7 +205,7 @@ def test_keep_recent_tokens_shrinks_the_window() -> None:
 def test_short_outputs_are_kept() -> None:
     # An OLD short output isn't worth collapsing (no gain from a snippet).
     msgs = [_call("c1"), _result("c1", "ok"), _call("c2"), _result("c2", BIG)]
-    out = collapse_tool_outputs(msgs, keep_recent_turns=1)
+    out = collapse_tool_outputs(msgs, keep_recent_rounds=1)
     assert out[1] is msgs[1]
 
 
@@ -183,22 +217,22 @@ def test_output_with_image_is_kept() -> None:
             InputImage(image_url="https://example.com/x.png"),
         ],
     )
-    # Old (a later turn follows) but carries a non-text part → left intact.
+    # Old (a later round follows) but carries a non-text part → left intact.
     msgs = [_call("c1"), item, _call("c2"), _result("c2", BIG)]
-    out = collapse_tool_outputs(msgs, keep_recent_turns=1)
+    out = collapse_tool_outputs(msgs, keep_recent_rounds=1)
     assert out[1] is item
 
 
 def test_non_tool_items_pass_through() -> None:
     msgs = [_user("hi"), _call("c1"), _result("c1", BIG), _user("next")]
-    out = collapse_tool_outputs(msgs, keep_recent_turns=1)
+    out = collapse_tool_outputs(msgs, keep_recent_rounds=1)
     assert out[0] is msgs[0]  # user message untouched
     assert NOTICE in _outputs(out)[0].text  # c1 output is older → collapsed
 
 
 def test_pairing_is_preserved() -> None:
     msgs = [_user("q"), _call("c1"), _result("c1", BIG), _user("next")]
-    out = collapse_tool_outputs(msgs, keep_recent_turns=1)
+    out = collapse_tool_outputs(msgs, keep_recent_rounds=1)
     assert [m.call_id for m in _outputs(out)] == ["c1"]
     # raises if collapse orphaned a pair
     LLMAgentTranscript(list(out)).validate_tool_call_pairing()
@@ -206,8 +240,8 @@ def test_pairing_is_preserved() -> None:
 
 def test_collapse_is_deterministic() -> None:
     msgs = [_call("c1"), _result("c1", BIG), _call("c2"), _result("c2", BIG)]
-    once = collapse_tool_outputs(msgs, keep_recent_turns=1)
-    twice = collapse_tool_outputs(msgs, keep_recent_turns=1)
+    once = collapse_tool_outputs(msgs, keep_recent_rounds=1)
+    twice = collapse_tool_outputs(msgs, keep_recent_rounds=1)
     assert _outputs(once)[0].text == _outputs(twice)[0].text
 
 
@@ -218,11 +252,11 @@ def test_collapse_is_deterministic() -> None:
 async def test_projector_is_budget_gated() -> None:
     msgs = [_call("c1"), _result("c1", BIG), _call("c2"), _result("c2", BIG)]
     under = await CollapseToolOutputsProjector(
-        budget=_budget(10_000_000), keep_recent_turns=1
+        budget=_budget(10_000_000), keep_recent_rounds=1
     )(msgs, exec_id="x", input_tokens=10)
     assert under == msgs  # under budget ⇒ nothing collapsed
     over = await CollapseToolOutputsProjector(
-        budget=_budget(1), keep_recent_turns=1, head_chars=100, tail_chars=50
+        budget=_budget(1), keep_recent_rounds=1, head_chars=100, tail_chars=50
     )(msgs, exec_id="x", input_tokens=OVER)
     c1 = next(m for m in _outputs(over) if m.call_id == "c1")
     assert NOTICE in c1.text  # old output collapsed once over budget
@@ -233,7 +267,7 @@ async def test_projector_proactive_ignores_budget() -> None:
     msgs = [_call("c1"), _result("c1", BIG), _call("c2"), _result("c2", BIG)]
     # input_tokens far under any budget, but proactive collapses old outputs anyway.
     out = await CollapseToolOutputsProjector(
-        proactive=True, keep_recent_turns=1, head_chars=100, tail_chars=50
+        proactive=True, keep_recent_rounds=1, head_chars=100, tail_chars=50
     )(msgs, exec_id="x", input_tokens=1)
     c1 = next(m for m in _outputs(out) if m.call_id == "c1")
     assert NOTICE in c1.text
@@ -244,7 +278,7 @@ async def test_projector_without_budget_is_inert() -> None:
     # No budget + not proactive: the agent injects its model-derived budget on
     # registration; until then the projector is inert rather than erroring.
     msgs = [_call("c1"), _result("c1", BIG), _call("c2"), _result("c2", BIG)]
-    out = await CollapseToolOutputsProjector(keep_recent_turns=1)(
+    out = await CollapseToolOutputsProjector(keep_recent_rounds=1)(
         msgs, exec_id="x", input_tokens=OVER
     )
     assert out == msgs
@@ -294,11 +328,11 @@ async def test_collapsed_view_reaches_llm_while_log_keeps_full_output() -> None:
     agent = LLMAgent[str, str, None](
         name="collapse_agent", ctx=ctx, llm=llm, tools=[_BigTool()]
     )
-    # keep_recent_turns=1 ⇒ the c1 output is old by the final call and collapses;
+    # keep_recent_rounds=1 ⇒ the c1 output is old by the final call and collapses;
     # soft_limit 1 < the mock's reported input_tokens ⇒ the budget gate fires.
     agent.add_view_projector(
         CollapseToolOutputsProjector(
-            budget=_budget(1), keep_recent_turns=1, head_chars=100, tail_chars=50
+            budget=_budget(1), keep_recent_rounds=1, head_chars=100, tail_chars=50
         )
     )
 
