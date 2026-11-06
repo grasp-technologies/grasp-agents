@@ -547,6 +547,17 @@ def _digest(trial: Trial) -> str:
     )
 
 
+def _experiment_splits(selection: list[str]) -> list[str] | None:
+    """
+    The split a run's experiment covers in Phoenix: the one split the run's
+    selection kept, else ``None`` for every example. Phoenix cannot cover an
+    intersection of splits, nor a subset within a split; such a run's
+    experiment still lists only the trials it ran.
+    """
+    kept = [s.removeprefix("split=") for s in selection if s.startswith("split=")]
+    return kept if len(kept) == 1 else None
+
+
 async def _experiment_for(
     client: PhoenixClient, run: EvaluationRun, link: PhoenixLink, withheld: int
 ) -> tuple[str, bool]:
@@ -571,6 +582,7 @@ async def _experiment_for(
             experiment_name=run.id,
             experiment_description=run.description or run.name,
             experiment_metadata=_experiment_metadata(run, withheld),
+            splits=_experiment_splits(run.dataset.selection),
             repetitions=run.config.repetitions,
             timeout=int(client.timeout_s),
         )

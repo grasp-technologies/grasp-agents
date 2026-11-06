@@ -22,6 +22,7 @@ from grasp_agents.evals.phoenix.client import (
 from grasp_agents.evals.phoenix.sync import (
     GRASP_KEY,
     _digest,  # pyright: ignore[reportPrivateUsage]
+    _experiment_splits,  # pyright: ignore[reportPrivateUsage]
     _is_example_node_id,  # pyright: ignore[reportPrivateUsage]
     parse_phoenix_source,
     record_id,
@@ -250,6 +251,25 @@ def test_trial_digests_change_with_scores() -> None:
     )
     rescored = trial.model_copy(update={"scores": [Score(name="ok", value=False)]})
     assert _digest(trial) != _digest(rescored)
+
+
+def test_an_experiment_covers_the_one_split_its_run_selected() -> None:
+    data = Dataset(
+        [
+            Example(id="a", input=1, splits=["dev"]),
+            Example(id="b", input=2, splits=["dev", "smoke"]),
+            Example(id="c", input=3, splits=["test"]),
+        ],
+        name="d",
+    )
+
+    assert _experiment_splits(data.split("dev").selection) == ["dev"]
+    assert _experiment_splits(data.split("dev").sample(1).selection) == ["dev"]
+    assert _experiment_splits(data.selection) is None
+    assert _experiment_splits(data.exclude_splits(["test"]).selection) is None
+    # Two splits kept one after the other are their intersection, which a
+    # Phoenix experiment cannot cover.
+    assert _experiment_splits(data.split("dev").split("smoke").selection) is None
 
 
 class Draft(BaseModel):

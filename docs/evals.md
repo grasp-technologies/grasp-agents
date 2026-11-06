@@ -221,7 +221,7 @@ progress goes to stderr (`--progress json` for one object per trial).
 With the `phoenix` extra and `PHOENIX_BASE_URL` (plus `PHOENIX_API_KEY`) set,
 datasets can be pushed to and pulled from Phoenix (`phoenix:NAME[@VERSION]`
 dataset references), runs are mirrored as experiments (`push`; sealed trials
-are withheld), and `labels pull` reads human annotations of traced trials back
+are withheld, and a run on one split gets an experiment over that split), and `labels pull` reads human annotations of traced trials back
 as labels. Phoenix 20.0 or later is required; older servers raise
 `PhoenixCompatibilityError`. To give trials trace ids, initialize tracing in
 the spec module (`init_tracing` + `init_phoenix`; see

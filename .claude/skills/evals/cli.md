@@ -161,6 +161,8 @@ See [metrics.md](metrics.md#regression-gate).
     the run's non-sealed examples, creates the dataset if it is missing, and otherwise
     refuses, so push the dataset file first;
   - withholds sealed trials (their count goes into the experiment metadata);
+  - scopes the experiment to the run's split when it selected exactly one
+    (`--split dev`); otherwise the experiment covers every example;
   - on a repeat push, logs only trials that changed.
 - **Trace ids.** Trials get a `trace_id` only when an OpenTelemetry tracer provider is active during
   the run. For example, call `grasp_agents.telemetry.init_tracing(project_name=...)` and
