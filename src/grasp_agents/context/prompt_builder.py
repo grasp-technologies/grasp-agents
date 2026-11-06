@@ -125,11 +125,18 @@ class InputAttachment:
     Text returns are wrapped in ``<system-reminder>...</system-reminder>``
     when ``wrap_in_system_reminder`` is true (default), to tell the model
     "this is a system-injected note, not the user speaking".
+
+    With ``restore_after_compaction``, ``compute`` also runs right after a
+    context compaction, and its result is delivered as input to the next
+    generation: state the summary may have folded away (for example, a document
+    the agent edits) is shown again. Its ``messages`` are then the conversation
+    as the model sees it, summary included.
     """
 
     name: str
     compute: InputAttachmentCompute
     wrap_in_system_reminder: bool = True
+    restore_after_compaction: bool = False
 
 
 class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
@@ -314,11 +321,60 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
         sender of the run's input packet (an upstream processor / teammate), passed
         through so an attachment can attribute the turn.
         """
-        if not self.input_attachments:
+        extra_parts = await self._attachment_parts(
+            self.input_attachments,
+            input_message=input_message,
+            ctx=ctx,
+            exec_id=exec_id,
+            messages=messages,
+            agent_ctx=agent_ctx,
+            source=source,
+        )
+        if not extra_parts:
             return input_message
 
-        extra_parts: list[InputPart] = []
-        for attachment in self.input_attachments:
+        return InputMessageItem(
+            content=[*input_message.content, *extra_parts],
+            role=input_message.role,
+        )
+
+    async def build_restoration_parts(
+        self,
+        *,
+        input_message: InputMessageItem,
+        ctx: SessionContext[CtxT],
+        exec_id: str,
+        messages: Sequence[InputItem],
+        agent_ctx: AgentContext | None = None,
+    ) -> list[InputPart]:
+        """
+        Run the attachments marked ``restore_after_compaction`` against the
+        compacted conversation (``messages``); ``input_message`` is the latest
+        user message.
+        """
+        return await self._attachment_parts(
+            [a for a in self.input_attachments if a.restore_after_compaction],
+            input_message=input_message,
+            ctx=ctx,
+            exec_id=exec_id,
+            messages=messages,
+            agent_ctx=agent_ctx,
+            source=None,
+        )
+
+    @staticmethod
+    async def _attachment_parts(
+        attachments: Sequence[InputAttachment],
+        *,
+        input_message: InputMessageItem,
+        ctx: SessionContext[Any],
+        exec_id: str,
+        messages: Sequence[InputItem] | None,
+        agent_ctx: AgentContext | None,
+        source: str | None,
+    ) -> list[InputPart]:
+        parts: list[InputPart] = []
+        for attachment in attachments:
             result = attachment.compute(
                 input_message=input_message,
                 ctx=ctx,
@@ -335,17 +391,10 @@ class PromptBuilder[InT, CtxT](AutoInstanceAttributesMixin):
                 text = result
                 if attachment.wrap_in_system_reminder:
                     text = wrap_in_system_reminder(text, subject=attachment.name)
-                extra_parts.append(InputText(text=text))
+                parts.append(InputText(text=text))
             else:
-                extra_parts.extend(result)
-
-        if not extra_parts:
-            return input_message
-
-        return InputMessageItem(
-            content=[*input_message.content, *extra_parts],
-            role=input_message.role,
-        )
+                parts.extend(result)
+        return parts
 
     @final
     def build_input_message(

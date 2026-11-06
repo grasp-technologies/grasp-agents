@@ -5,18 +5,21 @@ Everything that shapes what the model sees: the :class:`PromptBuilder` and its
 section/attachment vocabulary (:class:`SystemPromptSection`,
 :class:`InputAttachment`), the built-in section providers
 (:func:`make_env_info_section`, :func:`make_untrusted_content_section`), and
-reusable compaction strategies (:class:`Compaction`,
-:class:`SummarizingCompactor`, :class:`CollapseToolOutputsProjector`).
+context compaction (:class:`SummarizingCompactor`, :class:`ContextBudget`,
+:class:`CollapseToolOutputsProjector`).
 """
 
 from .compaction import (
+    COMPACTION_GUIDANCE,
+    COMPACTION_INSTRUCTIONS,
+    COMPACTION_REQUEST_TAG,
+    COMPACTION_SECTION_NAME,
     CollapseToolOutputsProjector,
-    Compaction,
     ContextBudget,
-    LLMSummarizer,
-    Summarizer,
     SummarizingCompactor,
     collapse_tool_outputs,
+    count_rounds,
+    make_compaction_section,
 )
 from .env_section import (
     CURRENT_TIME_ATTACHMENT_NAME,
@@ -24,6 +27,7 @@ from .env_section import (
     make_current_time_attachment,
     make_env_info_section,
 )
+from .projection import SUMMARY_TAG, apply_folds, fold_summary_text
 from .prompt_builder import (
     InputAttachment,
     InputAttachmentCompute,
@@ -42,24 +46,30 @@ from .untrusted_content import (
 )
 
 __all__ = [
+    "COMPACTION_GUIDANCE",
+    "COMPACTION_INSTRUCTIONS",
+    "COMPACTION_REQUEST_TAG",
+    "COMPACTION_SECTION_NAME",
     "CURRENT_TIME_ATTACHMENT_NAME",
     "ENV_INFO_SECTION_NAME",
+    "SUMMARY_TAG",
     "SYSTEM_REMINDER_TAG",
     "UNTRUSTED_CONTENT_INSTRUCTION",
     "UNTRUSTED_CONTENT_SECTION_NAME",
     "UNTRUSTED_CONTENT_TAG",
     "CollapseToolOutputsProjector",
-    "Compaction",
     "ContextBudget",
     "InputAttachment",
     "InputAttachmentCompute",
-    "LLMSummarizer",
     "PromptBuilder",
     "SectionCompute",
-    "Summarizer",
     "SummarizingCompactor",
     "SystemPromptSection",
+    "apply_folds",
     "collapse_tool_outputs",
+    "count_rounds",
+    "fold_summary_text",
+    "make_compaction_section",
     "make_current_time_attachment",
     "make_env_info_section",
     "make_untrusted_content_section",

@@ -46,6 +46,8 @@ from grasp_agents.types.events import (
     BackgroundTaskLaunchedEvent,
     CompactionEvent,
     CompactionInfo,
+    CompactionStartEvent,
+    CompactionStartInfo,
     Event,
     GenerationEndEvent,
     LLMStreamingErrorEvent,
@@ -280,6 +282,9 @@ def render_event(
     if isinstance(event, GenerationEndEvent):
         return usage_line(event)
 
+    if isinstance(event, CompactionStartEvent):
+        return render_compaction_start(event.data)
+
     if isinstance(event, CompactionEvent):
         return render_compaction_notice(event.data)
 
@@ -327,28 +332,43 @@ def render_retry_notice(event: ResponseRetrying | ResponseFallback) -> Renderabl
     return notice
 
 
+def render_compaction_start(info: CompactionStartInfo) -> RenderableType:
+    """One line marking that compaction started summarizing the conversation."""
+    size = (
+        f"{info.context_tokens:,} / {info.context_window:,} tokens"
+        if info.context_window
+        else f"~{info.context_tokens:,} tokens"
+    )
+    head = "compacting context (overflow)" if info.forced else "compacting context"
+    return Text(f"⊙ {head} · {size}", style=PALETTE["muted"])
+
+
 def render_compaction_notice(info: CompactionInfo) -> RenderableType:
     """
-    Marks where context-window compaction folded older turns into a summary.
+    Marks where context-window compaction folded older rounds into a summary.
 
-    Shows the turns folded, the recent turns kept verbatim, and the resulting
-    context size, plus the summary the folded span was replaced with (a panel
-    when the summary is present, a thin separator rule otherwise).
+    Shows the rounds folded, the recent rounds kept verbatim, the earlier user
+    messages pinned in front of the summary, and the resulting context size, plus
+    the summary the folded span was replaced with (a panel when the summary is
+    present, a thin separator rule otherwise). "(overflow)" marks a compaction
+    forced by a context-window error.
     """
-    folded = info.folded_turns
-    kept = info.preserved_turns
-    parts = [
-        f"folded {folded} turn{'' if folded == 1 else 's'}",
-        f"{kept} recent turn{'' if kept == 1 else 's'} kept",
-    ]
+    folded = info.folded_rounds
+    counts = (
+        f"{folded} round{'' if folded == 1 else 's'} folded, {info.kept_rounds} kept"
+    )
+    if info.pinned_messages:
+        counts += f", {info.pinned_messages} pinned"
+    parts = [counts]
     if info.context_window:
         parts.append(f"{info.context_tokens:,} / {info.context_window:,} tokens")
     elif info.context_tokens:
         parts.append(f"~{info.context_tokens:,} tokens")
-    head = f"⊙ context compacted · {' · '.join(parts)}"
+    title = "context compacted (overflow)" if info.forced else "context compacted"
+    head = f"⊙ {title} · {' · '.join(parts)}"
     if info.summary:
-        # Show exactly what the agent receives — the wrapped <system-reminder>
-        # message, rendered raw (XML-highlighted), like a skill invocation.
+        # Show exactly what the agent receives — the wrapped summary message,
+        # rendered raw (XML-highlighted), like a skill invocation.
         return panel(
             head, _message_body(fold_summary_text(info.summary)), PALETTE["accent"]
         )

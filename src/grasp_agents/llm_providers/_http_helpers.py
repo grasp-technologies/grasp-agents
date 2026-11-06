@@ -44,6 +44,23 @@ _CONTENT_FILTER_PHRASES = (
 )
 
 
+_CONTEXT_WINDOW_CODES = frozenset({"context_length_exceeded"})
+# Substrings of the providers' own overflow messages (lowercased):
+# - Anthropic, 400: "prompt is too long: 208310 tokens > 200000 maximum"
+# - Gemini, 400: "The input token count (N) exceeds the maximum number of tokens
+#   allowed (M)."
+# - OpenAI Responses: "Your input exceeds the context window of this model. Please
+#   adjust your input and try again."
+# - OpenAI Chat Completions (and gateways that mirror it): "This model's maximum
+#   context length is 128000 tokens. However, your messages resulted in ..."
+_CONTEXT_WINDOW_PHRASES = (
+    "prompt is too long",
+    "exceeds the maximum number of tokens allowed",
+    "your input exceeds the context window of this model",
+    "this model's maximum context length is",
+)
+
+
 def parse_retry_after(response: httpx.Response) -> float | None:
     """
     Extract ``Retry-After`` as a float number of seconds.
@@ -104,6 +121,30 @@ def is_content_filter_message(text: str) -> bool:
     """
     lowered = text.lower()
     return any(phrase in lowered for phrase in _CONTENT_FILTER_PHRASES)
+
+
+def is_context_window_message(text: str) -> bool:
+    """
+    Detect an input that exceeds the model's context window, from the message.
+
+    Anthropic and Gemini carry no structured marker for it (a plain 400), and
+    OpenAI-compatible gateways often drop OpenAI's ``context_length_exceeded``
+    code, so the message is all that tells it apart from a malformed request.
+    """
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in _CONTEXT_WINDOW_PHRASES)
+
+
+def is_context_window_error(err: openai.APIError) -> bool:
+    """
+    Detect a context-window overflow on an OpenAI-shaped SDK error.
+
+    ``code`` and ``type`` are both checked — a mid-stream error frame
+    populates only one of them, depending on the provider.
+    """
+    if err.code in _CONTEXT_WINDOW_CODES or err.type in _CONTEXT_WINDOW_CODES:
+        return True
+    return is_context_window_message(str(err))
 
 
 def content_filter_code(err: openai.APIError) -> str | None:

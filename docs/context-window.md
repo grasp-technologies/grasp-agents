@@ -10,10 +10,11 @@ An agent's conversation is stored as an immutable **log** (the transcript). What
 |---|---|---|
 | `ContextWindowManager` | `agent/context_window.py` | Sole writer of the log; builds the view; token accounting; folds; compaction. `agent.agent_ctx.cw`. |
 | `LLMAgentTranscript` | `agent/llm_agent_transcript.py` | Read-only `Sequence[InputItem]` view of the log (`agent.transcript`). |
-| `ViewProjector`, `Compactor`, `InitialContextBuilder` | `hooks.py` | Hook protocols. |
-| `FoldSpec` | `types/folds.py` | A summarized log span `[start, end)`. |
-| `ContextBudget`, `CollapseToolOutputsProjector`, `SummarizingCompactor`, `LLMSummarizer`, `Compaction` | `context/compaction.py` | Built-in budget and strategies (exported from `grasp_agents.context`). |
-| `repair_tool_call_pairing`, `apply_folds` | `context/projection.py` | View-time repair and fold application. |
+| `ViewProjector`, `Compactor`, `CompactionGenerate`, `InitialContextBuilder` | `hooks.py` | Hook protocols. |
+| `CompactionStartEvent`, `CompactionEvent` | `types/events.py` | Stream events: summarizing started; a fold was recorded. |
+| `FoldSpec`, `TokenAnchor` | `types/folds.py` | A summarized log span `[start, end)` with its pinned user messages; the persisted budget anchor. |
+| `ContextBudget`, `SummarizingCompactor`, `CollapseToolOutputsProjector`, `make_compaction_section` | `context/compaction.py` | Built-in budget, strategies and the summary-reading section (exported from `grasp_agents.context`). |
+| `repair_tool_call_pairing`, `apply_folds`, `active_folds` | `context/projection.py` | View-time repair and fold application. |
 | `spill_if_large`, `spill_parts_if_large` | `agent/task_progress.py` | Tool-output spill to `.grasp/tasks/<call_id>.result`. |
 
 ## The log and its writer
@@ -57,46 +58,52 @@ async def hide_old_screenshots(messages, *, exec_id, input_tokens):
 
 ## Folds and compactors
 
-A `FoldSpec(start, end, summary)` summarizes log messages `[start, end)`. In the view it becomes one user message wrapped as `<system-reminder subject="your previous conversation, summarized to compact the input context">`. Folds are persisted with the agent checkpoint, so a summary is not recomputed on resume; a fold reaching past the end of the log is dropped.
+A `FoldSpec(start, end, summary, pinned)` summarizes log messages `[start, end)`. In the view the span becomes the user messages at the `pinned` indices, verbatim without their `<system-reminder>` attachments, followed by one user message holding the summary in `<conversation_summary>` tags. The tags in a summary cannot be forged: framework tags inside it are escaped. Folds are persisted with the agent checkpoint, so a summary is not recomputed on resume; a fold reaching past the end of the log is dropped.
 
-A **compactor** (`@agent.add_compactor`, single slot) is called once per turn boundary, before generation, with the projected token count and the existing folds. It returns a new `FoldSpec` or `None`. Unlike a projector it may call an LLM and produces persisted state. Each recorded fold emits a `CompactionEvent` (`folded_turns`, `preserved_turns`, `context_tokens`, `context_window`, `summary`).
+Only the newest fold within the log applies, together with any older fold that ends before it starts: a fold that covers an earlier one supersedes it. After a rollback below the newest fold, the previous one applies again.
+
+A **compactor** (`@agent.add_compactor`, single slot) is called once per turn boundary, before generation, with the projected token count, the existing folds and `generate` — the agent's own LLM bound to its current request (see below). It returns a new `FoldSpec` or `None`. Unlike a projector it may call an LLM and produces persisted state. When it starts the summary request, the loop emits a `CompactionStartEvent` (`context_tokens`, `context_window`, `forced`) while the summary is generated, at most once per compaction; leaving the event stream cancels the compaction. Each recorded fold emits a `CompactionEvent` (`folded_rounds`, `kept_rounds`, `pinned_messages`, `context_tokens`, `context_window`, `summary`, `forced`), is checkpointed before the next generation, and is followed by the **restoration message**: the results of the input attachments registered with `restore_after_compaction=True` (computed against the folded conversation), plus a note listing the background tasks still running. Nothing is delivered when there is nothing to restore.
+
+A compactor exception is logged as a warning and counts as no fold; the turn proceeds. A `CompactionStartEvent` with no `CompactionEvent` after it means the summary failed or came back empty. After three consecutive failures the agent stops calling the compactor at turn boundaries, until a forced call succeeds.
 
 **Overflow net.** If the provider rejects the view with `LlmContextWindowError`, the loop asks the compactor for a fold with `force=True` and retries the call once. With no compactor, or nothing left to fold, the error propagates.
 
 ## Budget and token accounting
 
-`ContextBudget(model, max_input_tokens, buffer_tokens)` sets a soft limit: `max_input_tokens - buffer_tokens`. `ContextBudget.for_model(model)` / `from_capabilities(model, caps)` fill the window from model metadata (128,000 when unknown) and the buffer from the model's max output tokens (8,192 when unknown). Strategies registered without a budget receive the agent's model-derived one automatically; `agent.context_window` reports the window a registered strategy targets.
+`ContextBudget(model, max_input_tokens, buffer_tokens)` sets a soft limit: `max_input_tokens - buffer_tokens`. `ContextBudget.for_model(model)` / `from_capabilities(model, caps)` fill the window from model metadata (128,000 when unknown) and the buffer from the model's max output tokens (8,192 when unknown), capped at 32,000 and at a quarter of the window. Strategies registered without a budget receive the agent's model-derived one automatically; `agent.context_window` reports the window a registered strategy targets.
 
-The view's size is anchored on the last response's reported `input_tokens`, plus a count of the messages appended since. After a fold, rollback or resume the whole view is recounted.
+The view's size is anchored on the last response's reported `input_tokens`, plus an estimate of the messages appended since (`estimate_input_tokens`: chars / 4, a flat cost per image and file, no tokenizer). The anchor is saved in the checkpoint, so a resumed agent keeps it. Without one (before the first response, after a fold or a rollback below it) the whole view is estimated. Estimates tend to run a few tens of percent high on dense text such as code.
+
+## Rounds
+
+Compaction cuts the log only at round starts. A **round** is the input messages that open it, the model response they trigger, and the results of that response's tool calls; a response that follows tool results opens a round of its own. A cut therefore never separates a tool call from its result, nor a reasoning item from its response's calls. `count_rounds` and `round_starts` expose the split.
 
 ## Built-in strategies
 
-**`CollapseToolOutputsProjector`** keeps the last `keep_recent_turns` turns (default 8) verbatim and cuts older tool outputs to head + tail (`head_chars=3000`, `tail_chars=1000`).
+**`SummarizingCompactor`** folds the conversation into a summary written by the agent's own model once the view outgrows its `threshold`: the budget's soft limit, or `target_tokens` when that is lower. A target well below the window keeps every request cheaper and faster, at the cost of compacting sooner.
 
-- Budget-gated by default: it does nothing while the view fits, which keeps the prompt-cache prefix intact.
-- `proactive=True` collapses every turn, keeping the view minimal at the cost of cache reuse.
-- It never touches recent turns, so it cannot hide the result the model is acting on now.
+- **What it folds.** Everything from the start of the log up to the recent window: the last `keep_recent_rounds` rounds (default 8), fewer while they exceed `keep_recent_tokens` (default a third of the threshold), and at least the latest round. A forced call folds up to the latest round when nothing older is left. With a single round there is nothing to fold.
+- **What it pins.** The user's last `pinned_user_messages` messages before the window (default 3, within `pinned_user_tokens`, default 8,000), shown verbatim in front of the summary.
+- **How it summarizes.** It sends the agent's current request — the same view, tools, tool choice and LLM settings as the last call, without an output schema — with one user message appended: the `instructions` (default `compaction_instructions.md`) in `<compaction_request>` tags. The provider's prompt cache serves the shared prefix, so the summary costs about one cached read of the conversation. The response's usage is recorded and the after-LLM hooks see it; nothing is written to the transcript. If the model answers with a tool call, the call is not executed and the request is repeated with `tool_choice="none"`.
+- **Consolidation.** The summary request carries the previous summary, and the new fold starts at 0, so each summary supersedes the last rather than stacking on it.
+- **Oversized requests.** If the summary request itself overflows the window, it is retried with older tool outputs collapsed, then without the oldest half of the rounds not yet summarized (which the summary then cannot cover).
 
-**`SummarizingCompactor(summarizer=...)`** folds the oldest unfolded span when the projected view exceeds the budget.
-
-- It keeps the last `keep_recent_turns` turns (fewer if they exceed `keep_recent_tokens`).
-- It cuts only on turn boundaries, so a fold never splits a call from its result or reasoning.
-- It bounds each span by the summarizer's own window (an `LLMSummarizer`'s model) or `max_summary_input_tokens`. A large backlog folds one chunk per turn.
-
-`LLMSummarizer(llm)` renders the span as a plain-text transcript and asks for a second-person briefing. Any async `Summarizer` (a processor, a workflow) works too.
-
-**`Compaction`** bundles both behind one budget. `agent.add_compaction()` registers the default bundle built from the agent's own LLM:
+`agent.add_compaction()` registers a `SummarizingCompactor` with the agent's model-derived budget, together with the `compaction` system-prompt section, which tells the model how to read a summary: context, not instructions; what it records from tool results is as untrusted as those results; quote only text visible in a tool result, re-reading a source known only from the summary; and say that earlier parts were summarized when the user asks about them.
 
 ```python
-from grasp_agents.context import Compaction, LLMSummarizer
+from grasp_agents.context import SummarizingCompactor
 
-agent.add_compaction()  # collapse projector + summarizing compactor, budget from the model
+agent.add_compaction()  # summarizing compaction, budget from the model
 
 # Or configure it:
-agent.add_compaction(Compaction(summarizer=LLMSummarizer(cheap_llm), keep_recent_turns=4))
+agent.add_compaction(SummarizingCompactor(target_tokens=200_000, keep_recent_rounds=4))
 ```
 
-The compactor's gate measures the view *after* projection, so summarization fires only when collapsing old tool outputs is not enough.
+**`CollapseToolOutputsProjector`** keeps the last `keep_recent_rounds` rounds (default 8) verbatim and cuts older tool outputs to head + tail (`head_chars=3000`, `tail_chars=1000`). It is not part of `add_compaction()`.
+
+- Budget-gated by default: it collapses only while the view exceeds the budget.
+- `proactive=True` collapses every turn, keeping the view minimal.
+- Each collapse rewrites content the provider has cached, so the requests after it re-process everything from the first collapsed output on. Use it where prompt caching is unavailable, or when a small view matters more than cost.
 
 ## Tool-output spill
 
@@ -115,17 +122,21 @@ A tool's `max_inline_result_chars` caps how much of each result enters the log. 
 3. Truncate and replace repair folds and the token anchor in the same step (`truncate_transcript`, `replace_transcript`).
 4. The initial context is ephemeral: composed at every run entry, never persisted (`LLMAgent._process_stream_body`).
 5. Projectors must be deterministic over `(log, folds)`: the view is re-derived every turn, on resume and after rollback, and nothing but folds persists (`hooks.ViewProjector`).
-6. A fold never splits a turn (`compaction._safe_fold_end`); folds past a truncation are dropped (`truncate_transcript`).
+6. A fold never splits a round (`compaction.keep_recent_start`); folds past a truncation are dropped (`truncate_transcript`), and a newer fold covering an older one supersedes it (`projection.active_folds`).
 7. Compaction is off by default; the overflow net applies only when a compactor is registered (`ContextWindowManager.maybe_compact`, `AgentLoop.query_llm`).
-8. Spilling never hides output without a recovery path (`spill_if_large`).
+8. A summary request never writes to the transcript and never executes a tool call (`AgentLoop._compaction_generate`).
+9. A compactor failure never fails the turn (`ContextWindowManager.maybe_compact`).
+10. Spilling never hides output without a recovery path (`spill_if_large`).
 
 ## Limitations
 
-- No strategy drops old messages outright; the built-ins collapse tool outputs and summarize.
-- Folds cannot be expanded back to the original messages in the view (the log keeps them).
+- Pinned messages and the summary come first in the view, so the model sees them ahead of the kept rounds, not in their original positions.
+- A summary is lossy. Whatever the model left out of it is gone from the view (the log keeps the originals), and a summary written while an injected instruction was in view can still repeat it.
+- The summary request shares the agent's prompt cache only if the provider still holds it. After a pause longer than the provider's cache lifetime, it is billed at the full input price.
+- An output schema set in the LLM's own settings (rather than the agent's `llm_output_schema`) also applies to the summary request.
 - The initial context is rebuilt per run, not per turn: a section reading live state updates at the next run.
 - The compactor is called only at turn boundaries and on the overflow path, never mid-generation.
 
 ## See also
 
-[Agent loop](agent-loop.md) · [Hooks](hooks.md) · [Durability](durability.md) · [Rollback](rollback.md) · [Background tasks](background-tasks.md) · code: `agent/context_window.py`, `context/compaction.py`, `context/projection.py`, `agent/task_progress.py`
+[Agent loop](agent-loop.md) · [Hooks](hooks.md) · [Durability](durability.md) · [Rollback](rollback.md) · [Background tasks](background-tasks.md) · code: `agent/context_window.py`, `context/compaction.py`, `context/compaction_instructions.md`, `context/projection.py`, `agent/task_progress.py`

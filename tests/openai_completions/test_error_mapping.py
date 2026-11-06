@@ -16,6 +16,7 @@ from grasp_agents.types.llm_errors import (
     LlmAuthenticationError,
     LlmBadRequestError,
     LlmContentFilterError,
+    LlmContextWindowError,
     LlmInternalServerError,
     LlmNotFoundError,
     LlmQuotaExceededError,
@@ -39,6 +40,18 @@ def _status_error(
 ) -> Exception:
     response = httpx.Response(code, request=_REQUEST, headers=headers or {})
     return openai.APIStatusError("boom", response=response, body=body)
+
+
+# The error body OpenAI's Responses API returns for an oversized input.
+_CONTEXT_WINDOW_BODY = {
+    "message": (
+        "Your input exceeds the context window of this model. Please adjust "
+        "your input and try again."
+    ),
+    "type": "invalid_request_error",
+    "param": "input",
+    "code": "context_length_exceeded",
+}
 
 
 class TestOpenAICompletionsErrorMapping:
@@ -212,3 +225,38 @@ class TestOpenAIContentFilterDetection:
 
     def test_plain_bad_request_is_not_a_block(self) -> None:
         assert not isinstance(map_api_error(_status_error(400)), LlmContentFilterError)
+
+
+class TestOpenAIContextWindowDetection:
+    """
+    An oversized input must map to ``LlmContextWindowError`` so the agent loop
+    can compact and retry, rather than surfacing as a programmer bug.
+    """
+
+    def test_status_code_maps_to_context_window(self) -> None:
+        mapped = map_api_error(_status_error(400, body=_CONTEXT_WINDOW_BODY))
+        assert isinstance(mapped, LlmContextWindowError)
+
+    def test_streamed_failure_maps_to_context_window(self) -> None:
+        # A ``response.failed`` frame inside a 200 stream carries no status.
+        err = openai.APIError(
+            message=_CONTEXT_WINDOW_BODY["message"],
+            request=_REQUEST,
+            body=_CONTEXT_WINDOW_BODY,
+        )
+        assert isinstance(map_api_error(err), LlmContextWindowError)
+
+    def test_gateway_message_without_code_maps(self) -> None:
+        # Chat Completions' wording, as relayed by a gateway that drops the code.
+        err = openai.APIStatusError(
+            "This model's maximum context length is 128000 tokens. However, your "
+            "messages resulted in 700008 tokens. Please reduce the length of the "
+            "messages.",
+            response=httpx.Response(400, request=_REQUEST),
+            body=None,
+        )
+        assert isinstance(map_api_error(err), LlmContextWindowError)
+
+    def test_plain_bad_request_is_not_context_window(self) -> None:
+        mapped = map_api_error(_status_error(400))
+        assert not isinstance(mapped, LlmContextWindowError)

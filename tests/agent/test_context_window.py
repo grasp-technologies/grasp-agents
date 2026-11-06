@@ -6,10 +6,10 @@ from unittest.mock import patch
 import pytest
 
 from grasp_agents.agent.context_window import ContextWindowManager
-from grasp_agents.types.folds import FoldSpec
+from grasp_agents.types.folds import FoldSpec, TokenAnchor
 from grasp_agents.types.items import InputMessageItem
 
-_COUNT = "grasp_agents.agent.context_window.count_input_tokens"
+_COUNT = "grasp_agents.agent.context_window.estimate_input_tokens"
 
 
 def _user(text: str) -> InputMessageItem:
@@ -92,6 +92,27 @@ class TestTokenAnchor:
         with patch(_COUNT, return_value=3) as count:
             assert cw.effective_input_tokens() == 503
         count.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_anchor_round_trips_through_replace(self) -> None:
+        cw = await _anchored(5)
+        anchor = cw.token_anchor
+        assert anchor == TokenAnchor(input_tokens=1000, message_count=5)
+
+        resumed = _cw(0)
+        resumed.replace_transcript(list(cw.transcript), token_anchor=anchor)
+        resumed.add_messages([_user("new")])
+        with patch(_COUNT, return_value=3) as count:
+            assert resumed.effective_input_tokens() == 1003
+        count.assert_called_once()
+
+    def test_anchor_past_the_new_log_is_ignored(self) -> None:
+        cw = _cw(0)
+        cw.replace_transcript(
+            [_user("a"), _user("b")],
+            token_anchor=TokenAnchor(input_tokens=1000, message_count=5),
+        )
+        assert cw.token_anchor is None
 
 
 class TestReplace:

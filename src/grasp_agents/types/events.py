@@ -209,17 +209,42 @@ class GenerationEndEvent(Event[Response], frozen=True):
 # ── Context compaction ──
 
 
+class CompactionStartInfo(BaseModel):
+    # the model-facing view's estimated token size when summarizing starts
+    context_tokens: int
+    # the model's context window in tokens, when known
+    context_window: int | None = None
+    # compacting to recover from a context-window error, not at the threshold
+    forced: bool = False
+
+
+class CompactionStartEvent(Event[CompactionStartInfo], frozen=True):
+    """
+    Emitted when compaction starts summarizing the conversation, before the
+    summary request is sent — at most once per compaction. A
+    :class:`CompactionEvent` follows when the fold is recorded; when the
+    summary fails or comes back empty, none does, and the turn proceeds
+    uncompacted.
+    """
+
+    type: Literal["agent.compaction_start"] = "agent.compaction_start"
+
+
 class CompactionInfo(BaseModel):
-    # whole turns folded into a summary by this compaction
-    folded_turns: int
-    # recent turns kept verbatim after the fold
-    preserved_turns: int
-    # the model-facing view's token size right after the fold (the new context size)
+    # rounds folded into the summary by this compaction
+    folded_rounds: int
+    # recent rounds kept verbatim after the summary
+    kept_rounds: int
+    # earlier user messages kept verbatim in front of the summary
+    pinned_messages: int = 0
+    # the model-facing view's estimated token size right after the fold
     context_tokens: int
     # the model's context window in tokens, when known
     context_window: int | None = None
     # the summary the folded span was replaced with in the model-facing view
     summary: str = ""
+    # compacted to recover from a context-window error, not at the threshold
+    forced: bool = False
 
 
 class CompactionEvent(Event[CompactionInfo], frozen=True):

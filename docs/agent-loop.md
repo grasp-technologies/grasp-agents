@@ -33,7 +33,7 @@ An interrupted run (`CancelledError`, consumer abort) or a failed one is *settle
 
 Each loop iteration is one turn:
 
-- **PRE-ACT.** If the transcript does not owe a response, wait: a lone agent waits for the next background-task completion (bounded by the run deadline); a resident waits for inbox mail or a completion. Both re-emit background progress every 0.25 s while parked. Then deliver one inbox message (residents), bubble background events, deliver finished task notes, and checkpoint `AFTER_INPUT` if anything was appended. Run the compactor if one is registered. Emit `TurnStartEvent`.
+- **PRE-ACT.** If the transcript does not owe a response, wait: a lone agent waits for the next background-task completion (bounded by the run deadline); a resident waits for inbox mail or a completion. Both re-emit background progress every 0.25 s while parked. Then deliver one inbox message (residents), bubble background events and deliver finished task notes. Run the compactor if one is registered (emitting `CompactionStartEvent` when it starts a summary request, `CompactionEvent` on a fold); after a fold, deliver the restoration message (attachments marked `restore_after_compaction`, running background tasks). Checkpoint `AFTER_INPUT` if anything was appended or folded. Emit `TurnStartEvent`.
 - **ACT.** Run before-LLM hooks, pick `tool_choice`, project the view and call the LLM. Streamed items are committed to the transcript only after the response validates. Run after-LLM hooks; emit `GenerationEndEvent`.
 - **JUDGE.** `decide_next_step(...)` classifies the response.
 - **Dispatch.** Run the handler for the chosen `NextStep`.

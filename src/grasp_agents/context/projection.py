@@ -6,15 +6,17 @@ from it without mutating it, so step rollback stays valid across compaction. Two
 built-ins live here:
 
 * :func:`apply_folds` replaces summarized spans (persisted :class:`FoldSpec`s)
-  with their summary message, and
+  with their pinned user messages and summary message, and
 * :func:`repair_tool_call_pairing` fixes a ``tool_call`` / ``tool_result`` pair a
   projection may have orphaned — the view-time companion to
   :meth:`LLMAgentTranscript.validate_tool_call_pairing`, which validates the log.
 """
 
 import logging
+import re
 from collections.abc import Sequence
 
+from grasp_agents.types.content import InputText
 from grasp_agents.types.folds import FoldSpec
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -23,7 +25,7 @@ from grasp_agents.types.items import (
     InputMessageItem,
 )
 
-from .system_reminder import wrap_in_system_reminder
+from .system_reminder import is_system_reminder
 
 logger = logging.getLogger(__name__)
 
@@ -82,38 +84,88 @@ def repair_tool_call_pairing(messages: Sequence[InputItem]) -> list[InputItem]:
     return repaired
 
 
-SUMMARY_SUBJECT = "your previous conversation, summarized to compact the input context"
+SUMMARY_TAG = "conversation_summary"
+
+# Framework tags a summary must not be able to open or close: it is model-written
+# text that may echo untrusted content.
+_FRAMEWORK_TAG_RE = re.compile(
+    r"<\s*/?\s*(?:conversation_summary|compaction_request|untrusted_content"
+    r"|system-reminder)\b[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def neutralize_framework_tags(text: str) -> str:
+    """Escape the angle brackets of any framework tag embedded in ``text``."""
+    return _FRAMEWORK_TAG_RE.sub(
+        lambda m: m.group(0).replace("<", "&lt;").replace(">", "&gt;"), text
+    )
 
 
 def fold_summary_text(summary: str) -> str:
     """The wrapped text a fold's summary is injected as — what the agent sees."""
-    return wrap_in_system_reminder(summary, subject=SUMMARY_SUBJECT)
+    return f"<{SUMMARY_TAG}>\n{neutralize_framework_tags(summary)}\n</{SUMMARY_TAG}>"
 
 
-def _fold_summary_message(summary: str) -> InputMessageItem:
-    return InputMessageItem.from_text(fold_summary_text(summary), role="user")
+def is_fold_summary(item: InputItem) -> bool:
+    """True if ``item`` is a summary message :func:`apply_folds` injected."""
+    return isinstance(item, InputMessageItem) and item.text.lstrip().startswith(
+        f"<{SUMMARY_TAG}>"
+    )
+
+
+def user_authored(item: InputItem) -> InputMessageItem | None:
+    """
+    ``item`` as the user wrote it — a user message without its
+    ``<system-reminder>`` parts (input attachments) — or ``None`` when it is
+    not a user message or nothing but framework notes is left.
+    """
+    if not isinstance(item, InputMessageItem) or item.role != "user":
+        return None
+    parts = [
+        p
+        for p in item.content
+        if not (isinstance(p, InputText) and is_system_reminder(p.text))
+    ]
+    if not any(not isinstance(p, InputText) or p.text.strip() for p in parts):
+        return None
+    if len(parts) == len(item.content):
+        return item
+    return item.model_copy(update={"content": parts})
+
+
+def active_folds(folds: Sequence[FoldSpec], message_count: int) -> list[FoldSpec]:
+    """
+    The folds the view applies, in log order: the newest fold within the log,
+    then, before its start, the newest fold before that, and so on. A newer fold
+    that covers an older one supersedes it, so after a rollback the newest
+    surviving fold applies on its own.
+    """
+    active: list[FoldSpec] = []
+    floor = message_count
+    for fold in reversed(folds):
+        if fold.end <= floor:
+            active.append(fold)
+            floor = fold.start
+    active.reverse()
+    return active
 
 
 def apply_folds(
     messages: Sequence[InputItem], folds: Sequence[FoldSpec]
 ) -> list[InputItem]:
     """
-    Replace each folded span of ``messages`` with its summary message.
+    Replace each active fold's span of ``messages`` (see :func:`active_folds`)
+    with its pinned user messages, then its summary message.
 
-    ``folds`` index the log; each ``[start, end)`` span becomes a single summary
-    message. Folds are applied in order; one that is out of bounds or overlaps an
-    earlier fold is skipped (defensive — the producer keeps them disjoint and
-    in range, and rollback drops folds past a truncation). With no folds the
-    messages pass through unchanged.
+    A fold reaching past the end of ``messages`` is skipped with a warning: the
+    producer keeps folds in range and rollback drops folds past a truncation,
+    so it signals a diverged fold list. With no folds the messages pass through
+    unchanged.
     """
     if not folds:
         return list(messages)
-    result: list[InputItem] = []
-    cursor = 0
-    for fold in sorted(folds, key=lambda f: f.start):
-        # A skip should not happen in normal operation (the compactor keeps folds
-        # disjoint and in range, and rollback drops invalidated ones), so it
-        # signals a diverged fold list — surface it rather than silently dropping.
+    for fold in folds:
         if fold.end > len(messages):
             logger.warning(
                 "Skipping out-of-bounds fold [%d, %d): log has %d messages",
@@ -121,17 +173,17 @@ def apply_folds(
                 fold.end,
                 len(messages),
             )
-            continue
-        if fold.start < cursor:
-            logger.warning(
-                "Skipping overlapping fold [%d, %d): overlaps a fold ending at %d",
-                fold.start,
-                fold.end,
-                cursor,
-            )
-            continue
+    result: list[InputItem] = []
+    cursor = 0
+    for fold in active_folds(folds, len(messages)):
         result.extend(messages[cursor : fold.start])
-        result.append(_fold_summary_message(fold.summary))
+        for i in fold.pinned:
+            pinned = user_authored(messages[i])
+            if pinned is not None:
+                result.append(pinned)
+        result.append(
+            InputMessageItem.from_text(fold_summary_text(fold.summary), role="user")
+        )
         cursor = fold.end
     result.extend(messages[cursor:])
     return result
