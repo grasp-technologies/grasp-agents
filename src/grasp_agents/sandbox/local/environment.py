@@ -13,8 +13,11 @@ it (the environment is the sole grantor of an exec surface).
 Confinement: ``"none"`` is a plain subprocess with **no** OS isolation (see
 :class:`LocalExecBackend`); ``"seatbelt"`` (macOS) wraps every command in a
 generated Seatbelt profile confining writes + spawned processes (see
-:class:`~grasp_agents.sandbox.seatbelt.SeatbeltExecBackend`); ``"auto"`` selects
-Seatbelt on macOS; ``"bwrap"`` (Linux) is not built yet. ``readonly_roots`` are
+:class:`~grasp_agents.sandbox.local.seatbelt.SeatbeltExecBackend`); ``"srt"``
+delegates to the ``srt`` CLI; ``"bwrap"`` (Linux) is not implemented and raises
+:class:`NotImplementedError`. ``"auto"`` resolves to Seatbelt on macOS, to
+``"bwrap"`` on Linux when ``bwrap`` is on ``PATH`` (so it raises there), and
+otherwise to ``"none"`` with a :class:`RuntimeWarning`. ``readonly_roots`` are
 write-denied on the file-tool plane under every confinement; on the exec plane
 Seatbelt and srt OS-deny them (they're excluded from the writable root set),
 while ``"none"`` leaves them writable and ``network`` is recorded-not-enforced.
@@ -131,11 +134,13 @@ def local_environment(
         confinement: ``"none"`` (plain subprocess, no isolation), ``"seatbelt"``
             (macOS OS confinement), ``"srt"`` (delegates to the ``srt`` CLI if
             installed — adds domain-allowlisted network egress that native
-            Seatbelt lacks), or ``"auto"`` (Seatbelt on macOS, else a warned
-            fallback to ``"none"``). ``"bwrap"`` (Linux) is not built yet.
+            Seatbelt lacks), or ``"auto"`` (Seatbelt on macOS; ``"bwrap"`` on
+            Linux when ``bwrap`` is on ``PATH``; else ``"none"`` with a
+            :class:`RuntimeWarning`). ``"bwrap"`` is not implemented and raises
+            :class:`NotImplementedError` — including when ``"auto"`` picks it.
         network: Recorded on the policy. Not enforced under ``"none"``; under
-            Seatbelt, ``NONE`` and ``ALL`` are enforced (loopback / allowlist
-            need a proxy — deferred).
+            Seatbelt only ``NONE`` and ``ALL`` are accepted (and enforced) —
+            other values raise; use ``"srt"`` for a domain allowlist.
         allowed_domains: Egress allowlist (proxy-backed backends only — srt /
             hosted; Seatbelt egress is all-or-nothing).
         denied_domains: Egress denylist, checked first (proxy-backed only).

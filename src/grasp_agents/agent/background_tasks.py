@@ -542,9 +542,9 @@ class BackgroundTask:
     event to ``events`` (the buffer), mirrors the stream's output to ``log`` as
     it flows, and settles ``outcome`` when the tool finishes. ``cursor`` tracks
     how far the turn boundary has re-emitted the buffer to the parent stream
-    (live progress). ``task_key`` is set only for a *resumable* tool (its
-    ``TaskRecord`` is persisted so a restart can re-spawn it); a backgrounded
-    shell command is not resumable, so it has none.
+    (live progress). ``task_key`` names the task's persisted ``TaskRecord``
+    (``None`` without a checkpoint store): on resume a resumable tool is
+    re-spawned from it, any other is reported to the agent as interrupted.
     """
 
     task_id: str
@@ -633,7 +633,7 @@ class BackgroundTask:
             role="user",
         )
 
-        # Durable record → DELIVERED (resumable tasks only), deferred to
+        # Durable record → DELIVERED, deferred to
         # :meth:`BackgroundTaskManager.flush_flips` after the next checkpoint
         # persists the transcript holding this note: flipping now would lose the
         # outcome on a crash before that checkpoint (resume skips DELIVERED
@@ -754,6 +754,14 @@ class BackgroundTaskManager[CtxT]:
         return any(not bt.consumer.done() for bt in self._tasks.values())
 
     @property
+    def has_tracked_tasks(self) -> bool:
+        """
+        True while any task is tracked: still running, or finished with its
+        completion not yet taken by :meth:`pop_completions`.
+        """
+        return bool(self._tasks)
+
+    @property
     def has_blocking_tasks(self) -> bool:
         """
         True while any *answer-blocking* background task is undelivered.
@@ -779,7 +787,20 @@ class BackgroundTaskManager[CtxT]:
         runs can read it to know a finished task's result is pending delivery, and run
         another turn so the turn boundary delivers it.
         """
+        self._drop_stale_completions()
         return not self._completions.empty()
+
+    def _drop_stale_completions(self) -> None:
+        """
+        Forget queued ids of tasks no longer tracked: a killed or rolled-back task's
+        done-callback still queues its id, though there is nothing to deliver.
+        """
+        queued = [
+            self._completions.get_nowait() for _ in range(self._completions.qsize())
+        ]
+        for task_id in queued:
+            if task_id in self._tasks:
+                self._completions.put_nowait(task_id)
 
     def _check_capacity(self) -> None:
         if len(self._tasks) >= self._max_background:
@@ -1222,13 +1243,15 @@ class BackgroundTaskManager[CtxT]:
         ``run_timeout`` — on expiry it returns and the loop's next deadline check
         stops the run.
         """
+        self._drop_stale_completions()
         if not self._completions.empty() or not self._tasks:
             return
         try:
             task_id = await asyncio.wait_for(self._completions.get(), timeout)
         except TimeoutError:
             return
-        self._completions.put_nowait(task_id)
+        if task_id in self._tasks:
+            self._completions.put_nowait(task_id)
 
     # --- Turn-boundary delivery ---
 

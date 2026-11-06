@@ -172,16 +172,15 @@ class LLMAgent[InT, OutT, CtxT](
         # Memory feature toggle (opt-in). When True, the agent gets:
         # - the ``memory`` system-prompt section (taxonomy + index)
         # - the ``relevant_memories_attachment`` (per-turn surfacing)
-        # - in agentic mode, a :class:`FileToolkit` auto-attached so the
-        #   agent can search, author, and maintain memory files via the
-        #   generic file tools.
+        # - a :class:`FileToolkit` auto-attached so the agent can search,
+        #   author, and maintain memory files via the generic file tools.
         # Default is False — the agent should know it's adding memory
         # to its system prompt before it happens.
         enable_memory: bool = False,
         # Skills feature toggle (opt-in). When True, the agent gets:
         # - the ``skills`` system-prompt section (catalog of available
         #   skills, when ``ctx.skills`` is set)
-        # - in agentic mode, the ``load_skill`` tool appended
+        # - the ``load_skill`` tool auto-attached
         # Default is False — same rationale as ``enable_memory``.
         enable_skills: bool = False,
         # Per-agent scoping over the session-shared skill catalog (only
@@ -656,6 +655,14 @@ class LLMAgent[InT, OutT, CtxT](
         turn.
         """
         return sorted(wm.step for wm in self._step_watermarks if wm.step is not None)
+
+    @property
+    def parked_after_rollback(self) -> bool:
+        """
+        True from a rollback until a run re-delivers the step it rewound to. A run
+        with no input is refused meanwhile.
+        """
+        return self._parked_after_rollback
 
     async def read_rollback_anchors(self) -> list[StepWatermark]:
         """
@@ -1360,10 +1367,15 @@ class LLMAgent[InT, OutT, CtxT](
         # attribute the rendered turn (``None`` for a human turn / direct run).
         self._current_input_source = in_packet.sender if in_packet is not None else None
 
-        # No inputs is allowed on resume (a checkpoint store is bound) and for
-        # a resident (attached inbox), whose turns arrive from the inbox.
+        # No inputs is allowed on resume (a checkpoint store is bound), for a
+        # resident (attached inbox), whose turns arrive from the inbox, and when a
+        # finished background task awaits delivery: the run delivers it.
         has_input = any(x is not None for x in [chat_inputs, in_args, in_packet])
-        if not has_input and (self.is_resumable or self._agent_ctx.inbox is not None):
+        if not has_input and (
+            self.is_resumable
+            or self._agent_ctx.inbox is not None
+            or self._agent_ctx.bg_tasks.has_undelivered_completions
+        ):
             return None
 
         # Fan-in: a multi-payload packet (e.g. a ParallelProcessor's output)
@@ -1643,6 +1655,10 @@ class LLMAgent[InT, OutT, CtxT](
             messages_to_expose.extend(
                 await self._start_step(chat_inputs, inp=inp, exec_id=exec_id)
             )
+        elif pure_resume and not resident and not self.transcript.owes_response:
+            # The last run finished, so this one only delivers finished
+            # background tasks: it gets the full turn budget.
+            self._loop.turn = 0
 
         # Surface initial context + input message for a fresh delivery
         for event in self._expose_messages(
@@ -1735,8 +1751,8 @@ class LLMAgent[InT, OutT, CtxT](
 
     # --- Decorator API ---
     #
-    # Preferred over subclassing. Each decorator sets a callback slot
-    # on the appropriate component (AgentLoop or PromptBuilder).
+    # Preferred over subclassing. Each decorator registers its callback on the
+    # appropriate component (AgentLoop, PromptBuilder, or ContextWindowManager).
 
     def add_output_parser(
         self, func: OutputParser[InT, OutT]
@@ -1776,9 +1792,8 @@ class LLMAgent[InT, OutT, CtxT](
 
         Sections are rendered after the static ``sys_prompt``, in registration
         order. Skills, env info, MCP instructions, and memory plug in via this
-        method.
-        Names are not enforced unique — the same section may appear twice if
-        you register it twice; deduplicate on the caller side if needed.
+        method. Re-registering the same ``name`` replaces the prior section in
+        place, so an auto-attached section can be overridden by name.
         """
         self._prompt_builder.add_system_prompt_section(section)
 
@@ -1870,7 +1885,7 @@ class LLMAgent[InT, OutT, CtxT](
     #
     # Override these in subclasses for customization.
     # Alternatively, use the @agent.add_* decorators (preferred).
-    # These read the run context off ``self.ctx`` (the single shared
+    # These read the session context off ``self.ctx`` (the single shared
     # session instance); ``on_before_tool_impl`` keeps an explicit ``ctx``
     # for symmetry with the standalone approval-hook factories.
 
@@ -1944,8 +1959,8 @@ class LLMAgent[InT, OutT, CtxT](
 
     def _register_overridden_implementations(self) -> None:
         """
-        Detect subclass overrides and set them as callback slots
-        on the appropriate components (AgentLoop, PromptBuilder).
+        Detect subclass overrides and register them as callbacks on the
+        appropriate components (AgentLoop, PromptBuilder, ContextWindowManager).
         """
         base_cls = LLMAgent[Any, Any, Any]
 
@@ -1957,10 +1972,10 @@ class LLMAgent[InT, OutT, CtxT](
                 self.build_initial_context_impl
             )
 
-        # Agent loop. ``final_answer_extractor`` / ``view_projector`` are
-        # single-slot (replace); the observer / decision hooks stack — a
-        # subclass ``*_impl`` override is appended first so it runs before
-        # any decorator-registered hook.
+        # ``final_answer_extractor`` is single-slot (replace); view projectors
+        # and the observer / decision hooks stack — a subclass ``*_impl``
+        # override is registered first so it runs before any
+        # decorator-registered one.
         if is_method_overridden("extract_final_answer_impl", self, base_cls):
             self._loop.final_answer_extractor = self.extract_final_answer_impl
         if is_method_overridden("project_view_impl", self, base_cls):

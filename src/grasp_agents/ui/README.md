@@ -33,7 +33,7 @@ For a runnable end-to-end demo, see **Real demo: data-analysis copilot** below.
 ```python
 from grasp_agents.ui import run_tui
 
-run_tui(agent.run_stream("your prompt", ctx=ctx))   # blocks until you quit
+run_tui(agent.run_stream("your prompt"))   # blocks until you quit
 ```
 
 **Interactive** — type messages, the agent runs each turn:
@@ -111,7 +111,7 @@ A non-trivial, runnable example (`grasp_agents.examples.tui.data_copilot`): an
 Python in a confined local sandbox, sharing one workspace.
 
 ```bash
-# needs OPENAI_API_KEY in .env, the `notebook-exec` extra, and the `srt` CLI
+# needs OPENAI_API_KEY in .env, the `code-exec` extra, and the `srt` CLI
 python -m grasp_agents.examples.tui.data_copilot
 ```
 
@@ -132,11 +132,11 @@ notebooks, use the helpers that reuse the same renderers:
 from grasp_agents.ui import render_events_inline, display_screenshot
 
 # live: render each event inline as it streams (real images via IPython)
-async for _ in render_events_inline(agent.run_stream("…", ctx=ctx)):
+async for _ in render_events_inline(agent.run_stream("…")):
     pass
 
 # static: a one-shot SVG snapshot of the multi-pane layout
-await display_screenshot(agent.run_stream("…", ctx=ctx))
+await display_screenshot(agent.run_stream("…"))
 ```
 
 `render_events_inline` needs only `rich` (no Textual); `display_screenshot`

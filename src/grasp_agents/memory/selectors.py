@@ -19,21 +19,22 @@ Approximate cost: ~$0.005 per turn at Sonnet 4.5 list prices.
 
 Usage::
 
-    from grasp_agents import LLMAgent
+    from grasp_agents import LLMAgent, SessionContext
+    from grasp_agents.file_backend import LocalFileBackend
+    from grasp_agents.llm_providers.openai_completions import OpenAILLM
     from grasp_agents.memory import (
         MemoryProvider,
         make_llm_relevance_selector,
     )
-    from grasp_agents.file_backend import LocalFileBackend
 
-    selector_llm = OpenAILLM(model="gpt-4o-mini")
+    selector_llm = OpenAILLM(model_name="gpt-4o-mini")
     memory = MemoryProvider(root="/path/to/memdir")
     memory.set_selector(make_llm_relevance_selector(selector_llm))
 
     backend = LocalFileBackend(allowed_roots=[memory.root])
-    agent = LLMAgent(...)
     ctx = SessionContext(state=..., file_backend=backend, memory=memory)
-    await agent.run(..., ctx=ctx)
+    agent = LLMAgent(..., ctx=ctx)
+    await agent.run(...)
 """
 
 from __future__ import annotations

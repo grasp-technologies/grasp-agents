@@ -148,6 +148,47 @@ class TestUpdateFromResponseWithCosts:
         assert agent_usage.cost is not None
         assert agent_usage.cost > 0
 
+    def test_cache_reads_and_writes_are_priced_apart_from_plain_input(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Input counts cache reads and writes; each is billed at its own price."""
+        import litellm
+
+        price = {
+            "litellm_provider": "openai",
+            "mode": "chat",
+            "input_cost_per_token": 1e-6,
+            "cache_creation_input_token_cost": 1.25e-6,
+            "cache_read_input_token_cost": 1e-7,
+            "output_cost_per_token": 4e-6,
+        }
+        monkeypatch.setitem(litellm.model_cost, "cache-priced-model", price)
+        tracker = UsageTracker()
+        usage = ResponseUsage(
+            input_tokens=10_000,
+            output_tokens=500,
+            total_tokens=10_500,
+            input_tokens_details=InputTokensDetails(
+                cached_tokens=6_000, cache_write_tokens=3_000
+            ),
+            output_tokens_details=OutputTokensDetails(reasoning_tokens=200),
+        )
+
+        tracker.update(
+            "agent_a",
+            [_make_response(usage=usage)],
+            model_name="cache-priced-model",
+            litellm_provider="openai",
+        )
+
+        expected = (
+            1_000 * price["input_cost_per_token"]
+            + 3_000 * price["cache_creation_input_token_cost"]
+            + 6_000 * price["cache_read_input_token_cost"]
+            + 500 * price["output_cost_per_token"]
+        )
+        assert tracker.usages["agent_a"].cost == pytest.approx(expected)
+
     def test_cost_with_litellm_provider_hint(self):
         """Provider hint helps resolve model for cost lookup."""
         tracker = UsageTracker()

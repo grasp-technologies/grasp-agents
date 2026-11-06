@@ -1,7 +1,7 @@
 """
 ``E2BEnvironment`` + the :func:`e2b_environment` factory — an
 :class:`ExecutionEnvironment` over an E2B cloud sandbox, with
-:class:`SnapshotCapable` wired to E2B's native pause/resume.
+:class:`SnapshotCapable` wired to E2B's native snapshots.
 """
 
 from __future__ import annotations
@@ -72,7 +72,9 @@ def _sandbox_cls(code_interpreter: bool) -> type[AsyncSandbox]:
 class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
     """
     An :class:`ExecutionEnvironment` over an E2B cloud sandbox, with
-    :class:`SnapshotCapable` wired to E2B's native pause/resume.
+    :class:`SnapshotCapable` wired to E2B's native snapshots (``snapshot`` /
+    ``restore`` rewind to a point-in-time copy; ``pause`` / ``resume`` suspend
+    and reconnect the same sandbox).
 
     Prefer the :func:`e2b_environment` factory. The async context manager owns
     sandbox create (``__aenter__`` — where the optional ``e2b`` import happens)

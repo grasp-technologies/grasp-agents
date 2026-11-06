@@ -147,7 +147,7 @@ class MemberHost:
 
     @property
     def ctx(self) -> SessionContext[Any]:
-        """The member's run context (approval store, skills, etc.)."""
+        """The member's session context (approval store, skills, etc.)."""
         return self._member.ctx
 
     async def submit_message(

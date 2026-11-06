@@ -166,9 +166,9 @@ class FileBackend(ABC):
         """
         Return ``(content, mtime)``. ``errors='replace'`` for utf-8.
 
-        Read-before-write bookkeeping happens in the caller — tools
-        consult :func:`get_current_file_edit_state` and record the read
-        themselves.
+        Read-before-write bookkeeping happens in the caller — the file tools
+        record the read in the agent's ``FileEditSessionState``
+        (``agent_ctx.file_edit_state``).
         """
         ...
 
@@ -187,7 +187,8 @@ class FileBackend(ABC):
         overwrite: bool = True,
     ) -> float:
         """
-        Atomically write ``data``. Returns the post-write mtime.
+        Atomically write ``data``, creating missing parent directories. Returns the
+        post-write mtime. ``path`` is one the caller has validated.
 
         The caller refreshes its :class:`FileEditSessionState` read
         record with the returned mtime so a following :class:`EditTool`

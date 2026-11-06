@@ -10,18 +10,19 @@ write (co-location by construction).
 1. *What can this backend contain?* With ``confinement="none"`` — **nothing at
    the OS level.** It is a plain subprocess: the supervisor bounds runtime
    (timeouts), output size, and kills the process group on exit, but the
-   command sees the whole host filesystem and the inherited environment. The
-   shared :class:`SandboxPolicy` constrains only ``cwd`` selection and the base
-   env here; real OS confinement arrives with the ``seatbelt`` / ``bwrap``
-   variants.
+   command sees the whole host filesystem and the inherited host environment
+   (minus variables matching ``policy.env_scrub``). The shared
+   :class:`SandboxPolicy` constrains only ``cwd`` selection and the subprocess
+   env here; ``network`` is recorded on the policy but not enforced. OS
+   confinement comes from the ``seatbelt`` / ``srt`` subclasses.
 2. *What is outside the boundary / trusted to the host?* Everything: reads,
    writes outside ``allowed_roots``, network, signals, other processes. **Local
-   is not a sandbox.** Use it only for trusted/personal/dev work, or pair the
-   policy with Seatbelt/bwrap/Docker.
+   is not a sandbox.** Use it only for trusted/personal/dev work, or use
+   ``seatbelt`` / ``srt`` confinement or a remote sandbox (E2B).
 3. *What did we configure and why?* ``inherit_host_env=True`` so ordinary tools
-   resolve on ``PATH`` (the unconfined path is meant to just work); the
-   credential-dotfile deny list still governs the *file* tools via the paired
-   ``LocalFileBackend``.
+   resolve on ``PATH`` (the unconfined path is meant to just work), with
+   ``env_scrub`` still stripping credential variables; the credential-dotfile
+   deny list still governs the *file* tools via the paired ``LocalFileBackend``.
 
 POSIX only — see :class:`ProcessSupervisor`.
 """
@@ -95,10 +96,9 @@ class LocalExecBackend(ExecBackend, SessionCapable, KernelCapable):
             lifecycle. A fresh one is created when omitted.
         name: Confinement label surfaced on :class:`ExecResult` (``"local"``
             for the unconfined path; subclasses set ``"seatbelt"`` / etc.).
-        inherit_host_env: When True (default for the unconfined path), the
-            subprocess inherits ``os.environ`` as its base — necessary for
-            ``PATH`` to resolve. Confined backends override to a scrubbed,
-            minimal env.
+        inherit_host_env: When True (default), the subprocess inherits
+            ``os.environ`` (minus ``policy.env_scrub`` matches) as its base —
+            necessary for ``PATH`` to resolve. False starts from an empty env.
         python: Interpreter the Jupyter kernel launches with (and whose bin dir
             leads ``PATH`` for shells), defaulting to ``sys.executable``. Point
             it at a venv/conda interpreter (e.g. ``"<venv>/bin/python"``) to run

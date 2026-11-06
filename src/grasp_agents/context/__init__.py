@@ -3,9 +3,10 @@ Prompt / context construction.
 
 Everything that shapes what the model sees: the :class:`PromptBuilder` and its
 section/attachment vocabulary (:class:`SystemPromptSection`,
-:class:`InputAttachment`), plus the built-in section providers
-(:func:`make_env_info_section`, :func:`make_untrusted_content_section`).
-Future context-window management (compaction) lands here too.
+:class:`InputAttachment`), the built-in section providers
+(:func:`make_env_info_section`, :func:`make_untrusted_content_section`), and
+reusable compaction strategies (:class:`Compaction`,
+:class:`SummarizingCompactor`, :class:`CollapseToolOutputsProjector`).
 """
 
 from .compaction import (

@@ -109,7 +109,7 @@ Labels can also come from Phoenix. Trials carry trace ids when the run is traced
 into a Phoenix project — e.g. the spec module calls
 `grasp_agents.telemetry.init_tracing(project_name=NAME)` and
 `grasp_agents.telemetry.phoenix.init_phoenix(project_name=NAME)` with
-`PHOENIX_COLLECTOR_HTTP_ENDPOINT` set. People annotate those traces (or any of
+`TELEMETRY_COLLECTOR_HTTP_ENDPOINT` set. People annotate those traces (or any of
 their spans) in the UI under the score's name, and `grasp-evals labels pull
 to_label.jsonl --project NAME --into my_labels.jsonl` reads the newest human
 annotation of each back (`--true`/`--false` map other label words to pass/fail).

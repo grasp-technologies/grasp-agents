@@ -149,8 +149,9 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         # When (and whether) the agent loop moves this tool call to the
         # background. ``None`` (default): never — the call runs to completion in
         # the foreground. ``0``: immediately — the call launches in the
-        # background and the loop is notified on completion (a resumable tool
-        # also gets a durable ``TaskRecord``; otherwise ephemeral). ``N`` (> 0):
+        # background and the loop is notified on completion (with a checkpoint
+        # store it also gets a durable ``TaskRecord``: on resume a resumable tool
+        # is re-spawned, any other is reported as interrupted). ``N`` (> 0):
         # in the foreground until it has run ``N`` seconds, then moved to the
         # background if still running. Orthogonal to ``blocks_final_answer`` —
         # this is *when* it backgrounds, that is *whether the loop waits*.
@@ -168,9 +169,12 @@ class BaseTool[InT: BaseModel, OutT, CtxT](AutoInstanceAttributesMixin, ABC):
         # and a call's result is larger, the agent sees a head+tail excerpt plus
         # a pointer to an on-disk ``.grasp/tasks/<call_id>.result`` file holding
         # the full output for ``Read`` / ``Grep`` (a backgrounded call's
-        # completion note also names it). Spilling needs a ``file_backend``;
-        # with none, or if the write fails, the result is inlined whole
-        # (truncating with no recovery path would hide output unrecoverably).
+        # completion note also names it). In a result of several parts, the cap
+        # bounds all text parts together (each part over its share is spilled
+        # to its own file) and images stay inline. Spilling needs a
+        # ``file_backend``; with none, or if the write fails, the result is
+        # inlined whole (truncating with no recovery path would hide output
+        # unrecoverably).
         # Cap tools with large mechanical output (shell logs); leave ``None``
         # where the result *is* the answer (a sub-agent).
         self.max_inline_result_chars = max_inline_result_chars
