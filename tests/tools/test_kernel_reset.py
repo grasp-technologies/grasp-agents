@@ -33,11 +33,14 @@ class _FakeKernel:
 class _FakeKernelBackend:
     name = "fake"
 
-    def __init__(self) -> None:
+    def __init__(self, *, reattaches: bool = False) -> None:
         self.opened: list[_FakeKernel] = []
+        self._reattaches = reattaches
 
     async def open_kernel(self, context_id: str | None = None) -> _FakeKernel:
         k = _FakeKernel()
+        if self._reattaches:
+            k.context_id = context_id
         self.opened.append(k)
         return k
 
@@ -85,3 +88,29 @@ async def test_in_place_kernel_restart_surfaces_through_holder() -> None:
     assert holder.take_reset() is True
     assert holder.take_reset() is False
     assert len(backend.opened) == 1
+
+
+@pytest.mark.asyncio
+async def test_reopen_reattaching_to_the_seeded_context_is_not_a_reset() -> None:
+    # E2B reopens a kernel on a persisted context (e.g. one a rollback rebound
+    # it to) whose variables survive, so the model must not be told otherwise.
+    holder = KernelHolder()
+    backend = _FakeKernelBackend(reattaches=True)
+    k1 = await holder.get(backend)
+    holder.rebind("ctx-1")
+    k1.closed = True
+    k2 = await holder.get(backend)
+    assert k2.context_id == "ctx-1"
+    assert holder.take_reset() is False
+
+
+@pytest.mark.asyncio
+async def test_reopen_ignoring_the_seeded_context_is_a_reset() -> None:
+    # A backend that cannot re-attach (local) starts a fresh kernel even when
+    # seeded, so its namespace is gone.
+    holder = KernelHolder(context_id="ctx-1")
+    backend = _FakeKernelBackend()
+    k1 = await holder.get(backend)
+    k1.closed = True
+    await holder.get(backend)
+    assert holder.take_reset() is True
