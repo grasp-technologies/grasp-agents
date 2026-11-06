@@ -46,6 +46,8 @@ from grasp_agents.types.events import (
     BackgroundTaskLaunchedEvent,
     CompactionEvent,
     CompactionInfo,
+    CompactionStartEvent,
+    CompactionStartInfo,
     Event,
     GenerationEndEvent,
     LLMStreamingErrorEvent,
@@ -280,6 +282,9 @@ def render_event(
     if isinstance(event, GenerationEndEvent):
         return usage_line(event)
 
+    if isinstance(event, CompactionStartEvent):
+        return render_compaction_start(event.data)
+
     if isinstance(event, CompactionEvent):
         return render_compaction_notice(event.data)
 
@@ -325,6 +330,17 @@ def render_retry_notice(event: ResponseRetrying | ResponseFallback) -> Renderabl
     if detail:
         notice.append(f" — {truncate(detail, 200)}", style=PALETTE["muted"])
     return notice
+
+
+def render_compaction_start(info: CompactionStartInfo) -> RenderableType:
+    """One line marking that compaction started summarizing the conversation."""
+    size = (
+        f"{info.context_tokens:,} / {info.context_window:,} tokens"
+        if info.context_window
+        else f"~{info.context_tokens:,} tokens"
+    )
+    head = "compacting context (overflow)" if info.forced else "compacting context"
+    return Text(f"⊙ {head} · {size}", style=PALETTE["muted"])
 
 
 def render_compaction_notice(info: CompactionInfo) -> RenderableType:

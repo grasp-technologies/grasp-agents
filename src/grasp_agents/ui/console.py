@@ -33,6 +33,7 @@ from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
     CompactionEvent,
+    CompactionStartEvent,
     Event,
     GenerationEndEvent,
     LLMStreamEvent,
@@ -300,7 +301,7 @@ class EventConsole:
         elif isinstance(event, GenerationEndEvent):
             self._on_generation_end(event)
 
-        elif isinstance(event, CompactionEvent):
+        elif isinstance(event, (CompactionStartEvent, CompactionEvent)):
             self._print(self._render(event))
 
         elif isinstance(event, LLMStreamEvent):

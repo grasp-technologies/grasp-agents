@@ -796,6 +796,25 @@ def test_renders_compaction_notice() -> None:
     assert "conversation_summary" in text
 
 
+def test_compaction_start_is_one_muted_line() -> None:
+    from grasp_agents.types.events import CompactionStartEvent, CompactionStartInfo
+
+    ev = CompactionStartEvent(
+        source="a",
+        data=CompactionStartInfo(context_tokens=1850, context_window=2000),
+    )
+    rendered = render_event(ev)
+    assert isinstance(rendered, Text)
+    assert rendered.plain == "⊙ compacting context · 1,850 / 2,000 tokens"
+
+    forced = CompactionStartEvent(
+        source="a", data=CompactionStartInfo(context_tokens=900, forced=True)
+    )
+    assert "compacting context (overflow) · ~900 tokens" in _render_to_text(
+        render_event(forced)
+    )
+
+
 def test_compaction_notice_singular_round() -> None:
     from grasp_agents.types.events import CompactionEvent, CompactionInfo
 

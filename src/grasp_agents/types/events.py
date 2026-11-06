@@ -209,6 +209,27 @@ class GenerationEndEvent(Event[Response], frozen=True):
 # ── Context compaction ──
 
 
+class CompactionStartInfo(BaseModel):
+    # the model-facing view's estimated token size when summarizing starts
+    context_tokens: int
+    # the model's context window in tokens, when known
+    context_window: int | None = None
+    # compacting to recover from a context-window error, not at the threshold
+    forced: bool = False
+
+
+class CompactionStartEvent(Event[CompactionStartInfo], frozen=True):
+    """
+    Emitted when compaction starts summarizing the conversation, before the
+    summary request is sent — at most once per compaction. A
+    :class:`CompactionEvent` follows when the fold is recorded; when the
+    summary fails or comes back empty, none does, and the turn proceeds
+    uncompacted.
+    """
+
+    type: Literal["agent.compaction_start"] = "agent.compaction_start"
+
+
 class CompactionInfo(BaseModel):
     # rounds folded into the summary by this compaction
     folded_rounds: int

@@ -9,6 +9,7 @@ other, failure handling, the context-window-error path, restoration after a
 fold, persistence and rollback.
 """
 
+import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -42,7 +43,7 @@ from grasp_agents.hooks import ViewTransform
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText, ReasoningSummary
-from grasp_agents.types.events import CompactionEvent
+from grasp_agents.types.events import CompactionEvent, CompactionStartEvent
 from grasp_agents.types.folds import FoldSpec, TokenAnchor
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -695,6 +696,135 @@ async def test_add_compaction_registers_the_section_and_injects_the_budget() -> 
     assert COMPACTION_SECTION_NAME in names
 
 
+# --- Compaction start event ---
+
+
+@pytest.mark.asyncio
+async def test_start_event_arrives_before_the_summary_returns() -> None:
+    release = asyncio.Event()
+
+    @dataclass(frozen=True)
+    class _GatedSummaryLLM(MockLLM):
+        async def _generate_response_once(self, input: Any, **kwargs: Any) -> Any:
+            if _is_summary_request(input):
+                await release.wait()
+            return await super()._generate_response_once(input, **kwargs)
+
+    llm = _GatedSummaryLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "c1"),
+            _tool_call_response("big", "{}", "c2"),
+            _text_response("SUMMARY"),
+            _text_response("done"),
+        ]
+    )
+    agent, _ = _agent(llm)
+    kinds: list[str] = []
+    # The summary only returns once the start event has reached the consumer;
+    # a start event held back until the fold would never arrive.
+    async with asyncio.timeout(5):
+        async for event in agent.run_stream("go"):
+            if isinstance(event, CompactionStartEvent):
+                kinds.append("start")
+                release.set()
+            elif isinstance(event, CompactionEvent):
+                kinds.append("fold")
+    assert kinds == ["start", "fold"]
+
+
+@pytest.mark.asyncio
+async def test_start_event_reports_the_context_being_compacted() -> None:
+    llm = MockLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "c1"),
+            _tool_call_response("big", "{}", "c2"),
+            _text_response("SUMMARY"),
+            _text_response("done"),
+        ]
+    )
+    agent, _ = _agent(
+        llm,
+        compactor=SummarizingCompactor(
+            budget=ContextBudget("mock", max_input_tokens=5, buffer_tokens=0),
+            keep_recent_rounds=1,
+        ),
+    )
+    events = [event async for event in agent.run_stream("go")]
+    start = next(e for e in events if isinstance(e, CompactionStartEvent))
+    assert start.source == "a"
+    assert start.data.context_window == 5
+    assert start.data.context_tokens > 5
+    assert not start.data.forced
+
+
+@pytest.mark.asyncio
+async def test_no_start_event_without_a_summary_request() -> None:
+    llm = MockLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "c1"),
+            _text_response("done"),
+        ]
+    )
+    agent, _ = _agent(llm, compactor=SummarizingCompactor(budget=_budget(10_000_000)))
+    events = [event async for event in agent.run_stream("go")]
+    assert not any(isinstance(e, CompactionStartEvent) for e in events)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_summary_has_a_start_but_no_fold() -> None:
+    @dataclass(frozen=True)
+    class _FailingSummaryLLM(MockLLM):
+        async def _generate_response_once(self, input: Any, **kwargs: Any) -> Any:
+            if _is_summary_request(input):
+                raise LlmBadRequestError(
+                    "boom", response=httpx.Response(400, request=_REQ), body=None
+                )
+            return await super()._generate_response_once(input, **kwargs)
+
+    llm = _FailingSummaryLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "c1"),
+            _tool_call_response("big", "{}", "c2"),
+            _text_response("done"),
+        ]
+    )
+    agent, _ = _agent(llm)
+    events = [event async for event in agent.run_stream("go")]
+    assert sum(isinstance(e, CompactionStartEvent) for e in events) == 1
+    assert not any(isinstance(e, CompactionEvent) for e in events)
+
+
+@pytest.mark.asyncio
+async def test_leaving_the_stream_at_the_start_event_cancels_the_summary() -> None:
+    cancelled = asyncio.Event()
+
+    @dataclass(frozen=True)
+    class _HangingSummaryLLM(MockLLM):
+        async def _generate_response_once(self, input: Any, **kwargs: Any) -> Any:
+            if _is_summary_request(input):
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+            return await super()._generate_response_once(input, **kwargs)
+
+    llm = _HangingSummaryLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "c1"),
+            _tool_call_response("big", "{}", "c2"),
+        ]
+    )
+    agent, _ = _agent(llm)
+    stream = agent.run_stream("go")
+    async with asyncio.timeout(5):
+        async for event in stream:
+            if isinstance(event, CompactionStartEvent):
+                break
+        await stream.aclose()  # type: ignore[attr-defined]
+        await cancelled.wait()
+
+
 # --- Context-window error → forced compaction + retry ---
 
 
@@ -730,6 +860,8 @@ async def test_context_window_error_compacts_and_retries() -> None:
     assert events[-1].data.payloads[0] == "recovered"  # type: ignore[union-attr]
     compactions = [e for e in events if isinstance(e, CompactionEvent)]
     assert [c.data.forced for c in compactions] == [True]
+    starts = [e for e in events if isinstance(e, CompactionStartEvent)]
+    assert [s.data.forced for s in starts] == [True]
     assert agent.agent_ctx.cw.folds[-1].summary == "SUM"
 
 
