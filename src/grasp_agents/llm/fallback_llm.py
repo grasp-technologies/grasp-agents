@@ -11,7 +11,11 @@ from pydantic import BaseModel
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.errors import LLMResponseValidationError
 from grasp_agents.types.items import InputItem
-from grasp_agents.types.llm_errors import LlmErrorTuple, LlmRateLimitError
+from grasp_agents.types.llm_errors import (
+    LlmContextWindowError,
+    LlmErrorTuple,
+    LlmRateLimitError,
+)
 from grasp_agents.types.llm_events import LlmEvent, ResponseFallback
 from grasp_agents.types.recovery import classify_error, is_retryable
 from grasp_agents.types.response import Response
@@ -33,11 +37,14 @@ def _select_cascade_error(errors: Sequence[Exception]) -> Exception:
     succeed later, and must not be masked by another member's deterministic
     failure (e.g. a misconfigured fallback). Among retryable errors, prefer
     one without a server-imposed backoff floor (shortest implied wait);
-    among floored rate limits, the smallest ``retry_after``.
+    among floored rate limits, the smallest ``retry_after``. With none
+    retryable, prefer a context-window overflow: the caller can compact the
+    input and retry.
     """
     retryable = [e for e in errors if is_retryable(classify_error(e))]
     if not retryable:
-        return errors[-1]
+        overflows = [e for e in errors if isinstance(e, LlmContextWindowError)]
+        return overflows[0] if overflows else errors[-1]
     no_floor = [
         e for e in retryable if not (isinstance(e, LlmRateLimitError) and e.retry_after)
     ]

@@ -176,7 +176,8 @@ validation and validation retries) before the cascade moves on. The cascade
 advances on exhausted or deterministic API errors and on
 `LLMResponseValidationError` once the member's retries are spent. A content
 filter block also advances it. When every member fails, the raised error
-prefers a retryable one (shortest implied wait).
+prefers a retryable one (shortest implied wait), then a context-window overflow,
+which compaction can recover from.
 
 Constructor rules (`FallbackLLM.__post_init__`): `retry_policy`,
 `llm_settings` and `litellm_provider` must be `None`; set them on the members.
@@ -201,6 +202,12 @@ Providers map every SDK exception to a type in `types/llm_errors.py`
 | `CONTENT_REFUSED` | `LlmContentFilterError` | no |
 | `INVALID_REQUEST` | 400, 404, 422 | no |
 | `INVALID_RESPONSE` | `LlmResponseSchemaError` (our types rejected the provider's response) | no |
+
+`LlmContextWindowError` is OpenAI's `context_length_exceeded` code, Anthropic's
+400 "prompt is too long" and 413, Gemini's 400 "input token count … exceeds",
+LiteLLM's `ContextWindowExceededError`, and a gateway's "maximum context length"
+message. Anthropic and Gemini give the overflow no structured marker, so it is
+matched on the message (`_http_helpers.is_context_window_message`).
 
 Give your own exception a `recovery_hint` class attribute, or call
 `register_recovery_hint(exc_type, hint)` for types you don't own.

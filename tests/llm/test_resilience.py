@@ -642,6 +642,11 @@ class TestCascadeErrorSelection:
         errors = [_rate_limited(60.0), smallest, _rate_limited(30.0)]
         assert _select_cascade_error(errors) is smallest
 
+    def test_context_window_preferred_over_other_deterministic(self) -> None:
+        """A shorter view can still succeed; an auth failure on a fallback can't."""
+        overflow = LlmContextWindowError("too long", response=_resp(400), body=None)
+        assert _select_cascade_error([overflow, _auth()]) is overflow
+
 
 class TestFallbackMemberRetries:
     """Retries-first cascade: members exhaust their own retries before failover."""

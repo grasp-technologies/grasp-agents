@@ -78,3 +78,21 @@ class TestAnthropicErrorMapping:
             body=None,
         )
         assert isinstance(map_api_error(err), LlmQuotaExceededError)
+
+    def test_prompt_too_long_maps_to_context_window(self) -> None:
+        # Anthropic rejects an oversized prompt as a plain 400.
+        err = anthropic.APIStatusError(
+            "prompt is too long: 213456 tokens > 200000 maximum",
+            response=httpx.Response(400, request=_REQUEST),
+            body={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "prompt is too long: 213456 tokens > 200000 maximum",
+                },
+            },
+        )
+        assert isinstance(map_api_error(err), LlmContextWindowError)
+
+    def test_plain_bad_request_is_not_context_window(self) -> None:
+        assert not isinstance(map_api_error(_status_error(400)), LlmContextWindowError)
