@@ -1,7 +1,9 @@
 """
 Live compaction on real providers: the summary request is the agent's own
 request plus a compaction request, sent with the agent's tools and reasoning
-settings, and the run carries on from the folded view.
+settings, and the run carries on from the folded view. With conversation caching
+on (Anthropic's top-level ``cache_control``), the summary request reads the
+conversation from the prompt cache.
 
 ``integration``-gated; each case skips without its provider key. Run:
 
@@ -36,10 +38,11 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration]
 
+# Several thousand tokens: past every provider's minimum cacheable prompt length.
 _NOTES = "My notes for later. The launch code is ORCHID-7. " + " ".join(
     f"Paragraph {i}: the committee reviewed the budget, the venue and the "
     "schedule, and deferred every decision to the next meeting."
-    for i in range(60)
+    for i in range(250)
 )
 
 
@@ -61,6 +64,7 @@ def _anthropic(key: str) -> LLM:
             "max_tokens": 8000,
             "thinking": {"type": "adaptive"},
             "output_config": {"effort": "medium"},
+            "cache_control": {"type": "ephemeral"},
         },
     )
 
@@ -77,9 +81,11 @@ def _openai_responses(key: str) -> LLM:
     )
 
 
+# provider -> (key fixture, LLM builder, whether a cache hit is guaranteed:
+# Anthropic caches what ``cache_control`` marks, OpenAI's caching is best-effort)
 _PROVIDERS = {
-    "anthropic": ("anthropic_api_key", _anthropic),
-    "openai_responses": ("openai_api_key", _openai_responses),
+    "anthropic": ("anthropic_api_key", _anthropic, True),
+    "openai_responses": ("openai_api_key", _openai_responses, False),
 }
 
 
@@ -88,7 +94,7 @@ _PROVIDERS = {
 async def test_compaction_summarizes_on_the_agents_own_request(
     provider: str, request: pytest.FixtureRequest
 ) -> None:
-    key_fixture, build = _PROVIDERS[provider]
+    key_fixture, build, caches = _PROVIDERS[provider]
     llm = build(request.getfixturevalue(key_fixture))
     agent = LLMAgent[str, str, None](
         name="assistant",
@@ -132,8 +138,13 @@ async def test_compaction_summarizes_on_the_agents_own_request(
 
     # The summary call is an extra LLM call: observed by the hooks, never written
     # to the transcript, and the run answers from the folded view afterwards.
-    generations = sum(isinstance(e, GenerationEndEvent) for e in events)
-    assert len(observed) > generations
+    generations = [e.data for e in events if isinstance(e, GenerationEndEvent)]
+    summaries = [r for r in observed if not any(r is g for g in generations)]
+    assert summaries
+    if caches:
+        usage = summaries[0].usage
+        assert usage is not None
+        assert usage.input_tokens_details.cached_tokens > 0
     assert not any(
         isinstance(m, InputMessageItem) and COMPACTION_REQUEST_TAG in m.text
         for m in agent.transcript

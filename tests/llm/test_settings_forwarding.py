@@ -36,6 +36,20 @@ def test_anthropic_forwards_new_settings(monkeypatch: pytest.MonkeyPatch) -> Non
     assert extra["output_config"] == {"effort": "low"}
 
 
+def test_anthropic_forwards_conversation_caching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy")
+    from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+
+    llm = AnthropicLLM(
+        model_name="claude-sonnet-4-5",
+        llm_settings={"cache_control": {"type": "ephemeral", "ttl": "1h"}},
+    )
+    extra = llm._make_api_input([]).get("extra_settings", {})
+    assert extra["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
 def test_openai_completions_forwards_new_settings() -> None:
     from grasp_agents.llm_providers.openai_completions.completions_llm import (
         OpenAILLM,

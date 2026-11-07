@@ -11,6 +11,7 @@ from anthropic._types import (
     omit,  # type: ignore[import]  # ruff: ignore[import-private-name]
 )
 from anthropic.types import (
+    CacheControlEphemeralParam,
     MetadataParam,
     OutputConfigParam,
     ThinkingConfigParam,
@@ -94,6 +95,13 @@ class AnthropicLLMSettings(CloudLLMSettings, total=False):
     # ``apply_output_schema_via_provider`` is set the schema travels via the
     # separate ``output_schema`` channel (``messages.parse``) instead.
     output_config: OutputConfigParam | None
+
+    # Caches the whole prompt up to its last block on every request, so each
+    # turn of an agent loop (and a compaction summary request) reads the
+    # conversation the previous request wrote. Off by default: a request that is
+    # never followed by one sharing its prefix pays the cache-write premium for
+    # nothing.
+    cache_control: CacheControlEphemeralParam | None
 
     metadata: MetadataParam | None
     service_tier: Literal["auto", "standard_only"] | None

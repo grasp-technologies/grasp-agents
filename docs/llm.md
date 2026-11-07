@@ -236,6 +236,16 @@ Completions) as an explicit `prompt_cache_breakpoint`; the others ignore it.
 OpenAI's TTL is set per request through the `prompt_cache_options` setting.
 The MCP instructions section carries a breakpoint by default.
 
+To cache the conversation itself on Anthropic, set the top-level
+`cache_control` setting (`AnthropicLLMSettings`), for example
+`llm_settings={"cache_control": {"type": "ephemeral"}}` (`"ttl": "1h"` for an
+hour). Every request then writes a cache entry ending at its last block, and the
+next request in an agent loop, compaction's summary request included, reads it.
+Anthropic finds an earlier entry only within about 20 blocks of a request's end,
+so a turn that adds more blocks than that (many parallel tool calls) misses once.
+It is off by default: a request no later request extends pays the cache-write
+premium for nothing. OpenAI and Gemini cache shared prefixes on their own.
+
 ## Model metadata, tokens, cost
 
 `llm.capabilities` (`ModelCapabilities`: `function_calling`, `vision`,
