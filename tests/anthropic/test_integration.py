@@ -14,6 +14,7 @@ import pytest
 from pydantic import BaseModel, Field
 
 from grasp_agents.llm.cloud_llm import APIProvider
+from grasp_agents.llm.model_info import get_model_capabilities
 from grasp_agents.types.content import AnnotationUrlCitation, OutputMessageText
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -24,7 +25,7 @@ from grasp_agents.types.items import (
     ReasoningItem,
     WebSearchCallItem,
 )
-from grasp_agents.types.llm_errors import LlmNotFoundError
+from grasp_agents.types.llm_errors import LlmContextWindowError, LlmNotFoundError
 from grasp_agents.types.llm_events import (
     OutputItemDone,
     OutputMessageTextPartTextDelta,
@@ -794,6 +795,52 @@ class TestAnthropicErrorMappingLive:
                 pass
 
         with pytest.raises(LlmNotFoundError):
+            await _consume()
+
+    @staticmethod
+    def _oversized_input(model: str) -> list[InputMessageItem]:
+        """
+        A prompt of about 1.5x the model's listed window: rejected before it is
+        processed (and so not billed), yet well under the 32 MB request limit,
+        which would answer 413 instead.
+        """
+        window = get_model_capabilities(model, "anthropic").max_input_tokens
+        if window is None:
+            pytest.skip(f"no listed context window for {model}")
+        return [InputMessageItem.from_text("word " * (window * 3 // 2))]
+
+    @pytest.fixture
+    def overflow_llm(self, anthropic_api_key: str) -> CloudLLM:
+        from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+
+        return AnthropicLLM(
+            model_name="claude-haiku-5-5",
+            api_provider=APIProvider(
+                name="anthropic", base_url=None, api_key=anthropic_api_key
+            ),
+            llm_settings={"max_tokens": 1},
+        )
+
+    @pytest.mark.asyncio
+    async def test_prompt_too_long_is_a_context_window_error(
+        self, overflow_llm: CloudLLM
+    ) -> None:
+        with pytest.raises(LlmContextWindowError, match="prompt is too long"):
+            await overflow_llm.generate_response(
+                self._oversized_input(overflow_llm.model_name)
+            )
+
+    @pytest.mark.asyncio
+    async def test_stream_prompt_too_long_is_a_context_window_error(
+        self, overflow_llm: CloudLLM
+    ) -> None:
+        async def _consume() -> None:
+            async for _ in overflow_llm.generate_response_stream(
+                self._oversized_input(overflow_llm.model_name)
+            ):
+                pass
+
+        with pytest.raises(LlmContextWindowError, match="prompt is too long"):
             await _consume()
 
 
