@@ -222,7 +222,7 @@ class CompactionStartEvent(Event[CompactionStartInfo], frozen=True):
     """
     Emitted when compaction starts summarizing the conversation, before the
     summary request is sent — at most once per compaction. A
-    :class:`CompactionEvent` follows when the fold is recorded; when the
+    :class:`CompactionDoneEvent` follows when the fold is recorded; when the
     summary fails or comes back empty, none does, and the turn proceeds
     uncompacted.
     """
@@ -247,10 +247,13 @@ class CompactionInfo(BaseModel):
     forced: bool = False
 
 
-class CompactionEvent(Event[CompactionInfo], frozen=True):
-    """Emitted when context-window pressure folds older messages into a summary."""
+class CompactionDoneEvent(Event[CompactionInfo], frozen=True):
+    """
+    Emitted when compaction records a fold: older messages were replaced by a
+    summary in the model-facing view. Follows a :class:`CompactionStartEvent`.
+    """
 
-    type: Literal["agent.compaction"] = "agent.compaction"
+    type: Literal["agent.compaction_done"] = "agent.compaction_done"
 
 
 # ── Messages ──

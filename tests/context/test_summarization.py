@@ -43,7 +43,7 @@ from grasp_agents.hooks import ViewTransform
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.content import OutputMessageText, ReasoningSummary
-from grasp_agents.types.events import CompactionEvent, CompactionStartEvent
+from grasp_agents.types.events import CompactionDoneEvent, CompactionStartEvent
 from grasp_agents.types.folds import FoldSpec, TokenAnchor
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -675,7 +675,7 @@ async def test_compaction_event_reports_rounds_and_pins() -> None:
     )
     agent, _ = _agent(llm)
     events = [event async for event in agent.run_stream("go")]
-    compactions = [e for e in events if isinstance(e, CompactionEvent)]
+    compactions = [e for e in events if isinstance(e, CompactionDoneEvent)]
     assert len(compactions) == 1
     info = compactions[0].data
     assert (info.folded_rounds, info.kept_rounds, info.pinned_messages) == (1, 1, 1)
@@ -727,7 +727,7 @@ async def test_start_event_arrives_before_the_summary_returns() -> None:
             if isinstance(event, CompactionStartEvent):
                 kinds.append("start")
                 release.set()
-            elif isinstance(event, CompactionEvent):
+            elif isinstance(event, CompactionDoneEvent):
                 kinds.append("fold")
     assert kinds == ["start", "fold"]
 
@@ -791,7 +791,7 @@ async def test_a_failed_summary_has_a_start_but_no_fold() -> None:
     agent, _ = _agent(llm)
     events = [event async for event in agent.run_stream("go")]
     assert sum(isinstance(e, CompactionStartEvent) for e in events) == 1
-    assert not any(isinstance(e, CompactionEvent) for e in events)
+    assert not any(isinstance(e, CompactionDoneEvent) for e in events)
 
 
 @pytest.mark.asyncio
@@ -858,7 +858,7 @@ async def test_context_window_error_compacts_and_retries() -> None:
     events = [event async for event in agent.run_stream("go")]
 
     assert events[-1].data.payloads[0] == "recovered"  # type: ignore[union-attr]
-    compactions = [e for e in events if isinstance(e, CompactionEvent)]
+    compactions = [e for e in events if isinstance(e, CompactionDoneEvent)]
     assert [c.data.forced for c in compactions] == [True]
     starts = [e for e in events if isinstance(e, CompactionStartEvent)]
     assert [s.data.forced for s in starts] == [True]

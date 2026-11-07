@@ -781,7 +781,7 @@ class AgentLoop[CtxT]:
     ) -> AsyncIterator[Event[Any]]:
         """
         Run the compactor, yielding a :class:`CompactionStartEvent` as soon as
-        it starts the summary request, then the :class:`CompactionEvent` and the
+        it starts the summary request, then the :class:`CompactionDoneEvent` and the
         restoration message when it records a fold.
 
         The compactor runs as a task so the start event reaches the consumer
@@ -819,7 +819,7 @@ class AgentLoop[CtxT]:
 
         if fold is None:
             return
-        yield self.cw.compaction_event(
+        yield self.cw.compaction_done_event(
             fold, source=self.agent_name, exec_id=exec_id, forced=force
         )
         async for event in self._restore_after_compaction(exec_id=exec_id):

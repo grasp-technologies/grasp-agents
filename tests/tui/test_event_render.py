@@ -773,9 +773,9 @@ def test_web_search_find_in_page_rendered() -> None:
 
 
 def test_renders_compaction_notice() -> None:
-    from grasp_agents.types.events import CompactionEvent, CompactionInfo
+    from grasp_agents.types.events import CompactionDoneEvent, CompactionInfo
 
-    ev = CompactionEvent(
+    ev = CompactionDoneEvent(
         source="a",
         data=CompactionInfo(
             folded_rounds=7,
@@ -816,9 +816,9 @@ def test_compaction_start_is_one_muted_line() -> None:
 
 
 def test_compaction_notice_singular_round() -> None:
-    from grasp_agents.types.events import CompactionEvent, CompactionInfo
+    from grasp_agents.types.events import CompactionDoneEvent, CompactionInfo
 
-    ev = CompactionEvent(
+    ev = CompactionDoneEvent(
         source="a",
         data=CompactionInfo(folded_rounds=1, kept_rounds=1, context_tokens=900),
     )
@@ -829,9 +829,9 @@ def test_compaction_notice_singular_round() -> None:
 
 
 def test_forced_compaction_notice_says_why() -> None:
-    from grasp_agents.types.events import CompactionEvent, CompactionInfo
+    from grasp_agents.types.events import CompactionDoneEvent, CompactionInfo
 
-    ev = CompactionEvent(
+    ev = CompactionDoneEvent(
         source="a",
         data=CompactionInfo(
             folded_rounds=4, kept_rounds=1, context_tokens=900, forced=True

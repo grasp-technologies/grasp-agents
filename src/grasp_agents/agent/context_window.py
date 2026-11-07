@@ -18,7 +18,7 @@ from grasp_agents.context.compaction import Budgeted, ContextBudget, count_round
 from grasp_agents.context.projection import apply_folds, repair_tool_call_pairing
 from grasp_agents.llm.model_info import get_model_capabilities
 from grasp_agents.llm.token_counting import estimate_input_tokens
-from grasp_agents.types.events import CompactionEvent, CompactionInfo
+from grasp_agents.types.events import CompactionDoneEvent, CompactionInfo
 from grasp_agents.types.folds import TokenAnchor
 
 from .llm_agent_transcript import LLMAgentTranscript
@@ -366,13 +366,13 @@ class ContextWindowManager:
         )
         return fold
 
-    def compaction_event(
+    def compaction_done_event(
         self, fold: FoldSpec, *, source: str, exec_id: str, forced: bool = False
-    ) -> CompactionEvent:
+    ) -> CompactionDoneEvent:
         """The event announcing a recorded fold (the reduced view size + summary)."""
         messages = self._messages
         budget = getattr(self.compactor, "budget", None)
-        return CompactionEvent(
+        return CompactionDoneEvent(
             source=source,
             exec_id=exec_id,
             data=CompactionInfo(

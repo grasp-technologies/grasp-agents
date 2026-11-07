@@ -44,7 +44,7 @@ from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
-    CompactionEvent,
+    CompactionDoneEvent,
     CompactionInfo,
     CompactionStartEvent,
     CompactionStartInfo,
@@ -285,7 +285,7 @@ def render_event(
     if isinstance(event, CompactionStartEvent):
         return render_compaction_start(event.data)
 
-    if isinstance(event, CompactionEvent):
+    if isinstance(event, CompactionDoneEvent):
         return render_compaction_notice(event.data)
 
     if isinstance(event, BackgroundTaskLaunchedEvent):

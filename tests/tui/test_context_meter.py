@@ -12,7 +12,7 @@ pytest.importorskip("textual")
 from textual.widgets import Static
 
 from grasp_agents.types.events import (
-    CompactionEvent,
+    CompactionDoneEvent,
     CompactionInfo,
     Event,
     GenerationEndEvent,
@@ -107,7 +107,7 @@ async def test_meter_shows_tokens_over_window() -> None:
 async def test_meter_updates_to_post_fold_size_on_compaction() -> None:
     extra: list[Event[Any]] = [
         _gen("m", 1900),
-        CompactionEvent(
+        CompactionDoneEvent(
             source="analyst",
             exec_id="e",
             data=CompactionInfo(
@@ -151,7 +151,7 @@ async def test_compaction_event_renders_summary_in_pane() -> None:
     from grasp_agents.ui._widgets import SelectableStatic
 
     extra: list[Event[Any]] = [
-        CompactionEvent(
+        CompactionDoneEvent(
             source="analyst",
             exec_id="e",
             data=CompactionInfo(
