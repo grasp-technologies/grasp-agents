@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 from pydantic import BaseModel
 
 from grasp_agents.context.compaction import (
-    SummarizingCompactor,
+    CompactionPolicy,
     make_compaction_section,
 )
 from grasp_agents.context.env_section import (
@@ -46,7 +46,7 @@ from grasp_agents.hooks import (
     AfterToolHook,
     BeforeLlmHook,
     BeforeToolHook,
-    Compactor,
+    CustomCompactor,
     FinalAnswerExtractor,
     InitialContextBuilder,
     InputContentBuilder,
@@ -67,7 +67,7 @@ from grasp_agents.skills.injection import make_skills_section
 from grasp_agents.skills.types import SkillFilter
 from grasp_agents.telemetry import SpanKind
 from grasp_agents.tools.base import BaseTool
-from grasp_agents.types.content import Content, InputImage, InputText
+from grasp_agents.types.content import Content, InputImage
 from grasp_agents.types.errors import ProcInputValidationError
 from grasp_agents.types.events import (
     Event,
@@ -82,7 +82,10 @@ from grasp_agents.types.message import USER_SENDER
 from grasp_agents.types.response import Response
 from grasp_agents.utils.callbacks import is_method_overridden
 from grasp_agents.utils.io import get_prompt
-from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
+from grasp_agents.utils.validation import (
+    is_str_type,
+    validate_obj_from_json_or_py_string,
+)
 
 from .agent_context import AgentContext
 from .agent_loop import AgentLoop
@@ -463,7 +466,6 @@ class LLMAgent[InT, OutT, CtxT](
         # Always wired; without a store a save still maintains the in-memory
         # head (``_committed``) and just skips persistence.
         self._loop.checkpoint_callback = self.save_checkpoint
-        self._loop.restoration_builder = self._build_restoration_message
 
         # The loop and its tools are built after super().__init__, so the
         # session set there hasn't reached them yet — cascade it now.
@@ -638,36 +640,6 @@ class LLMAgent[InT, OutT, CtxT](
         self._step_watermarks = []
         self._invalidate_log_state()
 
-    async def _build_restoration_message(
-        self, *, exec_id: str
-    ) -> InputMessageItem | None:
-        """
-        The input delivered right after a compaction: the results of the input
-        attachments marked ``restore_after_compaction``, and the background
-        tasks still running. ``None`` when there is nothing to restore.
-        """
-        latest_input = next(
-            (m for m in reversed(self.transcript) if isinstance(m, InputMessageItem)),
-            InputMessageItem(content=[], role="user"),
-        )
-        parts = await self._prompt_builder.build_restoration_parts(
-            input_message=latest_input,
-            ctx=self._ctx,
-            exec_id=exec_id,
-            messages=self._agent_ctx.cw.folded_messages(),
-            agent_ctx=self._agent_ctx,
-        )
-        running = self._agent_ctx.bg_tasks.running_tasks_note()
-        if running is not None:
-            parts.append(
-                InputText(
-                    text=wrap_in_system_reminder(running, subject="background tasks")
-                )
-            )
-        if not parts:
-            return None
-        return InputMessageItem(content=parts, role="user")
-
     async def aclose(self) -> None:
         """
         Tear down this agent's session — delegated to :meth:`AgentContext.close`
@@ -793,7 +765,7 @@ class LLMAgent[InT, OutT, CtxT](
         self._agent_ctx.cw.replace_transcript(
             resume_state.messages,
             folds=checkpoint.folds,
-            token_anchor=checkpoint.token_anchor,
+            usage=checkpoint.usage,
         )
 
         # Kernel-context ids are only meaningful inside the snapshotted
@@ -1080,7 +1052,7 @@ class LLMAgent[InT, OutT, CtxT](
             current=current,
             step_watermarks=list(self._step_watermarks),
             folds=list(self._agent_ctx.cw.folds),
-            token_anchor=self._agent_ctx.cw.token_anchor,
+            usage=self._agent_ctx.cw.last_usage,
             output=output,
             location=location,
             stop_reason=stop_reason,
@@ -1257,7 +1229,7 @@ class LLMAgent[InT, OutT, CtxT](
                 current=self._committed.model_copy(update={"step": step}),
                 step_watermarks=list(self._step_watermarks),
                 folds=list(self._agent_ctx.cw.folds),
-                token_anchor=self._agent_ctx.cw.token_anchor,
+                usage=self._agent_ctx.cw.last_usage,
                 location=AgentCheckpointLocation.ROLLING_BACK,
             )
             await self._serialize_rollback_checkpoint(self._ctx, marker)
@@ -1365,7 +1337,7 @@ class LLMAgent[InT, OutT, CtxT](
             current=current,
             step_watermarks=list(self._step_watermarks),
             folds=list(self._agent_ctx.cw.folds),
-            token_anchor=self._agent_ctx.cw.token_anchor,
+            usage=self._agent_ctx.cw.last_usage,
             location=AgentCheckpointLocation.ROLLED_BACK,
         )
         await self._serialize_rollback_checkpoint(self._ctx, checkpoint)
@@ -1692,6 +1664,11 @@ class LLMAgent[InT, OutT, CtxT](
             messages_to_expose.extend(self._agent_ctx.cw.initial_context)
 
         if not resumes_step:
+            if not self.reset_transcript_on_run:
+                # Fold before the step's input lands: the summary never covers
+                # it, and its input attachments see the summarized view.
+                async for event in self._loop.compact(exec_id=exec_id):
+                    yield event
             # Start a fresh step: append the input message to the transcript
             messages_to_expose.extend(
                 await self._start_step(chat_inputs, inp=inp, exec_id=exec_id)
@@ -1868,27 +1845,57 @@ class LLMAgent[InT, OutT, CtxT](
         self._agent_ctx.cw.add_view_projector(func)
         return func
 
-    def add_compactor(self, func: Compactor) -> Compactor:
-        # Single-slot (replace): the turn-boundary compactor that records a
-        # summary fold under context-window pressure.
-        self._agent_ctx.cw.set_compactor(func)
+    def add_compaction(
+        self, policy: CompactionPolicy | None = None
+    ) -> CompactionPolicy:
+        """
+        Enable context compaction: once the view outgrows the ``policy``'s
+        threshold, the conversation before the recent window is folded into a
+        summary. By default a :class:`~grasp_agents.context.CompactionPolicy`
+        with the budget derived from this agent's model; pass a configured one
+        to set a ``target_tokens`` threshold, the kept window, or the
+        summarization prompt. Also adds the system-prompt section that tells
+        the model how to read its summaries.
+
+        The agent's own model writes the summaries, from its own request, so
+        its reply must be able to be plain text: register a custom compactor
+        first (:meth:`add_custom_compactor`) for an agent with a structured
+        output schema or ``force_react_mode``.
+        """
+        if self._agent_ctx.cw.custom_compactor is None:
+            self._check_summarizes_itself()
+        policy = policy or CompactionPolicy()
+        self._agent_ctx.cw.set_compaction_policy(policy)
+        self.add_system_prompt_section(make_compaction_section())
+        return policy
+
+    def add_custom_compactor(
+        self, func: CustomCompactor[CtxT]
+    ) -> CustomCompactor[CtxT]:
+        """
+        Write compaction summaries with ``func`` instead of the agent's own
+        model. Enables compaction with the default policy unless
+        :meth:`add_compaction` already set one. Single-slot.
+        """
+        self._agent_ctx.cw.custom_compactor = func
+        if self._agent_ctx.cw.compaction_policy is None:
+            self.add_compaction()
         return func
 
-    def add_compaction(
-        self, compactor: SummarizingCompactor | None = None
-    ) -> SummarizingCompactor:
-        """
-        Enable context compaction: register ``compactor`` (by default a
-        :class:`~grasp_agents.context.SummarizingCompactor` with the budget derived
-        from this agent's model) and the system-prompt section that tells the
-        model how to read its summaries. Pass a configured compactor to set a
-        ``target_tokens`` threshold, the kept window, or the summarization prompt.
-        """
-        if compactor is None:
-            compactor = SummarizingCompactor()
-        self.add_compactor(compactor)
-        self.add_system_prompt_section(make_compaction_section())
-        return compactor
+    def _check_summarizes_itself(self) -> None:
+        schema = self._loop.llm_output_schema
+        if schema is not None and not is_str_type(schema):
+            raise ValueError(
+                f"Agent {self.name!r} cannot write its own compaction summaries: "
+                "its replies follow a structured output schema. Register a "
+                "custom compactor first (add_custom_compactor)."
+            )
+        if self._loop.force_react_mode:
+            raise ValueError(
+                f"Agent {self.name!r} cannot write its own compaction summaries: "
+                "force_react_mode can require a tool call. Register a custom "
+                "compactor first (add_custom_compactor)."
+            )
 
     def add_before_llm_hook(self, func: BeforeLlmHook) -> BeforeLlmHook:
         self._loop.before_llm_hooks.append(func)

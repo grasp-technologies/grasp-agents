@@ -20,9 +20,15 @@
         "pytest",
         "numpy",
         "pandas",
-        "pylance"
+        "pylance",
+        "bgfn",
+        "notif"
     ],
     "words": [
+        "inlines",
+        "ungated",
+        "unheld",
+        "unsuffixed",
         "acked",
         "acking",
         "acks",

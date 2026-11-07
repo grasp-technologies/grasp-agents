@@ -6,9 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from grasp_agents.durability.context_serialization import ContextKind
 from grasp_agents.types.events import ProcPacketOutEvent, RunPacketOutEvent, StopReason
-from grasp_agents.types.folds import FoldSpec, TokenAnchor
+from grasp_agents.types.folds import FoldSpec
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.packet import Packet
+from grasp_agents.types.response import ResponseUsage
 
 CURRENT_SCHEMA_VERSION: int = 17
 """
@@ -169,13 +170,12 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "spilled to. v13-v15 records load fine (the old name is still read)."
     ),
     17: (
-        "FoldSpec gained ``pinned`` (log indices of user messages kept verbatim "
-        "before the summary), and a newer fold covering an older one supersedes "
-        "it. AgentCheckpoint gained ``token_anchor`` (the last request's reported "
-        "input tokens, so a resumed agent sizes its context without recounting "
-        "it) and lost the unused ``usage``. v13-v16 records load fine: their "
-        "folds pin nothing and still apply, and the anchor is re-learned from "
-        "the next response."
+        "FoldSpec gained ``pinned`` (log indices of messages kept verbatim before "
+        "the summary: user messages, and launch notes of background tasks still "
+        "running), and a newer fold covering an older one supersedes it. "
+        "AgentCheckpoint.usage now holds the latest response's usage, which "
+        "anchors a resumed agent's context size. v13-v16 records load fine: their "
+        "folds pin nothing and still apply, and their usage is empty."
     ),
 }
 """
@@ -401,6 +401,10 @@ class AgentCheckpoint(ProcessorCheckpoint):
     # head excludes it.
     messages: list[InputItem] = Field(default_factory=list[InputItem])
 
+    # The latest response's reported usage. Its input tokens measure the log up
+    # to that response, so a resumed agent estimates only the messages since.
+    usage: ResponseUsage | None = None
+
     # The live position. ``current.message_count`` is the commit watermark —
     # how many leading log records this head acknowledges; the log is appended
     # before the head is saved, so a crash between the two can leave uncommitted
@@ -416,10 +420,6 @@ class AgentCheckpoint(ProcessorCheckpoint):
     # model-facing view (never the log). Kept in the head — small, and a lossy
     # summary must survive resume without re-running the LLM.
     folds: list[FoldSpec] = Field(default_factory=list[FoldSpec])
-
-    # The last request's provider-reported input tokens over a log prefix: a
-    # resumed agent estimates only the messages since, not the whole view.
-    token_anchor: TokenAnchor | None = None
 
     # The current step's cached final answer — the re-delivery short-circuit
     # reads it. ``None`` while a step is incomplete.

@@ -6,8 +6,10 @@ from unittest.mock import patch
 import pytest
 
 from grasp_agents.agent.context_window import ContextWindowManager
-from grasp_agents.types.folds import FoldSpec, TokenAnchor
-from grasp_agents.types.items import InputMessageItem
+from grasp_agents.types.content import OutputMessageText
+from grasp_agents.types.folds import CompactionPlan, FoldSpec
+from grasp_agents.types.items import InputMessageItem, OutputMessageItem
+from grasp_agents.types.response import ResponseUsage
 
 _COUNT = "grasp_agents.agent.context_window.estimate_input_tokens"
 
@@ -24,15 +26,23 @@ def _cw(n: int) -> ContextWindowManager:
     return cw
 
 
+def _answer(text: str) -> OutputMessageItem:
+    return OutputMessageItem(content=[OutputMessageText(text=text)], status="completed")
+
+
+def _usage(input_tokens: int) -> ResponseUsage:
+    return ResponseUsage(input_tokens=input_tokens, output_tokens=10)
+
+
 def _fold(start: int, end: int) -> FoldSpec:
     return FoldSpec(start=start, end=end, summary=f"summary {start}-{end}")
 
 
 async def _anchored(n: int, input_tokens: int = 1000) -> ContextWindowManager:
-    """A manager whose token anchor covers its first ``n`` messages."""
+    """A manager whose usage anchor covers its first ``n`` messages."""
     cw = _cw(n)
     await cw.project_view(exec_id="t")
-    cw.note_response_usage(input_tokens)
+    cw.note_response_usage(_usage(input_tokens))
     return cw
 
 
@@ -58,13 +68,13 @@ class TestTruncate:
         assert cw.folds == [_fold(0, 2)]
 
 
-class TestTokenAnchor:
+class TestUsageAnchor:
     @pytest.mark.asyncio
-    async def test_cut_below_counted_prefix_forces_a_recount(self) -> None:
+    async def test_cut_below_counted_prefix_drops_the_usage(self) -> None:
         cw = await _anchored(5)
         cw.truncate_transcript(3)
 
-        assert cw._last_input_tokens == 0  # pyright: ignore[reportPrivateUsage]
+        assert cw.last_usage is None
         with patch(_COUNT, return_value=7) as count:
             assert cw.effective_input_tokens() == 7
         count.assert_called_once()
@@ -84,35 +94,40 @@ class TestTokenAnchor:
         cw = _cw(5)
         await cw.project_view(exec_id="t")  # view basis: 5 messages
         cw.truncate_transcript(2)
-        cw.note_response_usage(500)
+        cw.note_response_usage(_usage(500))
 
         # The response's usage now anchors the 2 messages that remain, not 5.
-        assert cw._last_counted_len == 2  # pyright: ignore[reportPrivateUsage]
         cw.add_messages([_user("new")])
         with patch(_COUNT, return_value=3) as count:
             assert cw.effective_input_tokens() == 503
         count.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_anchor_round_trips_through_replace(self) -> None:
+    async def test_a_fold_stops_anchoring_but_keeps_the_usage(self) -> None:
         cw = await _anchored(5)
-        anchor = cw.token_anchor
-        assert anchor == TokenAnchor(input_tokens=1000, message_count=5)
+        cw.record_fold(
+            CompactionPlan(end=3), "summary", tokens_before=1000, elapsed_s=0.0
+        )
 
-        resumed = _cw(0)
-        resumed.replace_transcript(list(cw.transcript), token_anchor=anchor)
-        resumed.add_messages([_user("new")])
-        with patch(_COUNT, return_value=3) as count:
-            assert resumed.effective_input_tokens() == 1003
+        assert cw.last_usage == _usage(1000)
+        with patch(_COUNT, return_value=7) as count:
+            assert cw.effective_input_tokens() == 7
         count.assert_called_once()
 
-    def test_anchor_past_the_new_log_is_ignored(self) -> None:
+    def test_resume_anchors_on_the_request_before_the_latest_response(self) -> None:
         cw = _cw(0)
-        cw.replace_transcript(
-            [_user("a"), _user("b")],
-            token_anchor=TokenAnchor(input_tokens=1000, message_count=5),
-        )
-        assert cw.token_anchor is None
+        log = [_user("a"), _answer("b"), _user("c"), _answer("d"), _user("e")]
+        cw.replace_transcript(log, usage=_usage(1000))
+
+        # The usage measured "a".."c"; "d" and "e" are estimated on top.
+        with patch(_COUNT, return_value=3) as count:
+            assert cw.effective_input_tokens() == 1003
+        assert count.call_args.args[0] == log[3:]
+
+    def test_usage_without_a_response_in_the_log_is_dropped(self) -> None:
+        cw = _cw(0)
+        cw.replace_transcript([_user("a"), _user("b")], usage=_usage(1000))
+        assert cw.last_usage is None
 
 
 class TestReplace:

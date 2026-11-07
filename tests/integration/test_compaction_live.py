@@ -19,8 +19,8 @@ import pytest
 from grasp_agents import LLMAgent, SessionContext
 from grasp_agents.context import (
     COMPACTION_REQUEST_TAG,
+    CompactionPolicy,
     ContextBudget,
-    SummarizingCompactor,
 )
 from grasp_agents.llm.cloud_llm import APIProvider
 from grasp_agents.tools.function_tool import function_tool
@@ -34,7 +34,6 @@ from grasp_agents.types.items import InputMessageItem, OutputMessageItem
 
 if TYPE_CHECKING:
     from grasp_agents.llm.llm import LLM
-    from grasp_agents.types.response import Response
 
 pytestmark = [pytest.mark.integration]
 
@@ -96,59 +95,59 @@ async def test_compaction_summarizes_on_the_agents_own_request(
 ) -> None:
     key_fixture, build, caches = _PROVIDERS[provider]
     llm = build(request.getfixturevalue(key_fixture))
+    ctx: SessionContext[None] = SessionContext()
     agent = LLMAgent[str, str, None](
         name="assistant",
-        ctx=SessionContext(),
+        ctx=ctx,
         llm=llm,
         tools=[lookup],
         sys_prompt="You are a concise assistant. Answer in one short sentence.",
         stream_llm=True,
     )
-    # The long first note puts the view over the threshold by the next question,
-    # whatever the model does with tools. Too long to pin, it is summarized.
+    # The long first note puts the view over the threshold from the next
+    # question on. While it is the newest user message it stays pinned; once a
+    # later question is, it is too long to pin and only the summary carries it.
     agent.add_compaction(
-        SummarizingCompactor(
+        CompactionPolicy(
             budget=ContextBudget(llm.model_name, max_input_tokens=200_000),
             target_tokens=1500,
             keep_recent_rounds=1,
             pinned_user_tokens=100,
         )
     )
-    observed: list[Response] = []
-
-    @agent.add_after_llm_hook
-    async def _observe(response: Response, *, exec_id: str, turn: int) -> None:
-        del exec_id, turn
-        observed.append(response)
 
     events: list[Event[Any]] = []
     for question in (
         f"{_NOTES}\n\nReply with just: noted.",
+        "Reply with just: ok.",
         "What is the launch code?",
     ):
         events += [event async for event in agent.run_stream(question)]
 
     starts = [i for i, e in enumerate(events) if isinstance(e, CompactionStartEvent)]
-    dones = [e for e in events if isinstance(e, CompactionDoneEvent)]
-    assert len(dones) == 1
-    assert starts
-    assert starts[0] < events.index(dones[0])
-    assert dones[0].data.summary.strip()
-    assert dones[0].data.folded_rounds >= 1
+    dones = [i for i, e in enumerate(events) if isinstance(e, CompactionDoneEvent)]
+    assert len(dones) == 2
+    assert all(s < d for s, d in zip(starts, dones, strict=True))
+    for i in dones:
+        done = events[i]
+        assert isinstance(done, CompactionDoneEvent)
+        assert done.data.summary.strip()
 
-    # The summary call is an extra LLM call: observed by the hooks, never written
+    # The summary calls are extra LLM calls: counted in the usage, never written
     # to the transcript, and the run answers from the folded view afterwards.
     generations = [e.data for e in events if isinstance(e, GenerationEndEvent)]
-    summaries = [r for r in observed if not any(r is g for g in generations)]
-    assert summaries
+    total = ctx.usage_tracker.total_usage
+    in_turns = sum(g.usage.input_tokens for g in generations if g.usage)
+    assert total.input_tokens > in_turns
     if caches:
-        usage = summaries[0].usage
-        assert usage is not None
-        assert usage.input_tokens_details.cached_tokens > 0
+        cached_in_turns = sum(
+            g.usage.input_tokens_details.cached_tokens for g in generations if g.usage
+        )
+        assert total.input_tokens_details.cached_tokens > cached_in_turns
     assert not any(
         isinstance(m, InputMessageItem) and COMPACTION_REQUEST_TAG in m.text
         for m in agent.transcript
     )
     last = agent.transcript[-1]
     assert isinstance(last, OutputMessageItem)
-    assert last.text.strip()
+    assert "ORCHID-7" in last.text

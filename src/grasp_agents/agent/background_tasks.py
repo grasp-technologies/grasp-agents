@@ -753,27 +753,14 @@ class BackgroundTaskManager[CtxT]:
         """
         return any(not bt.consumer.done() for bt in self._tasks.values())
 
-    def running_tasks_note(self) -> str | None:
+    def running_call_ids(self) -> frozenset[str]:
         """
-        A note listing the tasks still running, or ``None`` when none is. The
-        agent gets it after a context compaction, which may have summarized
-        away the calls that launched them.
+        The tool call ids of the tasks still running. A compaction keeps their
+        launch notes in front of the summary.
         """
-        running = [bt for bt in self._tasks.values() if not bt.consumer.done()]
-        if not running:
-            return None
-        lines = [
-            (
-                "These background tasks are still running; each one's result "
-                "arrives as a <task_notification> when it finishes:"
-            )
-        ]
-        for bt in running:
-            line = f"- {bt.task_id} ({bt.tool_name})"
-            if bt.log_path:
-                line += f", progress log: {bt.log_path}"
-            lines.append(line)
-        return "\n".join(lines)
+        return frozenset(
+            bt.tool_call_id for bt in self._tasks.values() if not bt.consumer.done()
+        )
 
     @property
     def has_tracked_tasks(self) -> bool:

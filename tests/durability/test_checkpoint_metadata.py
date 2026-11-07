@@ -64,16 +64,16 @@ def _make_agent(
 
 class TestSchemaVersion:
     def test_current_schema_version_has_summary(self) -> None:
-        # v17: FoldSpec.pinned and AgentCheckpoint.token_anchor — readable over
-        # the v13 floor (items dropped the *_parts mirror fields; older logs
-        # unreadable).
+        # v17: FoldSpec.pinned, and AgentCheckpoint.usage holds the latest
+        # response's usage — readable over the v13 floor (items dropped the
+        # *_parts mirror fields; older logs unreadable).
         assert CURRENT_SCHEMA_VERSION == 17
         assert CURRENT_SCHEMA_VERSION in SCHEMA_VERSION_SUMMARIES
 
     def test_new_fields_default_to_none(self) -> None:
         snap = AgentCheckpoint(session_key="s", processor_name="a", messages=[])
         assert snap.folds == []
-        assert snap.token_anchor is None
+        assert snap.usage is None
         assert snap.current.prompt_cache_key is None
         assert snap.current.fs_snapshot_ref is None
         assert snap.current.agent_ctx_state.read_file_state == {}

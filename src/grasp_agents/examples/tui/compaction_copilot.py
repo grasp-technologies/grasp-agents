@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import cast
 
 from grasp_agents import LLMAgent, SessionContext
-from grasp_agents.context import ContextBudget, SummarizingCompactor
+from grasp_agents.context import CompactionPolicy, ContextBudget
 from grasp_agents.durability import FileCheckpointStore
 from grasp_agents.llm_providers.openai_responses import (
     OpenAIResponsesLLM,
@@ -107,13 +107,15 @@ def build_copilot(
         model=model, max_input_tokens=ARTIFICIAL_WINDOW, buffer_tokens=BUFFER_TOKENS
     )
     agent.add_compaction(
-        SummarizingCompactor(budget=budget, keep_recent_rounds=KEEP_RECENT_ROUNDS)
+        CompactionPolicy(budget=budget, keep_recent_rounds=KEEP_RECENT_ROUNDS)
     )
     return agent, ctx
 
 
 def main() -> None:
-    from grasp_agents.ui import run_tui_interactive  # noqa: PLC0415
+    from grasp_agents.ui import (  # ruff: ignore[import-outside-top-level]
+        run_tui_interactive,
+    )
 
     agent, _ = build_copilot()
     # Passing the agent auto-wires stepped delivery (so /rollback can rewind), the

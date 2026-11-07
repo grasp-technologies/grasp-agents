@@ -197,7 +197,7 @@ Providers map every SDK exception to a type in `types/llm_errors.py`
 | `TRANSIENT` | timeout, connection, 5xx, 409, other status errors | yes |
 | `RATE_LIMITED` | `LlmRateLimitError` | yes |
 | `QUOTA_EXCEEDED` | `LlmQuotaExceededError` | no |
-| `NEEDS_COMPACTION` | `LlmContextWindowError` | no (with a compactor registered, the agent loop forces a fold and retries once; see [Context window](context-window.md)) |
+| `NEEDS_COMPACTION` | `LlmContextWindowError` | no (with compaction enabled, the agent loop forces a fold and retries once; see [Context window](context-window.md)) |
 | `REAUTH_REQUIRED` | 401, 403 | no |
 | `CONTENT_REFUSED` | `LlmContentFilterError` | no |
 | `INVALID_REQUEST` | 400, 404, 422 | no |

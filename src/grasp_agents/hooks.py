@@ -6,9 +6,9 @@ overrides (*_impl methods). The Protocols here define the callable signatures.
 
 Agent Loop Hooks (registered on AgentLoop via LLMAgent):
     ViewProjector  — derives the per-turn model-facing view from the log
-    Compactor      — records a summary fold under context-window pressure
-    BeforeLlmHook  — fires before each LLM call
-    AfterLlmHook   — fires after each LLM response
+    CustomCompactor — writes compaction summaries in place of the agent's model
+    BeforeLlmHook  — fires before each LLM call of an agent turn
+    AfterLlmHook   — fires after each LLM response of an agent turn
     FinalAnswerExtractor  — determines when the agent should stop
     BeforeToolHook      — fires before tool execution
     AfterToolHook       — fires after tool execution
@@ -27,8 +27,8 @@ Processor Hooks:
     WorkflowLoopTerminator — determines when a looped workflow exits
 """
 
-from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Protocol
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import BaseModel
 
@@ -36,7 +36,6 @@ from grasp_agents.agent.tool_decision import ToolCallDecision
 from grasp_agents.selector import Selector
 from grasp_agents.session_context import SessionContext
 from grasp_agents.types.content import Content
-from grasp_agents.types.folds import FoldSpec
 from grasp_agents.types.io import ProcName
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -48,13 +47,15 @@ from grasp_agents.types.items import (
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import Response
 
+if TYPE_CHECKING:
+    from grasp_agents.agent.agent_context import AgentContext
+
 __all__ = [
     "AfterLlmHook",
     "AfterToolHook",
     "BeforeLlmHook",
     "BeforeToolHook",
-    "CompactionGenerate",
-    "Compactor",
+    "CustomCompactor",
     "FinalAnswerExtractor",
     "InitialContextBuilder",
     "InputContentBuilder",
@@ -64,7 +65,6 @@ __all__ = [
     "ToolInputConverter",
     "ToolOutputConverter",
     "ViewProjector",
-    "ViewTransform",
     "WorkflowLoopTerminator",
 ]
 
@@ -171,61 +171,22 @@ class ViewProjector(Protocol):
     ) -> Sequence[InputItem]: ...
 
 
-type ViewTransform = Callable[[list[InputItem]], list[InputItem]]
-"""Rewrites a view body (the log with folds and projectors applied)."""
-
-
-class CompactionGenerate(Protocol):
+class CustomCompactor[CtxT](Protocol):
     """
-    Send a summarization request on the agent's own LLM, supplied to a
-    :class:`Compactor` by the agent loop.
+    Write the summary a compaction folds the conversation into, in place of
+    the agent's own model.
 
-    The request is the agent's current one — the same view, tools and LLM
-    settings as its last call, so the provider's prompt cache serves the shared
-    prefix — with ``request`` appended and no output schema. ``transform``
-    rewrites the view body first (to shrink an oversized request; the cache no
-    longer applies). ``force_text`` sets ``tool_choice="none"`` so the model
-    cannot answer with a tool call. Tool calls in the response are never
-    executed. The call's usage is recorded and the after-LLM hooks see the
-    response, but nothing is written to the transcript. LLM errors propagate,
-    ``LlmContextWindowError`` included.
+    Called when compaction (``agent.add_compaction()``) folds: the summary
+    replaces the conversation up to the recent window, behind the pinned user
+    messages. ``agent_ctx.cw`` holds the conversation: the transcript, the
+    folds already recorded and the view the model sees. An empty summary or an
+    exception counts as a failed compaction, and the turn proceeds without a
+    fold. Single-slot (``@agent.add_custom_compactor``).
     """
 
     async def __call__(
-        self,
-        request: InputMessageItem,
-        *,
-        transform: ViewTransform | None = None,
-        force_text: bool = False,
-    ) -> Response: ...
-
-
-class Compactor(Protocol):
-    """
-    Summarize the transcript log under context-window pressure.
-
-    Called once per turn boundary, before generation, with ``input_tokens``
-    (the estimated size of the view about to be sent) and the ``folds`` already
-    recorded. Returns a new :class:`FoldSpec` (applied to the view by
-    ``apply_folds`` and persisted) or ``None`` to leave the view as is.
-    Single-slot (``@agent.add_compactor``). Unlike a :class:`ViewProjector` it
-    may call an LLM — through ``generate`` — and produces persisted state.
-    ``force`` is set on the context-window-error recovery path: fold regardless
-    of the budget. An exception is logged and treated as no fold; after three
-    consecutive failures the agent stops calling it, except on that recovery
-    path.
-    """
-
-    async def __call__(
-        self,
-        messages: Sequence[InputItem],
-        *,
-        input_tokens: int,
-        folds: Sequence[FoldSpec],
-        exec_id: str,
-        generate: CompactionGenerate,
-        force: bool = False,
-    ) -> FoldSpec | None: ...
+        self, *, agent_ctx: "AgentContext", ctx: SessionContext[CtxT]
+    ) -> str: ...
 
 
 # --- Prompt Hooks ---

@@ -1,14 +1,16 @@
 """
 Built-in context-window compaction.
 
-:class:`SummarizingCompactor` is the agent's compactor (``agent.add_compaction()``).
-When the view outgrows its threshold it asks the agent's own model for a summary:
-the agent's current request — same view, tools and settings — with one
-``<compaction_request>`` message appended, so the provider's prompt cache serves
-the shared prefix. The resulting :class:`FoldSpec` replaces everything before the
-most recent rounds with that summary, preceded by the user's latest messages
-verbatim. Each summary is written from a view that already holds the previous
-one, so it supersedes it rather than stacking on it.
+:class:`CompactionPolicy` configures compaction
+(``agent.add_compaction()``): when the view outgrows its threshold, the agent
+folds everything before the most recent rounds into a summary. Its own model
+writes the summary, unless a custom compactor is registered: the agent's
+current request — same view, tools and settings — with one
+``<compaction_request>`` message (:func:`compaction_request`) appended, so the
+provider's prompt cache serves the shared prefix. The resulting
+:class:`FoldSpec` replaces the folded span with that summary, preceded by the
+user's latest messages verbatim. Each summary is written from a view that
+already holds the previous one, so it supersedes it rather than stacking on it.
 
 :class:`ContextBudget` holds the model facts the threshold derives from: the
 window minus room for the response. :class:`CollapseToolOutputsProjector` is an
@@ -22,28 +24,26 @@ the calls of its response.
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from importlib.resources import files
 from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
 
 from grasp_agents.llm.model_info import ModelCapabilities, get_model_capabilities
 from grasp_agents.llm.token_counting import estimate_input_tokens
-from grasp_agents.types.folds import FoldSpec
+from grasp_agents.types.folds import CompactionPlan, FoldSpec
 from grasp_agents.types.items import (
     FunctionToolCallItem,
     FunctionToolOutputItem,
     InputItem,
     InputMessageItem,
 )
-from grasp_agents.types.llm_errors import LlmContextWindowError
 
-from .projection import SUMMARY_TAG, active_folds, is_fold_summary, user_authored
+from .projection import SUMMARY_TAG, active_folds, is_fold_summary, is_user_authored
 from .prompt_builder import SystemPromptSection
 from .system_reminder import wrap_in_system_reminder
 
 if TYPE_CHECKING:
-    from grasp_agents.hooks import CompactionGenerate, ViewTransform
     from grasp_agents.types.response import Response
 
 logger = logging.getLogger(__name__)
@@ -217,21 +217,26 @@ def keep_recent_start(
     messages: Sequence[InputItem],
     keep_recent_rounds: int,
     keep_recent_tokens: int | None = None,
+    *,
+    keep_latest: bool = True,
 ) -> int:
     """
     Index where the kept-verbatim recent window begins: ``keep_recent_rounds``
-    rounds back (at least one), moved forward one round at a time while the
-    window's estimated size exceeds ``keep_recent_tokens``, down to the latest
-    round.
+    rounds back, moved forward one round at a time while the window's estimated
+    size exceeds ``keep_recent_tokens``. With ``keep_latest`` the window keeps
+    at least the latest round; without it the window may be empty
+    (``len(messages)``).
     """
     starts = round_starts(messages)
-    if not starts:
-        return 0
-    candidates = starts[-max(1, keep_recent_rounds) :]
+    if not keep_latest:
+        starts = [*starts, len(messages)]
+    if len(starts) <= 1:
+        return starts[0] if starts else 0
+    candidates = starts[-max(1, keep_recent_rounds + (not keep_latest)) :]
     if keep_recent_tokens is None:
         return candidates[0]
 
-    # Grow the window backwards from the latest round while it fits the cap.
+    # Grow the window backwards from its floor while it fits the cap.
     keep = candidates[-1]
     size = estimate_input_tokens(messages[keep:])
     for start, end in zip(
@@ -242,6 +247,16 @@ def keep_recent_start(
             break
         keep = start
     return keep
+
+
+def awaits_input(messages: Sequence[InputItem]) -> bool:
+    """
+    True when ``messages`` end with a completed model reply: whatever comes
+    next is new input, which opens the next round.
+    """
+    return bool(messages) and not isinstance(
+        messages[-1], (InputMessageItem, FunctionToolOutputItem, FunctionToolCallItem)
+    )
 
 
 # ── Tool-output collapse ──
@@ -415,40 +430,68 @@ def _collapse_and_drop_oldest(body: list[InputItem]) -> list[InputItem]:
     return [*body[:head], marker, *body[starts[drop] :]]
 
 
-_SHRINK_STEPS: tuple["ViewTransform | None", ...] = (
-    None,
+MAX_SUMMARY_ATTEMPTS = 3
+"""
+Requests per compaction: a response that calls a tool or holds no text, or a
+request that exceeds the context window, is retried until this many were sent.
+"""
+
+SUMMARY_SHRINK_STEPS: tuple[Callable[[list[InputItem]], list[InputItem]], ...] = (
     _collapse_all_but_latest,
     _collapse_and_drop_oldest,
 )
+"""
+Rewrites of the view body, in order, for a summary request that exceeds the
+context window: older tool outputs collapsed, then also the oldest half of the
+rounds not yet summarized left out (the summary cannot cover them).
+"""
 
 
-def _summary_text(response: "Response") -> str:
+def compaction_request(instructions: str) -> InputMessageItem:
+    """The message a summary request appends to the agent's view."""
+    return InputMessageItem.from_text(
+        f"<{COMPACTION_REQUEST_TAG}>\n{instructions.strip()}\n"
+        f"</{COMPACTION_REQUEST_TAG}>",
+        role="user",
+    )
+
+
+def summary_text(response: "Response") -> str:
+    """
+    The summary in a response to a compaction request, or ``""`` when it holds
+    none. A response that calls a tool holds none, whatever its text.
+    """
+    if response.tool_call_items:
+        return ""
     text = response.output_text.strip()
     match = _SUMMARY_WRAPPER_RE.match(text)
     return match.group(1) if match else text
 
 
-class SummarizingCompactor(Budgeted):
+class CompactionPolicy(Budgeted):
     """
-    A :class:`~grasp_agents.hooks.Compactor` that folds the conversation into a
-    summary written by the agent's own model when the view outgrows
-    :attr:`threshold`.
+    When the agent folds its conversation into a summary, and what it keeps:
+    ``agent.add_compaction(CompactionPolicy(...))``.
+
+    The agent folds once the view outgrows :attr:`threshold`: the budget's soft
+    limit, lowered to ``target_tokens`` when set. A target well below the window
+    keeps every request cheaper and faster, at the cost of compacting sooner.
+    ``budget`` is the agent's; the agent injects it on registration when
+    omitted.
 
     The fold covers the log from its start up to the recent window: the last
     ``keep_recent_rounds`` rounds, fewer while they exceed ``keep_recent_tokens``
-    (default: a third of the threshold), and at least the latest round. The
-    user's last ``pinned_user_messages`` messages before the window (within
-    ``pinned_user_tokens``) stay verbatim in front of the summary.
+    (default: a third of the threshold). Mid-run the window keeps at least the
+    latest round; before new input, which will be the window's newest round,
+    it may keep none. In
+    front of the summary stay, verbatim: the newest user message the fold
+    covers, whatever its size, and earlier ones up to ``pinned_user_messages``
+    in all within ``pinned_user_tokens``; and the launch notes of the
+    background tasks still running.
 
-    The threshold is the budget's soft limit, lowered to ``target_tokens`` when
-    set: a target well below the window keeps every request cheaper and faster,
-    at the cost of compacting sooner. ``budget`` is the agent's; the agent
-    injects it on registration when omitted. ``instructions`` replaces the
-    default summarization prompt (:data:`COMPACTION_INSTRUCTIONS`).
-
-    If the summary request itself overflows the window, it is retried with old
-    tool outputs collapsed, then without the oldest half of the not yet summarized
-    rounds, which the summary then cannot cover.
+    The agent's own model writes the summary, prompted by ``instructions``
+    (default :data:`COMPACTION_INSTRUCTIONS`), unless a
+    :class:`~grasp_agents.hooks.CustomCompactor` is registered.
     """
 
     def __init__(
@@ -462,6 +505,11 @@ class SummarizingCompactor(Budgeted):
         pinned_user_tokens: int = DEFAULT_PINNED_USER_TOKENS,
         instructions: str = COMPACTION_INSTRUCTIONS,
     ) -> None:
+        if pinned_user_messages < 1:
+            raise ValueError(
+                "pinned_user_messages must be at least 1: the newest user "
+                "message a fold covers is always kept"
+            )
         self.budget = budget
         self.target_tokens = target_tokens
         self.keep_recent_rounds = keep_recent_rounds
@@ -484,72 +532,59 @@ class SummarizingCompactor(Budgeted):
         threshold = self.threshold
         return threshold // 3 if threshold is not None else None
 
-    def _pinned(self, messages: Sequence[InputItem], end: int) -> list[int]:
+    def _pinned(
+        self,
+        messages: Sequence[InputItem],
+        end: int,
+        running_call_ids: Collection[str],
+    ) -> list[int]:
         picked: list[int] = []
         room = self.pinned_user_tokens
         for i in range(end - 1, -1, -1):
             if len(picked) >= self.pinned_user_messages:
                 break
-            item = user_authored(messages[i])
-            if item is None:
+            if not is_user_authored(messages[i]):
                 continue
-            cost = estimate_input_tokens([item])
-            if cost > room:
+            cost = estimate_input_tokens([messages[i]])
+            if picked and cost > room:
                 break
             picked.append(i)
             room -= cost
-        return sorted(picked)
+        launch_notes = [
+            i
+            for i, item in enumerate(messages[:end])
+            if isinstance(item, FunctionToolOutputItem)
+            and item.call_id in running_call_ids
+        ]
+        return sorted([*picked, *launch_notes])
 
-    async def _summarize(self, generate: "CompactionGenerate") -> str:
-        request = InputMessageItem.from_text(
-            f"<{COMPACTION_REQUEST_TAG}>\n{self.instructions.strip()}\n"
-            f"</{COMPACTION_REQUEST_TAG}>",
-            role="user",
-        )
-        for step, transform in enumerate(_SHRINK_STEPS):
-            try:
-                response = await generate(request, transform=transform)
-            except LlmContextWindowError:
-                if step == len(_SHRINK_STEPS) - 1:
-                    raise
-                logger.warning(
-                    "the summary request exceeds the context window; shrinking "
-                    "it and retrying (%d/%d)",
-                    step + 1,
-                    len(_SHRINK_STEPS) - 1,
-                )
-                continue
-
-            summary = _summary_text(response)
-            if not summary and any(
-                isinstance(item, FunctionToolCallItem) for item in response.output
-            ):
-                # The request carries the agent's tools, so the model may answer
-                # with a call instead of text; calls are never executed here.
-                response = await generate(request, transform=transform, force_text=True)
-                summary = _summary_text(response)
-            if summary and response.status == "incomplete":
-                logger.warning("the conversation summary was cut off; keeping it")
-            return summary
-        return ""
-
-    async def __call__(
+    def plan(
         self,
         messages: Sequence[InputItem],
         *,
         input_tokens: int,
         folds: Sequence[FoldSpec],
-        exec_id: str,  # ruff: ignore[unused-method-argument]
-        generate: "CompactionGenerate",
+        running_call_ids: Collection[str] = frozenset(),
         force: bool = False,
-    ) -> FoldSpec | None:
+    ) -> CompactionPlan | None:
+        """
+        The fold to make now, or ``None``: under the threshold, or with nothing
+        new to fold. ``force`` (the context-window-error recovery path) plans
+        regardless of the threshold, keeping only the latest round if needed.
+        """
         threshold = self.threshold
         if not force and (threshold is None or input_tokens <= threshold):
             return None
 
         folded_end = max((f.end for f in active_folds(folds, len(messages))), default=0)
+        # Before new input, that input is the newest round of the kept window.
+        before_input = awaits_input(messages)
+        keep_rounds = self.keep_recent_rounds - before_input
         keep_from = keep_recent_start(
-            messages, self.keep_recent_rounds, self._kept_tokens_cap()
+            messages,
+            keep_rounds,
+            self._kept_tokens_cap(),
+            keep_latest=not before_input,
         )
         if keep_from <= folded_end and force:
             keep_from = keep_recent_start(messages, 1)
@@ -558,22 +593,16 @@ class SummarizingCompactor(Budgeted):
 
         kept_rounds = count_rounds(messages[keep_from:])
         if (
-            kept_rounds < self.keep_recent_rounds
+            kept_rounds < keep_rounds
             and count_rounds(messages[folded_end:]) > kept_rounds
         ):
             logger.warning(
                 "compaction keeps %d recent round(s) verbatim instead of %d: the "
                 "window is over the size cap",
                 kept_rounds,
-                self.keep_recent_rounds,
+                keep_rounds,
             )
 
-        summary = await self._summarize(generate)
-        if not summary:
-            return None
-        return FoldSpec(
-            start=0,
-            end=keep_from,
-            summary=summary,
-            pinned=self._pinned(messages, keep_from),
+        return CompactionPlan(
+            end=keep_from, pinned=self._pinned(messages, keep_from, running_call_ids)
         )

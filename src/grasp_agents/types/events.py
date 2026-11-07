@@ -224,7 +224,7 @@ class CompactionStartEvent(Event[CompactionStartInfo], frozen=True):
     summary request is sent — at most once per compaction. A
     :class:`CompactionDoneEvent` follows when the fold is recorded; when the
     summary fails or comes back empty, none does, and the turn proceeds
-    uncompacted.
+    without a fold.
     """
 
     type: Literal["agent.compaction_start"] = "agent.compaction_start"

@@ -8,6 +8,13 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from pydantic import BaseModel
 
+from grasp_agents.context.compaction import (
+    COMPACTION_INSTRUCTIONS,
+    MAX_SUMMARY_ATTEMPTS,
+    SUMMARY_SHRINK_STEPS,
+    compaction_request,
+    summary_text,
+)
 from grasp_agents.context.projection import repair_tool_call_pairing
 from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.context.untrusted_content import wrap_untrusted
@@ -101,11 +108,9 @@ if TYPE_CHECKING:
         AfterToolHook,
         BeforeLlmHook,
         BeforeToolHook,
-        CompactionGenerate,
         FinalAnswerExtractor,
         ToolInputConverter,
         ToolOutputConverter,
-        ViewTransform,
     )
     from grasp_agents.inbox import AgentInbox
     from grasp_agents.llm.llm import LLM
@@ -139,10 +144,6 @@ def _truncation_notice(response: Response) -> str:
     details = response.incomplete_details
     reason = details.reason if details and details.reason else "unknown reason"
     return f"\n\n[Response truncated: {reason}]"
-
-
-class RestorationBuilder(Protocol):
-    async def __call__(self, *, exec_id: str) -> InputMessageItem | None: ...
 
 
 class CheckpointCallback(Protocol):
@@ -242,7 +243,6 @@ class AgentLoop[CtxT]:
     tool_input_converters: dict[str, ToolInputConverter]
     final_answer_extractor: FinalAnswerExtractor | None
     checkpoint_callback: CheckpointCallback | None
-    restoration_builder: RestorationBuilder | None
 
     # Properties
 
@@ -331,7 +331,6 @@ class AgentLoop[CtxT]:
         self.after_tool_hooks = []
         self.final_answer_extractor = None
         self.checkpoint_callback = None
-        self.restoration_builder = None
 
         # The parameters of the last LLM request (all but its input), and the
         # run's own settings: a compaction summary request reuses them so the
@@ -753,7 +752,7 @@ class AgentLoop[CtxT]:
             # compaction. Force a fold and retry once; if nothing can be
             # folded, surface the error.
             folds_before = len(self.cw.folds)
-            async for event in self._compact(exec_id=exec_id, force=True):
+            async for event in self.compact(exec_id=exec_id, force=True):
                 yield event
             if len(self.cw.folds) == folds_before:
                 raise
@@ -776,107 +775,107 @@ class AgentLoop[CtxT]:
 
     # --- Compaction ---
 
-    async def _compact(
+    async def compact(
         self, *, exec_id: str, force: bool = False
     ) -> AsyncIterator[Event[Any]]:
         """
-        Run the compactor, yielding a :class:`CompactionStartEvent` as soon as
-        it starts the summary request, then the :class:`CompactionDoneEvent` and the
-        restoration message when it records a fold.
+        Fold the conversation into a summary when the compaction policy calls
+        for it: yields a :class:`CompactionStartEvent`, gets the summary,
+        records the fold and yields a :class:`CompactionDoneEvent`.
 
-        The compactor runs as a task so the start event reaches the consumer
-        while the summary is generated. Leaving the stream cancels it.
+        A registered custom compactor writes the summary; otherwise the agent's
+        own model does. Its request is the agent's last request (same view,
+        tools and settings) with the policy's instructions appended, so the
+        provider's prompt cache serves the shared prefix. A response that calls
+        a tool or holds no text is retried, up to :data:`MAX_SUMMARY_ATTEMPTS`
+        requests in all; a request that exceeds the context window is retried
+        with the view shrunk (:data:`SUMMARY_SHRINK_STEPS`). Nothing is written
+        to the transcript, and the LLM hooks do not run. When no summary comes
+        back the turn proceeds without a fold, and the failure counts toward
+        :data:`MAX_COMPACTION_FAILURES`.
         """
-        if self.cw.compactor is None:
-            return
-        started = asyncio.Event()
-        compaction = asyncio.ensure_future(
-            self.cw.maybe_compact(
-                exec_id=exec_id,
-                generate=self._compaction_generate(exec_id, started=started),
-                force=force,
-            )
+        planned = await self.cw.plan_compaction(
+            exec_id=exec_id,
+            running_call_ids=self.bg_tasks.running_call_ids(),
+            force=force,
         )
-        waiting = asyncio.ensure_future(started.wait())
-        try:
-            await asyncio.wait(
-                {compaction, waiting}, return_when=asyncio.FIRST_COMPLETED
-            )
-            if started.is_set():
-                yield CompactionStartEvent(
-                    source=self.agent_name,
-                    exec_id=exec_id,
-                    data=CompactionStartInfo(
-                        context_tokens=self.cw.effective_input_tokens(),
-                        context_window=self.cw.context_window,
-                        forced=force,
-                    ),
-                )
-            fold = await compaction
-        finally:
-            waiting.cancel()
-            compaction.cancel()
-
-        if fold is None:
+        if planned is None:
             return
+        plan, tokens_before = planned
+        yield CompactionStartEvent(
+            source=self.agent_name,
+            exec_id=exec_id,
+            data=CompactionStartInfo(
+                context_tokens=tokens_before,
+                context_window=self.cw.context_window,
+                forced=force,
+            ),
+        )
+
+        started = time.monotonic()
+        try:
+            summary = await self._summarize(exec_id=exec_id)
+        except Exception:
+            logger.warning("the conversation summary request failed", exc_info=True)
+            summary = ""
+        if not summary:
+            self.cw.note_compaction_failure()
+            return
+        fold = self.cw.record_fold(
+            plan,
+            summary,
+            tokens_before=tokens_before,
+            elapsed_s=time.monotonic() - started,
+            forced=force,
+        )
         yield self.cw.compaction_done_event(
             fold, source=self.agent_name, exec_id=exec_id, forced=force
         )
-        async for event in self._restore_after_compaction(exec_id=exec_id):
-            yield event
 
-    def _compaction_generate(
-        self, exec_id: str, *, started: asyncio.Event
-    ) -> CompactionGenerate:
-        """
-        The agent's LLM, bound to its current request, for the compactor.
-        Sets ``started`` before its first request.
-        """
+    async def _summarize(self, *, exec_id: str) -> str:
+        """The summary for :meth:`compact`, or ``""`` when none came back."""
+        custom = self.cw.custom_compactor
+        if custom is not None:
+            return (await custom(agent_ctx=self._agent_ctx, ctx=self.ctx)).strip()
 
-        async def generate(
-            request: InputMessageItem,
-            *,
-            transform: ViewTransform | None = None,
-            force_text: bool = False,
-        ) -> Response:
-            started.set()
-            params = dict(self._last_llm_params or self._first_llm_params())
-            params["output_schema"] = None
-            if force_text and params.get("tools"):
-                params["tool_choice"] = "none"
-            if transform is None:
-                view = await self.cw.project_view(exec_id=exec_id)
-            else:
-                body = transform(list(await self.cw.build_view_body(exec_id=exec_id)))
-                view = repair_tool_call_pairing([*self.cw.initial_context, *body])
-
+        policy = self.cw.compaction_policy
+        instructions = policy.instructions if policy else COMPACTION_INSTRUCTIONS
+        params = dict(self._last_llm_params or self._first_llm_params())
+        request = compaction_request(instructions)
+        body = list(await self.cw.build_view_body(exec_id=exec_id))
+        shrink_steps = list(SUMMARY_SHRINK_STEPS)
+        for attempt in range(1, MAX_SUMMARY_ATTEMPTS + 1):
+            view = repair_tool_call_pairing([*self.cw.initial_context, *body])
             try:
                 response = await self._generate_detached([*view, request], params)
+            except LlmContextWindowError:
+                if not shrink_steps:
+                    raise
+                logger.warning(
+                    "the summary request exceeds the context window; shrinking "
+                    "it and retrying"
+                )
+                body = shrink_steps.pop(0)(body)
+                continue
             except LLMToolCallValidationError as exc:
-                # The calls are discarded anyway; keep any text alongside them.
                 if exc.response is None:
                     raise
                 response = exc.response
-
-            # A real call of this agent: account for it like any other, minus
-            # the tool calls it was not allowed to make. It never touches the
-            # transcript or the budget anchor.
             self.ctx.usage_tracker.update(
                 agent_name=self.agent_name, responses=[response]
             )
-            text_only = response.model_copy(
-                update={
-                    "output": [
-                        item
-                        for item in response.output
-                        if not isinstance(item, FunctionToolCallItem)
-                    ]
-                }
+            summary = summary_text(response)
+            if summary:
+                if response.status == "incomplete":
+                    logger.warning("the conversation summary was cut off")
+                return summary
+            logger.warning(
+                "the summary response %s (attempt %d/%d)",
+                "called a tool" if response.tool_call_items else "held no text",
+                attempt,
+                MAX_SUMMARY_ATTEMPTS,
             )
-            await self.on_after_llm(text_only, exec_id=exec_id, turn=self.turn)
-            return response
-
-        return generate
+        return ""
 
     def _first_llm_params(self) -> dict[str, Any]:
         # Before the run's first call: what that call will send, minus hooks.
@@ -893,6 +892,7 @@ class AgentLoop[CtxT]:
     async def _generate_detached(
         self, view: Sequence[InputItem], params: dict[str, Any]
     ) -> Response:
+        # A request whose events stay out of the agent's stream.
         if not self.stream_llm:
             return await self._llm.generate_response(input=view, **params)
         response: Response | None = None
@@ -902,26 +902,6 @@ class AgentLoop[CtxT]:
         if response is None:
             raise MissingLLMResponseError(proc_name=self.agent_name)
         return response
-
-    async def _restore_after_compaction(
-        self, *, exec_id: str
-    ) -> AsyncIterator[Event[Any]]:
-        """
-        Append the agent's restoration message (state a fold may have hidden),
-        if any, as input to the upcoming generation.
-        """
-        if self.restoration_builder is None:
-            return
-        message = await self.restoration_builder(exec_id=exec_id)
-        if message is None:
-            return
-        self.cw.add_messages([message])
-        yield UserMessageEvent(
-            source=self.agent_name,
-            destination=self.agent_name,
-            exec_id=exec_id,
-            data=message,
-        )
 
     # --- Tool calling ---
 
@@ -1862,6 +1842,13 @@ class AgentLoop[CtxT]:
                     async for event in self._await_bg_tasks():
                         yield event
 
+            # Compaction: fold the conversation if the view outgrew the
+            # compaction threshold (no-op without a compactor), before new input
+            # is delivered, so the summary never covers it.
+            folds_before = len(self.cw.folds)
+            async for event in self.compact(exec_id=exec_id):
+                yield event
+
             # Turn-boundary delivery: the next resident inbox message as a user
             # turn, then the background tasks' live progress (bubbled events,
             # mirrored to the .grasp logs) and any completions.
@@ -1874,12 +1861,6 @@ class AgentLoop[CtxT]:
                 yield event
 
             async for event in self._drain_bg_completions(exec_id=exec_id):
-                yield event
-
-            # Compaction: fold the conversation before generating if the view
-            # outgrew the compaction threshold (no-op without a compactor).
-            folds_before = len(self.cw.folds)
-            async for event in self._compact(exec_id=exec_id):
                 yield event
 
             if (
@@ -2010,7 +1991,7 @@ class AgentLoop[CtxT]:
         if usage is not None and usage.input_tokens:
             # Anchor the compaction budget on the provider's exact reported count
             # for the view just sent.
-            self.cw.note_response_usage(usage.input_tokens)
+            self.cw.note_response_usage(usage)
 
         self.ctx.usage_tracker.update(agent_name=self.agent_name, responses=[response])
 

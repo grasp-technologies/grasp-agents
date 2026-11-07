@@ -19,8 +19,8 @@ from grasp_agents.context.projection import (
     active_folds,
     apply_folds,
     fold_summary_text,
+    is_user_authored,
     repair_tool_call_pairing,
-    user_authored,
 )
 from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.types.content import InputText
@@ -197,7 +197,7 @@ def test_out_of_bounds_fold_is_skipped(caplog: pytest.LogCaptureFixture) -> None
     assert any("out-of-bounds" in r.getMessage() for r in caplog.records)
 
 
-def test_pinned_user_messages_precede_the_summary_without_attachments() -> None:
+def test_pinned_user_messages_precede_the_summary_whole() -> None:
     attachment = InputText(text=wrap_in_system_reminder("12:00", subject="time"))
     asked = InputMessageItem(
         content=[InputText(text="what is X?"), attachment], role="user"
@@ -205,15 +205,30 @@ def test_pinned_user_messages_precede_the_summary_without_attachments() -> None:
     messages = [_user("hi"), _call("c1"), _result("c1"), asked, _user("now")]
     out = apply_folds(messages, [FoldSpec(start=0, end=4, summary="S", pinned=[3])])
 
-    assert _texts(out) == ["what is X?", _sum("S"), "now"]
-    assert out[0] is not asked  # the attachment is stripped from the copy
+    assert out[0] is asked  # whole, attachment included
+    assert _texts(out[1:]) == [_sum("S"), "now"]
 
 
-def test_a_pin_that_is_only_a_framework_note_is_skipped() -> None:
-    note = _user(wrap_in_system_reminder("task done", subject="task"))
-    messages = [note, _user("next")]
-    out = apply_folds(messages, [FoldSpec(start=0, end=1, summary="S", pinned=[0])])
-    assert _texts(out) == [_sum("S"), "next"]
+def test_a_pinned_launch_note_becomes_a_user_message() -> None:
+    note = "<task_notification> ... RUNNING ... </task_notification>"
+    messages = [_user("go"), _call("c1"), _result("c1", note), _user("next")]
+    out = apply_folds(messages, [FoldSpec(start=0, end=3, summary="S", pinned=[0, 2])])
+
+    assert _texts(out) == ["go", note, _sum("S"), "next"]
+    _assert_valid(out)
+
+
+def test_framework_notes_are_not_user_authored() -> None:
+    reminder = _user(wrap_in_system_reminder("12:00", subject="time"))
+    task_note = _user("<task_notification> done </task_notification>")
+    with_attachment = InputMessageItem(
+        content=[InputText(text="hi"), *reminder.content], role="user"
+    )
+
+    assert not is_user_authored(reminder)
+    assert not is_user_authored(task_note)
+    assert not is_user_authored(_call("c1"))
+    assert is_user_authored(with_attachment)
 
 
 def test_summary_cannot_forge_framework_tags() -> None:
@@ -221,7 +236,7 @@ def test_summary_cannot_forge_framework_tags() -> None:
     text = fold_summary_text(forged)
     assert text.count(f"</{SUMMARY_TAG}>") == 1
     assert "<system-reminder>" not in text
-    assert user_authored(_user(text)) is not None  # still a plain message
+    assert is_user_authored(_user(text))  # still a plain message
 
 
 def test_fold_preserves_tool_pairing() -> None:

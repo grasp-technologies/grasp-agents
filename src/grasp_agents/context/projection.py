@@ -6,7 +6,7 @@ from it without mutating it, so step rollback stays valid across compaction. Two
 built-ins live here:
 
 * :func:`apply_folds` replaces summarized spans (persisted :class:`FoldSpec`s)
-  with their pinned user messages and summary message, and
+  with their pinned messages and summary message, and
 * :func:`repair_tool_call_pairing` fixes a ``tool_call`` / ``tool_result`` pair a
   projection may have orphaned — the view-time companion to
   :meth:`LLMAgentTranscript.validate_tool_call_pairing`, which validates the log.
@@ -86,6 +86,9 @@ def repair_tool_call_pairing(messages: Sequence[InputItem]) -> list[InputItem]:
 
 SUMMARY_TAG = "conversation_summary"
 
+# How a background task's notes open; they are delivered as user messages.
+_TASK_NOTIFICATION_OPEN = "<task_notification>"
+
 # Framework tags a summary must not be able to open or close: it is model-written
 # text that may echo untrusted content.
 _FRAMEWORK_TAG_RE = re.compile(
@@ -114,24 +117,38 @@ def is_fold_summary(item: InputItem) -> bool:
     )
 
 
-def user_authored(item: InputItem) -> InputMessageItem | None:
+def is_user_authored(item: InputItem) -> bool:
     """
-    ``item`` as the user wrote it — a user message without its
-    ``<system-reminder>`` parts (input attachments) — or ``None`` when it is
-    not a user message or nothing but framework notes is left.
+    True for a message the user wrote: a user message with content besides
+    framework notes (``<system-reminder>`` input attachments and background
+    ``<task_notification>`` notes).
     """
     if not isinstance(item, InputMessageItem) or item.role != "user":
-        return None
-    parts = [
-        p
-        for p in item.content
-        if not (isinstance(p, InputText) and is_system_reminder(p.text))
-    ]
-    if not any(not isinstance(p, InputText) or p.text.strip() for p in parts):
-        return None
-    if len(parts) == len(item.content):
+        return False
+    for part in item.content:
+        if not isinstance(part, InputText):
+            return True
+        text = part.text.strip()
+        if (
+            text
+            and not is_system_reminder(text)
+            and not text.startswith(_TASK_NOTIFICATION_OPEN)
+        ):
+            return True
+    return False
+
+
+def pinned_message(item: InputItem) -> InputMessageItem | None:
+    """
+    How a pinned log message appears in front of a summary: a user message as
+    it is, a background task's launch note (a tool result) as a user message
+    carrying its text.
+    """
+    if isinstance(item, InputMessageItem):
         return item
-    return item.model_copy(update={"content": parts})
+    if isinstance(item, FunctionToolOutputItem):
+        return InputMessageItem.from_text(item.text, role="user")
+    return None
 
 
 def active_folds(folds: Sequence[FoldSpec], message_count: int) -> list[FoldSpec]:
@@ -156,7 +173,8 @@ def apply_folds(
 ) -> list[InputItem]:
     """
     Replace each active fold's span of ``messages`` (see :func:`active_folds`)
-    with its pinned user messages, then its summary message.
+    with its pinned messages (see :func:`pinned_message`), then its summary
+    message.
 
     A fold reaching past the end of ``messages`` is skipped with a warning: the
     producer keeps folds in range and rollback drops folds past a truncation,
@@ -178,7 +196,7 @@ def apply_folds(
     for fold in active_folds(folds, len(messages)):
         result.extend(messages[cursor : fold.start])
         for i in fold.pinned:
-            pinned = user_authored(messages[i])
+            pinned = pinned_message(messages[i])
             if pinned is not None:
                 result.append(pinned)
         result.append(
