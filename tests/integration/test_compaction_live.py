@@ -19,7 +19,7 @@ import pytest
 from grasp_agents import LLMAgent, SessionContext
 from grasp_agents.context import (
     COMPACTION_REQUEST_TAG,
-    CompactionPolicy,
+    Compactor,
     ContextBudget,
 )
 from grasp_agents.llm.cloud_llm import APIProvider
@@ -108,7 +108,7 @@ async def test_compaction_summarizes_on_the_agents_own_request(
     # question on. While it is the newest user message it stays pinned; once a
     # later question is, it is too long to pin and only the summary carries it.
     agent.add_compaction(
-        CompactionPolicy(
+        Compactor(
             budget=ContextBudget(llm.model_name, max_input_tokens=200_000),
             target_tokens=1500,
             keep_recent_rounds=1,

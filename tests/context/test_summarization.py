@@ -1,5 +1,5 @@
 """
-Context compaction: ``CompactionPolicy`` planning and the summarizing fold in
+Context compaction: ``Compactor`` planning and the summarizing fold in
 the agent loop (``context.compaction``, ``agent.context_window``,
 ``agent.agent_loop``).
 
@@ -22,18 +22,18 @@ import pytest
 from pydantic import BaseModel
 
 from grasp_agents.agent.agent_context import AgentContext
-from grasp_agents.agent.context_window import MAX_COMPACTION_FAILURES
 from grasp_agents.agent.llm_agent import LLMAgent
 from grasp_agents.context import (
     COMPACTION_REQUEST_TAG,
     COMPACTION_SECTION_NAME,
     SUMMARY_TAG,
-    CompactionPolicy,
+    Compactor,
     ContextBudget,
     InputAttachment,
     count_rounds,
 )
 from grasp_agents.context.compaction import (
+    MAX_COMPACTION_FAILURES,
     compaction_request,
     keep_recent_start,
     round_starts,
@@ -103,7 +103,7 @@ def _is_summary_request(view: Sequence[InputItem]) -> bool:
 
 
 def _plan(
-    policy: CompactionPolicy,
+    compactor: Compactor,
     messages: Sequence[InputItem],
     *,
     input_tokens: int = 1_000_000,
@@ -111,7 +111,7 @@ def _plan(
     running_call_ids: frozenset[str] = frozenset(),
     force: bool = False,
 ) -> CompactionPlan | None:
-    return policy.plan(
+    return compactor.plan(
         messages,
         input_tokens=input_tokens,
         folds=folds,
@@ -128,11 +128,11 @@ def _rounds(n: int, output: str = "ok") -> list[InputItem]:
     return log
 
 
-def _policy(**kwargs: Any) -> CompactionPolicy:
-    """A policy that always folds; the kept window is capped by rounds only."""
+def _compactor(**kwargs: Any) -> Compactor:
+    """A compactor that always folds; the kept window is capped by rounds only."""
     kwargs.setdefault("budget", _budget(1))
     kwargs.setdefault("keep_recent_tokens", 10**9)
-    return CompactionPolicy(**kwargs)
+    return Compactor(**kwargs)
 
 
 # --- Rounds ---
@@ -174,26 +174,26 @@ def test_kept_window_shrinks_to_its_token_cap_but_keeps_the_latest_round() -> No
     assert keep_recent_start(log, 3, keep_recent_tokens=1) == starts[-1]
 
 
-# --- CompactionPolicy: gating and span ---
+# --- Compactor: gating and span ---
 
 
 def test_under_threshold_is_no_plan() -> None:
-    policy = CompactionPolicy(budget=_budget(1000))
-    assert _plan(policy, _rounds(5), input_tokens=10) is None
+    compactor = Compactor(budget=_budget(1000))
+    assert _plan(compactor, _rounds(5), input_tokens=10) is None
 
 
 def test_target_tokens_lowers_the_threshold() -> None:
-    policy = CompactionPolicy(
+    compactor = Compactor(
         budget=_budget(10_000_000), target_tokens=100, keep_recent_rounds=2
     )
-    assert policy.threshold == 100
-    assert _plan(policy, _rounds(5), input_tokens=100) is None
-    assert _plan(policy, _rounds(5), input_tokens=101) is not None
+    assert compactor.threshold == 100
+    assert _plan(compactor, _rounds(5), input_tokens=100) is None
+    assert _plan(compactor, _rounds(5), input_tokens=101) is not None
 
 
 def test_folds_everything_before_the_recent_rounds() -> None:
     log = _rounds(5)
-    plan = _plan(_policy(keep_recent_rounds=2), log)
+    plan = _plan(_compactor(keep_recent_rounds=2), log)
     assert plan is not None
     assert plan.end == round_starts(log)[-2]
 
@@ -202,11 +202,11 @@ def test_window_over_its_cap_shrinks_with_a_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     log = _rounds(3, output="Z" * 4000)
-    policy = CompactionPolicy(
+    compactor = Compactor(
         budget=_budget(1), keep_recent_rounds=8, keep_recent_tokens=1500
     )
     with caplog.at_level(logging.WARNING, logger="grasp_agents.context.compaction"):
-        plan = _plan(policy, log)
+        plan = _plan(compactor, log)
     assert plan is not None
     assert plan.end == round_starts(log)[-1]
     assert any("instead of 8" in r.getMessage() for r in caplog.records)
@@ -214,9 +214,9 @@ def test_window_over_its_cap_shrinks_with_a_warning(
 
 def test_force_plans_even_when_everything_is_recent() -> None:
     log = _rounds(3)
-    policy = CompactionPolicy(budget=_budget(10_000_000))
-    assert _plan(policy, log, input_tokens=1) is None
-    plan = _plan(policy, log, input_tokens=1, force=True)
+    compactor = Compactor(budget=_budget(10_000_000))
+    assert _plan(compactor, log, input_tokens=1) is None
+    plan = _plan(compactor, log, input_tokens=1, force=True)
     assert plan is not None
     assert plan.end == round_starts(log)[-1]
 
@@ -227,25 +227,25 @@ def test_before_new_input_the_input_is_the_newest_kept_round() -> None:
         log += [_user(f"q{i}"), _answer(f"a{i}")]
     starts = round_starts(log)
 
-    plan = _plan(_policy(keep_recent_rounds=3), log)
+    plan = _plan(_compactor(keep_recent_rounds=3), log)
     assert plan is not None
     assert plan.end == starts[2]  # two earlier rounds, then the new input
 
-    plan = _plan(_policy(keep_recent_rounds=1), log)
+    plan = _plan(_compactor(keep_recent_rounds=1), log)
     assert plan is not None
     assert plan.end == len(log)  # everything; the newest question stays pinned
     assert plan.pinned[-1] == starts[-1]
 
 
 def test_a_single_round_cannot_be_folded() -> None:
-    assert _plan(_policy(), _rounds(1), force=True) is None
+    assert _plan(_compactor(), _rounds(1), force=True) is None
 
 
 def test_a_new_fold_supersedes_the_previous_one() -> None:
     log = _rounds(6)
     starts = round_starts(log)
     previous = FoldSpec(start=0, end=starts[2], summary="OLD")
-    plan = _plan(_policy(keep_recent_rounds=2), log, folds=[previous])
+    plan = _plan(_compactor(keep_recent_rounds=2), log, folds=[previous])
     assert plan is not None
     assert plan.to_fold("NEW") == FoldSpec(
         start=0, end=starts[-2], summary="NEW", pinned=plan.pinned
@@ -255,7 +255,7 @@ def test_a_new_fold_supersedes_the_previous_one() -> None:
 def test_no_progress_past_the_previous_fold_is_no_plan() -> None:
     log = _rounds(4)
     previous = FoldSpec(start=0, end=round_starts(log)[-2], summary="OLD")
-    assert _plan(_policy(keep_recent_rounds=2), log, folds=[previous]) is None
+    assert _plan(_compactor(keep_recent_rounds=2), log, folds=[previous]) is None
 
 
 # --- What stays pinned ---
@@ -279,7 +279,7 @@ def test_pins_the_latest_user_messages_before_the_window() -> None:
         _answer("f"),
         _user("now"),
     ]
-    plan = _plan(_policy(keep_recent_rounds=1, pinned_user_messages=3), log)
+    plan = _plan(_compactor(keep_recent_rounds=1, pinned_user_messages=3), log)
     assert plan is not None
     # The newest three user messages; framework notes are not theirs.
     assert plan.pinned == [2, 6, 10]
@@ -294,7 +294,7 @@ def test_the_newest_user_message_is_pinned_whatever_its_size() -> None:
         _result("c1"),
         _answer("b"),
     ]
-    plan = _plan(_policy(keep_recent_rounds=1, pinned_user_tokens=100), log)
+    plan = _plan(_compactor(keep_recent_rounds=1, pinned_user_tokens=100), log)
     assert plan is not None
     # Mid-run: the run's own request is folded, yet stays verbatim. The earlier
     # message no longer fits the token cap.
@@ -311,14 +311,16 @@ def test_earlier_pins_stop_at_the_first_message_over_the_token_cap() -> None:
         _answer("c"),
         _user("now"),
     ]
-    plan = _plan(_policy(keep_recent_rounds=1, pinned_user_tokens=100), log)
+    plan = _plan(_compactor(keep_recent_rounds=1, pinned_user_tokens=100), log)
     assert plan is not None
     assert plan.pinned == [4]
 
 
 def test_launch_notes_of_running_tasks_are_pinned() -> None:
     log = _rounds(3)
-    plan = _plan(_policy(keep_recent_rounds=1), log, running_call_ids=frozenset({"c0"}))
+    plan = _plan(
+        _compactor(keep_recent_rounds=1), log, running_call_ids=frozenset({"c0"})
+    )
     assert plan is not None
     # The questions, and c0's launch note between them; c1's task is done.
     assert plan.pinned == [0, 2, 3]
@@ -326,7 +328,7 @@ def test_launch_notes_of_running_tasks_are_pinned() -> None:
 
 def test_at_least_one_user_message_is_pinned() -> None:
     with pytest.raises(ValueError, match="pinned_user_messages"):
-        CompactionPolicy(pinned_user_messages=0)
+        Compactor(pinned_user_messages=0)
 
 
 # --- The summary request and its reply ---
@@ -360,9 +362,9 @@ async def test_summarize_appends_the_request_and_reports_each_response() -> None
     context = [_user("header")]
     body = _rounds(2)
     seen: list[Response] = []
-    policy = _policy(instructions="Summarize it.")
+    compactor = _compactor(instructions="Summarize it.")
 
-    summary = await policy.summarize(
+    summary = await compactor.summarize(
         llm,
         initial_context=context,
         body=body,
@@ -439,7 +441,7 @@ class _BigTool(BaseTool[_BigInput, str, Any]):
 def _agent(
     llm: MockLLM,
     *,
-    policy: CompactionPolicy | None = None,
+    compactor: Compactor | None = None,
     ctx: SessionContext[None] | None = None,
     stream_llm: bool = False,
 ) -> tuple[LLMAgent[str, str, None], _BigTool]:
@@ -452,7 +454,7 @@ def _agent(
         stream_llm=stream_llm,
     )
     agent.add_compaction(
-        policy or CompactionPolicy(budget=_budget(5), keep_recent_rounds=1)
+        compactor or Compactor(budget=_budget(5), keep_recent_rounds=1)
     )
     return agent, tool
 
@@ -737,7 +739,7 @@ async def test_a_running_tasks_launch_note_stays_in_front_of_the_summary() -> No
     agent = LLMAgent[str, str, None](
         name="a", ctx=SessionContext(), llm=llm, tools=[_BigTool(), watch]
     )
-    agent.add_compaction(CompactionPolicy(budget=_budget(5), keep_recent_rounds=1))
+    agent.add_compaction(Compactor(budget=_budget(5), keep_recent_rounds=1))
     try:
         await agent.run("go")
     finally:
@@ -760,9 +762,9 @@ async def test_add_compaction_registers_the_section_and_injects_the_budget() -> 
     agent = LLMAgent[str, str, None](
         name="a", ctx=SessionContext(), llm=MockLLM(responses_queue=[])
     )
-    policy = agent.add_compaction()
-    assert agent.agent_ctx.cw.compaction_policy is policy
-    assert policy.budget is not None
+    compactor = agent.add_compaction()
+    assert agent.agent_ctx.cw.compactor is compactor
+    assert compactor.budget is not None
     names = [s.name for s in agent.system_prompt_sections]
     assert COMPACTION_SECTION_NAME in names
 
@@ -825,8 +827,8 @@ async def test_a_custom_compactor_enables_compaction_for_any_agent() -> None:
         return "S"
 
     agent.add_custom_compactor(_summarize)
-    policy = agent.add_compaction(CompactionPolicy(target_tokens=1000))
-    assert agent.agent_ctx.cw.compaction_policy is policy
+    compactor = agent.add_compaction(Compactor(target_tokens=1000))
+    assert agent.agent_ctx.cw.compactor is compactor
 
 
 # --- Compaction before new input ---
@@ -836,8 +838,8 @@ async def test_a_custom_compactor_enables_compaction_for_any_agent() -> None:
 async def test_a_steps_input_lands_after_the_fold() -> None:
     llm = MockLLM(responses_queue=[_text_response(a) for a in ("a1", "a2", "a3")])
     agent = LLMAgent[str, str, None](name="a", ctx=SessionContext(), llm=llm)
-    policy = agent.add_compaction(
-        CompactionPolicy(budget=_budget(10**9), keep_recent_rounds=1)
+    compactor = agent.add_compaction(
+        Compactor(budget=_budget(10**9), keep_recent_rounds=1)
     )
     logs: list[list[str]] = []
     views: list[list[str]] = []
@@ -859,7 +861,7 @@ async def test_a_steps_input_lands_after_the_fold() -> None:
         )
 
     agent.add_input_attachment(InputAttachment(name="probe", compute=compute))
-    policy.budget = _budget(1)
+    compactor.budget = _budget(1)
     events = [event async for event in agent.run_stream("q3")]
 
     # The fold came first: the summary never covers q3, and q3's attachments
@@ -918,7 +920,7 @@ async def test_start_event_reports_the_context_being_compacted() -> None:
     )
     agent, _ = _agent(
         llm,
-        policy=CompactionPolicy(
+        compactor=Compactor(
             budget=ContextBudget("mock", max_input_tokens=5, buffer_tokens=0),
             keep_recent_rounds=1,
         ),
@@ -939,7 +941,7 @@ async def test_no_start_event_without_a_fold_to_make() -> None:
             _text_response("done"),
         ]
     )
-    agent, _ = _agent(llm, policy=CompactionPolicy(budget=_budget(10_000_000)))
+    agent, _ = _agent(llm, compactor=Compactor(budget=_budget(10_000_000)))
     events = [event async for event in agent.run_stream("go")]
     assert not any(isinstance(e, CompactionStartEvent) for e in events)
 
@@ -1014,7 +1016,7 @@ async def test_context_window_error_compacts_and_retries() -> None:
         ]
     )
     # A huge budget: only the forced path compacts.
-    agent, _ = _agent(llm, policy=CompactionPolicy(budget=_budget(10_000_000)))
+    agent, _ = _agent(llm, compactor=Compactor(budget=_budget(10_000_000)))
     events = [event async for event in agent.run_stream("go")]
 
     assert events[-1].data.payloads[0] == "recovered"  # type: ignore[union-attr]
@@ -1069,7 +1071,7 @@ async def test_folds_and_usage_restored_on_resume_without_a_new_summary() -> Non
     agent2, _ = _agent(
         MockLLM(responses_queue=[_text_response("after")]),
         ctx=ctx2,
-        policy=CompactionPolicy(budget=_budget(10_000_000)),
+        compactor=Compactor(budget=_budget(10_000_000)),
     )
     await agent2.load_checkpoint(exec_id="x")
     assert agent2.agent_ctx.cw.last_usage == usage
@@ -1094,28 +1096,28 @@ class _CrashingStore(InMemoryCheckpointStore):
 async def test_a_crash_before_the_fold_is_saved_redoes_it_on_redelivery() -> None:
     store = _CrashingStore()
 
-    def _build(*replies: str) -> tuple[LLMAgent[str, str, None], CompactionPolicy]:
+    def _build(*replies: str) -> tuple[LLMAgent[str, str, None], Compactor]:
         agent = LLMAgent[str, str, None](
             name="a",
             ctx=SessionContext(checkpoint_store=store, session_key="s1"),
             llm=MockLLM(responses_queue=[_text_response(r) for r in replies]),
         )
-        policy = agent.add_compaction(
-            CompactionPolicy(budget=_budget(10**9), keep_recent_rounds=1)
+        compactor = agent.add_compaction(
+            Compactor(budget=_budget(10**9), keep_recent_rounds=1)
         )
-        return agent, policy
+        return agent, compactor
 
-    agent, policy = _build("a1", "a2", "S1")
+    agent, compactor = _build("a1", "a2", "S1")
     await agent.run("q1", step=0)
     await agent.run("q2", step=1)
-    policy.budget = _budget(1)
+    compactor.budget = _budget(1)
     store.armed = True
     # The fold is made before q3 lands; the save that would persist both fails.
     with pytest.raises(ProcRunError):
         await agent.run("q3", step=2)
 
-    resumed, policy = _build("S2", "a3")
-    policy.budget = _budget(1)
+    resumed, compactor = _build("S2", "a3")
+    compactor.budget = _budget(1)
     out = await resumed.run("q3", step=2)
 
     assert out.payloads[0] == "a3"

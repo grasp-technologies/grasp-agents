@@ -18,7 +18,7 @@ means a later registration replaces the earlier one.
 | `add_before_tool_hook` | `BeforeToolHook(*, tool_calls, ctx, exec_id) -> Mapping[call_id, ToolCallDecision] \| None` | stacks, most restrictive wins | `on_before_tool_impl` |
 | `add_after_tool_hook` | `AfterToolHook(*, tool_calls, tool_messages, exec_id)` | stacks | `on_after_tool_impl` |
 | `add_view_projector` | `ViewProjector(messages, *, exec_id, input_tokens) -> Sequence[InputItem]` | stacks (pipeline) | `project_view_impl` |
-| `add_compaction(policy=None)` | registers a `CompactionPolicy` and the `compaction` system-prompt section | single | — |
+| `add_compaction(compactor=None)` | registers a `Compactor` and the `compaction` system-prompt section | single | — |
 | `add_custom_compactor` | `CustomCompactor(*, agent_ctx, ctx) -> str` (async; writes compaction summaries in place of the agent's model) | single | — |
 | `add_initial_context_builder` | `InitialContextBuilder(messages, *, exec_id) -> Sequence[InputItem]` | single | `build_initial_context_impl` |
 | `add_input_content_builder` | `InputContentBuilder(in_args, *, exec_id) -> Content` | single | `build_input_content_impl` |
@@ -205,7 +205,7 @@ await agent.run("hi", span_name="triage", span_attributes={"ticket.id": "T-1"})
 ## See also
 
 - [Agent loop](agent-loop.md) — where each hook fires; approvals.
-- [Context window](context-window.md) — projectors, compaction, `CompactionPolicy`.
+- [Context window](context-window.md) — projectors, compaction, `Compactor`.
 - [Orchestration](orchestration.md) — routing and workflows.
 - Code: `hooks.py`, `agent/llm_agent.py` (Decorator API), `context/prompt_builder.py`,
   `processors/processor.py`, `workflow/looped_workflow.py`.

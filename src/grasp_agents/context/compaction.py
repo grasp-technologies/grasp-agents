@@ -1,9 +1,9 @@
 """
 Built-in context-window compaction.
 
-:class:`CompactionPolicy` configures compaction
-(``agent.add_compaction()``): when the view outgrows its threshold, the agent
-folds everything before the most recent rounds into a summary. Its own model
+:class:`Compactor` compacts the agent's conversation
+(``agent.add_compaction()``): when the view outgrows its threshold, it folds
+everything before the most recent rounds into a summary. The agent's own model
 writes the summary, unless a custom compactor is registered: the agent's
 current request — same view, tools and settings — with one
 ``<compaction_request>`` message (:func:`compaction_request`) appended, so the
@@ -24,7 +24,8 @@ the calls of its response.
 
 import logging
 import re
-from collections.abc import Callable, Collection, Mapping, Sequence
+import time
+from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.resources import files
 from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
@@ -32,6 +33,13 @@ from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
 from grasp_agents.llm.model_info import ModelCapabilities, get_model_capabilities
 from grasp_agents.llm.token_counting import estimate_input_tokens
 from grasp_agents.types.errors import LLMToolCallValidationError
+from grasp_agents.types.events import (
+    CompactionDoneEvent,
+    CompactionInfo,
+    CompactionStartEvent,
+    CompactionStartInfo,
+    Event,
+)
 from grasp_agents.types.folds import CompactionPlan, FoldSpec
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -55,7 +63,9 @@ from .system_reminder import wrap_in_system_reminder
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
+    from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.llm.llm import LLM
+    from grasp_agents.session_context import SessionContext
     from grasp_agents.tools.base import BaseTool, ToolChoice
     from grasp_agents.types.response import Response
 
@@ -67,6 +77,10 @@ MAX_BUFFER_TOKENS = 32_000
 # fires (a wrong guess is backstopped by the context-window-error path) rather
 # than silently doing nothing.
 DEFAULT_MAX_INPUT_TOKENS = 128_000
+
+# Failed compactions in a row after which compaction stops at turn boundaries
+# (the context-window-error recovery path still compacts).
+MAX_COMPACTION_FAILURES = 3
 
 DEFAULT_KEEP_RECENT_ROUNDS = 8
 DEFAULT_PINNED_USER_MESSAGES = 3
@@ -497,12 +511,12 @@ async def _generate(
     return response
 
 
-class CompactionPolicy(Budgeted):
+class Compactor(Budgeted):
     """
-    When the agent folds its conversation into a summary, and what it keeps:
-    ``agent.add_compaction(CompactionPolicy(...))``.
+    Folds the agent's conversation into a summary under context-window
+    pressure: ``agent.add_compaction(Compactor(...))``.
 
-    The agent folds once the view outgrows :attr:`threshold`: the budget's soft
+    It folds once the view outgrows :attr:`threshold`: the budget's soft
     limit, lowered to ``target_tokens`` when set. A target well below the window
     keeps every request cheaper and faster, at the cost of compacting sooner.
     ``budget`` is the agent's; the agent injects it on registration when
@@ -520,7 +534,8 @@ class CompactionPolicy(Budgeted):
 
     The agent's own model writes the summary (:meth:`summarize`), prompted by
     ``instructions`` (default :data:`COMPACTION_INSTRUCTIONS`), unless a
-    :class:`~grasp_agents.hooks.CustomCompactor` is registered.
+    :class:`~grasp_agents.hooks.CustomCompactor` is registered. One instance
+    serves one agent.
     """
 
     def __init__(
@@ -634,6 +649,109 @@ class CompactionPolicy(Budgeted):
 
         return CompactionPlan(
             end=keep_from, pinned=self._pinned(messages, keep_from, running_call_ids)
+        )
+
+    async def compact(
+        self,
+        *,
+        agent_ctx: "AgentContext",
+        ctx: "SessionContext[Any]",
+        llm: "LLM",
+        agent_name: str,
+        exec_id: str,
+        tool_choice: "ToolChoice | None",
+        output_schema: Any | None,
+        stream: bool,
+        force: bool = False,
+    ) -> AsyncIterator[Event[Any]]:
+        """
+        Fold the agent's conversation into a summary if it is due: yields a
+        :class:`CompactionStartEvent`, gets the summary, records the fold in
+        ``agent_ctx.cw`` and yields a :class:`CompactionDoneEvent`.
+
+        The agent's custom compactor writes the summary when one is
+        registered; otherwise ``llm`` does (:meth:`summarize`), with the
+        agent's ``tool_choice`` and ``output_schema``. When no summary comes
+        back the turn proceeds without a fold. After
+        :data:`MAX_COMPACTION_FAILURES` failed compactions in a row only
+        forced ones run (``force``: the context-window-error recovery path,
+        which folds regardless of the threshold), until one succeeds.
+        """
+        cw = agent_ctx.cw
+        if not force and cw.compaction_failures >= MAX_COMPACTION_FAILURES:
+            return
+        tokens_before = await cw.projected_input_tokens(exec_id=exec_id)
+        plan = self.plan(
+            cw.transcript,
+            input_tokens=tokens_before,
+            folds=cw.folds,
+            running_call_ids=agent_ctx.bg_tasks.running_call_ids(),
+            force=force,
+        )
+        if plan is None:
+            return
+        yield CompactionStartEvent(
+            source=agent_name,
+            exec_id=exec_id,
+            data=CompactionStartInfo(
+                context_tokens=tokens_before,
+                context_window=cw.context_window,
+                forced=force,
+            ),
+        )
+
+        started = time.monotonic()
+        custom = cw.custom_compactor
+        try:
+            if custom is not None:
+                summary = await custom(agent_ctx=agent_ctx, ctx=ctx)
+            else:
+                summary = await self.summarize(
+                    llm,
+                    initial_context=cw.initial_context,
+                    body=await cw.build_view_body(exec_id=exec_id),
+                    tools=agent_ctx.tools or None,
+                    tool_choice=tool_choice,
+                    output_schema=output_schema,
+                    stream=stream,
+                    on_response=lambda response: ctx.usage_tracker.update(
+                        agent_name=agent_name, responses=[response]
+                    ),
+                )
+        except Exception:
+            logger.warning("the conversation summary request failed", exc_info=True)
+            summary = ""
+        summary = summary.strip()
+        if not summary:
+            cw.note_compaction_failure()
+            return
+
+        fold = plan.to_fold(summary)
+        cw.record_fold(fold)
+        messages = cw.transcript
+        logger.info(
+            "compacted context%s: ~%d -> ~%d tokens, %d round(s) summarized, "
+            "%d kept, %d message(s) pinned (%.1fs)",
+            " after a context-window error" if force else "",
+            tokens_before,
+            cw.effective_input_tokens(),
+            count_rounds(messages[: fold.end]),
+            count_rounds(messages[fold.end :]),
+            len(fold.pinned),
+            time.monotonic() - started,
+        )
+        yield CompactionDoneEvent(
+            source=agent_name,
+            exec_id=exec_id,
+            data=CompactionInfo(
+                folded_rounds=count_rounds(messages[: fold.end]),
+                kept_rounds=count_rounds(messages[fold.end :]),
+                pinned_messages=len(fold.pinned),
+                context_tokens=cw.effective_input_tokens(),
+                context_window=cw.context_window,
+                summary=fold.summary,
+                forced=force,
+            ),
         )
 
     async def summarize(

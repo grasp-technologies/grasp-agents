@@ -7,7 +7,7 @@ import pytest
 
 from grasp_agents.agent.context_window import ContextWindowManager
 from grasp_agents.types.content import OutputMessageText
-from grasp_agents.types.folds import CompactionPlan, FoldSpec
+from grasp_agents.types.folds import FoldSpec
 from grasp_agents.types.items import InputMessageItem, OutputMessageItem
 from grasp_agents.types.response import ResponseUsage
 
@@ -105,9 +105,7 @@ class TestUsageAnchor:
     @pytest.mark.asyncio
     async def test_a_fold_stops_anchoring_but_keeps_the_usage(self) -> None:
         cw = await _anchored(5)
-        cw.record_fold(
-            CompactionPlan(end=3), "summary", tokens_before=1000, elapsed_s=0.0
-        )
+        cw.record_fold(FoldSpec(start=0, end=3, summary="summary"))
 
         assert cw.last_usage == _usage(1000)
         with patch(_COUNT, return_value=7) as count:

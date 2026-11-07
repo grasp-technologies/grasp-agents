@@ -14,15 +14,14 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from grasp_agents.context.compaction import (
+    MAX_COMPACTION_FAILURES,
     Budgeted,
-    CompactionPolicy,
+    Compactor,
     ContextBudget,
-    count_rounds,
 )
 from grasp_agents.context.projection import apply_folds, repair_tool_call_pairing
 from grasp_agents.llm.model_info import get_model_capabilities
 from grasp_agents.llm.token_counting import estimate_input_tokens
-from grasp_agents.types.events import CompactionDoneEvent, CompactionInfo
 from grasp_agents.types.items import (
     FunctionToolOutputItem,
     InputMessageItem,
@@ -31,19 +30,15 @@ from grasp_agents.types.items import (
 from .llm_agent_transcript import LLMAgentTranscript
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Sequence
+    from collections.abc import Sequence
 
     from grasp_agents.hooks import CustomCompactor, ViewProjector
     from grasp_agents.llm.model_info import ModelCapabilities
-    from grasp_agents.types.folds import CompactionPlan, FoldSpec
+    from grasp_agents.types.folds import FoldSpec
     from grasp_agents.types.items import InputItem
     from grasp_agents.types.response import ResponseUsage
 
 logger = logging.getLogger(__name__)
-
-# Consecutive failed compactions after which the turn-boundary compaction stops
-# (the context-window-error recovery path still compacts).
-MAX_COMPACTION_FAILURES = 3
 
 
 class ContextWindowManager:
@@ -82,10 +77,10 @@ class ContextWindowManager:
         # ``LLMAgent`` and prepended to the view; never written to the log.
         self.initial_context: list[InputItem] = []
 
-        # Stacked projector pipeline, the compaction policy and an optional
-        # custom compactor that writes the summaries (set via LLMAgent).
+        # Stacked projector pipeline, the compactor and an optional custom
+        # compactor that writes its summaries (set via LLMAgent).
         self.view_projectors: list[ViewProjector] = []
-        self.compaction_policy: CompactionPolicy | None = None
+        self.compactor: Compactor | None = None
         self.custom_compactor: CustomCompactor[Any] | None = None
 
         # Summarized log spans applied to the view; persisted, survive resume,
@@ -140,10 +135,10 @@ class ContextWindowManager:
             projector.budget = self.default_budget()
         self.view_projectors.append(projector)
 
-    def set_compaction_policy(self, policy: CompactionPolicy) -> None:
-        if policy.budget is None:
-            policy.budget = self.default_budget()
-        self.compaction_policy = policy
+    def set_compactor(self, compactor: Compactor) -> None:
+        if compactor.budget is None:
+            compactor.budget = self.default_budget()
+        self.compactor = compactor
 
     # --- view derivation ---
 
@@ -304,64 +299,20 @@ class ContextWindowManager:
 
     # --- compaction ---
 
-    async def plan_compaction(
-        self,
-        *,
-        exec_id: str,
-        running_call_ids: Collection[str],
-        force: bool = False,
-    ) -> tuple[CompactionPlan, int] | None:
-        """
-        The fold the compaction policy calls for now, with the view's estimated
-        size, or ``None``. ``force`` (the context-window-error recovery path)
-        plans regardless of the threshold. After
-        :data:`MAX_COMPACTION_FAILURES` failed compactions in a row only forced
-        ones run, until one succeeds.
-        """
-        if self.compaction_policy is None:
-            return None
-        if not force and self._compaction_failures >= MAX_COMPACTION_FAILURES:
-            return None
-        input_tokens = await self.projected_input_tokens(exec_id=exec_id)
-        plan = self.compaction_policy.plan(
-            self._messages,
-            input_tokens=input_tokens,
-            folds=self.folds,
-            running_call_ids=running_call_ids,
-            force=force,
-        )
-        return None if plan is None else (plan, input_tokens)
+    @property
+    def compaction_failures(self) -> int:
+        """Failed compactions in a row since the last fold."""
+        return self._compaction_failures
 
-    def record_fold(
-        self,
-        plan: CompactionPlan,
-        summary: str,
-        *,
-        tokens_before: int,
-        elapsed_s: float,
-        forced: bool = False,
-    ) -> FoldSpec:
-        """Record the fold ``plan`` describes, with its ``summary``."""
-        fold = plan.to_fold(summary)
-        self._compaction_failures = 0
+    def record_fold(self, fold: FoldSpec) -> None:
+        """Record a compaction's fold; the view now summarizes its span."""
         self.folds.append(fold)
+        self._compaction_failures = 0
         # The fold shrank the view, so the latest usage no longer measures it.
         self.reset_anchor()
-        logger.info(
-            "compacted context%s: ~%d -> ~%d tokens, %d round(s) summarized, "
-            "%d kept, %d message(s) pinned (%.1fs)",
-            " after a context-window error" if forced else "",
-            tokens_before,
-            self.effective_input_tokens(),
-            count_rounds(self._messages[fold.start : fold.end]),
-            count_rounds(self._messages[fold.end :]),
-            len(fold.pinned),
-            elapsed_s,
-        )
-        return fold
 
     def note_compaction_failure(self) -> None:
-        """Count a compaction that recorded no fold (see :meth:`plan_compaction`)."""
+        """Count a compaction that recorded no fold."""
         self._compaction_failures += 1
         logger.warning(
             "context compaction failed (%d in a row)%s",
@@ -371,29 +322,10 @@ class ContextWindowManager:
             else "",
         )
 
-    def compaction_done_event(
-        self, fold: FoldSpec, *, source: str, exec_id: str, forced: bool = False
-    ) -> CompactionDoneEvent:
-        """The event announcing a recorded fold (the reduced view size + summary)."""
-        messages = self._messages
-        return CompactionDoneEvent(
-            source=source,
-            exec_id=exec_id,
-            data=CompactionInfo(
-                folded_rounds=count_rounds(messages[fold.start : fold.end]),
-                kept_rounds=count_rounds(messages[fold.end :]),
-                pinned_messages=len(fold.pinned),
-                context_tokens=self.effective_input_tokens(),
-                context_window=self.context_window,
-                summary=fold.summary,
-                forced=forced,
-            ),
-        )
-
     @property
     def context_window(self) -> int | None:
         """The input-token window compaction targets — from a registered budget."""
-        for strategy in (self.compaction_policy, *self.view_projectors):
+        for strategy in (self.compactor, *self.view_projectors):
             budget = getattr(strategy, "budget", None)
             window = getattr(budget, "max_input_tokens", None)
             if window is not None:

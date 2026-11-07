@@ -5,7 +5,7 @@ Everything that shapes what the model sees: the :class:`PromptBuilder` and its
 section/attachment vocabulary (:class:`SystemPromptSection`,
 :class:`InputAttachment`), the built-in section providers
 (:func:`make_env_info_section`, :func:`make_untrusted_content_section`), and
-context compaction (:class:`CompactionPolicy`, :class:`ContextBudget`,
+context compaction (:class:`Compactor`, :class:`ContextBudget`,
 :class:`CollapseToolOutputsProjector`).
 """
 
@@ -15,7 +15,7 @@ from .compaction import (
     COMPACTION_REQUEST_TAG,
     COMPACTION_SECTION_NAME,
     CollapseToolOutputsProjector,
-    CompactionPolicy,
+    Compactor,
     ContextBudget,
     collapse_tool_outputs,
     count_rounds,
@@ -58,7 +58,7 @@ __all__ = [
     "UNTRUSTED_CONTENT_SECTION_NAME",
     "UNTRUSTED_CONTENT_TAG",
     "CollapseToolOutputsProjector",
-    "CompactionPolicy",
+    "Compactor",
     "ContextBudget",
     "InputAttachment",
     "InputAttachmentCompute",

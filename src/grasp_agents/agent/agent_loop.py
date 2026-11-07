@@ -28,8 +28,6 @@ from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskInfo,
     BackgroundTaskLaunchedEvent,
-    CompactionStartEvent,
-    CompactionStartInfo,
     Event,
     GenerationEndEvent,
     LLMStreamEvent,
@@ -764,76 +762,28 @@ class AgentLoop[CtxT]:
         self, *, exec_id: str, force: bool = False
     ) -> AsyncIterator[Event[Any]]:
         """
-        Fold the conversation into a summary when the compaction policy calls
-        for it: yields a :class:`CompactionStartEvent`, gets the summary,
-        records the fold and yields a :class:`CompactionDoneEvent`.
-
-        A registered custom compactor writes the summary; otherwise the agent's
-        model does, on the agent's own request
-        (:meth:`~grasp_agents.context.CompactionPolicy.summarize`). Nothing is
-        written to the transcript, and the LLM hooks do not run. When no
-        summary comes back the turn proceeds without a fold, and the failure
-        counts toward :data:`MAX_COMPACTION_FAILURES`.
+        Run the agent's compactor, if any, on its own request
+        (:meth:`~grasp_agents.context.Compactor.compact`); ``force`` on the
+        context-window-error path.
         """
-        policy = self.cw.compaction_policy
-        if policy is None:
+        compactor = self.cw.compactor
+        if compactor is None:
             return
-        planned = await self.cw.plan_compaction(
+        tools = self._agent_ctx.tools
+        async for event in compactor.compact(
+            agent_ctx=self._agent_ctx,
+            ctx=self.ctx,
+            llm=self._llm,
+            agent_name=self.agent_name,
             exec_id=exec_id,
-            running_call_ids=self.bg_tasks.running_call_ids(),
+            tool_choice=self._compute_tool_choice(had_tool_calls=False)
+            if tools
+            else None,
+            output_schema=self.llm_output_schema,
+            stream=self.stream_llm,
             force=force,
-        )
-        if planned is None:
-            return
-        plan, tokens_before = planned
-        yield CompactionStartEvent(
-            source=self.agent_name,
-            exec_id=exec_id,
-            data=CompactionStartInfo(
-                context_tokens=tokens_before,
-                context_window=self.cw.context_window,
-                forced=force,
-            ),
-        )
-
-        started = time.monotonic()
-        custom = self.cw.custom_compactor
-        tools = self._agent_ctx.tools or None
-        try:
-            if custom is not None:
-                summary = await custom(agent_ctx=self._agent_ctx, ctx=self.ctx)
-            else:
-                summary = await policy.summarize(
-                    self._llm,
-                    initial_context=self.cw.initial_context,
-                    body=await self.cw.build_view_body(exec_id=exec_id),
-                    tools=tools,
-                    tool_choice=self._compute_tool_choice(had_tool_calls=False)
-                    if tools
-                    else None,
-                    output_schema=self.llm_output_schema,
-                    stream=self.stream_llm,
-                    on_response=lambda response: self.ctx.usage_tracker.update(
-                        agent_name=self.agent_name, responses=[response]
-                    ),
-                )
-        except Exception:
-            logger.warning("the conversation summary request failed", exc_info=True)
-            summary = ""
-        summary = summary.strip()
-        if not summary:
-            self.cw.note_compaction_failure()
-            return
-        fold = self.cw.record_fold(
-            plan,
-            summary,
-            tokens_before=tokens_before,
-            elapsed_s=time.monotonic() - started,
-            forced=force,
-        )
-        yield self.cw.compaction_done_event(
-            fold, source=self.agent_name, exec_id=exec_id, forced=force
-        )
+        ):
+            yield event
 
     # --- Tool calling ---
 

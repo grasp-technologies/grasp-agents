@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 from pydantic import BaseModel
 
 from grasp_agents.context.compaction import (
-    CompactionPolicy,
+    Compactor,
     make_compaction_section,
 )
 from grasp_agents.context.env_section import (
@@ -1845,15 +1845,13 @@ class LLMAgent[InT, OutT, CtxT](
         self._agent_ctx.cw.add_view_projector(func)
         return func
 
-    def add_compaction(
-        self, policy: CompactionPolicy | None = None
-    ) -> CompactionPolicy:
+    def add_compaction(self, compactor: Compactor | None = None) -> Compactor:
         """
-        Enable context compaction: once the view outgrows the ``policy``'s
+        Enable context compaction: once the view outgrows the ``compactor``'s
         threshold, the conversation before the recent window is folded into a
-        summary. By default a :class:`~grasp_agents.context.CompactionPolicy`
-        with the budget derived from this agent's model; pass a configured one
-        to set a ``target_tokens`` threshold, the kept window, or the
+        summary. By default a :class:`~grasp_agents.context.Compactor` with
+        the budget derived from this agent's model; pass a configured one to
+        set a ``target_tokens`` threshold, the kept window, or the
         summarization prompt. Also adds the system-prompt section that tells
         the model how to read its summaries.
 
@@ -1864,21 +1862,21 @@ class LLMAgent[InT, OutT, CtxT](
         """
         if self._agent_ctx.cw.custom_compactor is None:
             self._check_summarizes_itself()
-        policy = policy or CompactionPolicy()
-        self._agent_ctx.cw.set_compaction_policy(policy)
+        compactor = compactor or Compactor()
+        self._agent_ctx.cw.set_compactor(compactor)
         self.add_system_prompt_section(make_compaction_section())
-        return policy
+        return compactor
 
     def add_custom_compactor(
         self, func: CustomCompactor[CtxT]
     ) -> CustomCompactor[CtxT]:
         """
         Write compaction summaries with ``func`` instead of the agent's own
-        model. Enables compaction with the default policy unless
+        model. Enables compaction with the default compactor unless
         :meth:`add_compaction` already set one. Single-slot.
         """
         self._agent_ctx.cw.custom_compactor = func
-        if self._agent_ctx.cw.compaction_policy is None:
+        if self._agent_ctx.cw.compactor is None:
             self.add_compaction()
         return func
 
