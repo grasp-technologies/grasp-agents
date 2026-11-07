@@ -8,14 +8,6 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from pydantic import BaseModel
 
-from grasp_agents.context.compaction import (
-    COMPACTION_INSTRUCTIONS,
-    MAX_SUMMARY_ATTEMPTS,
-    SUMMARY_SHRINK_STEPS,
-    compaction_request,
-    summary_text,
-)
-from grasp_agents.context.projection import repair_tool_call_pairing
 from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.context.untrusted_content import wrap_untrusted
 from grasp_agents.durability.checkpoints import AgentCheckpointLocation
@@ -332,12 +324,6 @@ class AgentLoop[CtxT]:
         self.final_answer_extractor = None
         self.checkpoint_callback = None
 
-        # The parameters of the last LLM request (all but its input), and the
-        # run's own settings: a compaction summary request reuses them so the
-        # provider's prompt cache serves its prefix.
-        self._last_llm_params: dict[str, Any] | None = None
-        self._run_llm_settings: dict[str, Any] = {}
-
         self._final_answer_tool = self._make_final_answer_tool()
         if final_answer_as_tool_call:
             if self._final_answer_tool.name in agent_ctx.tools:
@@ -536,7 +522,6 @@ class AgentLoop[CtxT]:
             "tool_choice": tool_choice,
             **extra_llm_settings,
         }
-        self._last_llm_params = {k: v for k, v in llm_params.items() if k != "input"}
 
         response: Response | None = None
 
@@ -784,16 +769,15 @@ class AgentLoop[CtxT]:
         records the fold and yields a :class:`CompactionDoneEvent`.
 
         A registered custom compactor writes the summary; otherwise the agent's
-        own model does. Its request is the agent's last request (same view,
-        tools and settings) with the policy's instructions appended, so the
-        provider's prompt cache serves the shared prefix. A response that calls
-        a tool or holds no text is retried, up to :data:`MAX_SUMMARY_ATTEMPTS`
-        requests in all; a request that exceeds the context window is retried
-        with the view shrunk (:data:`SUMMARY_SHRINK_STEPS`). Nothing is written
-        to the transcript, and the LLM hooks do not run. When no summary comes
-        back the turn proceeds without a fold, and the failure counts toward
-        :data:`MAX_COMPACTION_FAILURES`.
+        model does, on the agent's own request
+        (:meth:`~grasp_agents.context.CompactionPolicy.summarize`). Nothing is
+        written to the transcript, and the LLM hooks do not run. When no
+        summary comes back the turn proceeds without a fold, and the failure
+        counts toward :data:`MAX_COMPACTION_FAILURES`.
         """
+        policy = self.cw.compaction_policy
+        if policy is None:
+            return
         planned = await self.cw.plan_compaction(
             exec_id=exec_id,
             running_call_ids=self.bg_tasks.running_call_ids(),
@@ -813,11 +797,30 @@ class AgentLoop[CtxT]:
         )
 
         started = time.monotonic()
+        custom = self.cw.custom_compactor
+        tools = self._agent_ctx.tools or None
         try:
-            summary = await self._summarize(exec_id=exec_id)
+            if custom is not None:
+                summary = await custom(agent_ctx=self._agent_ctx, ctx=self.ctx)
+            else:
+                summary = await policy.summarize(
+                    self._llm,
+                    initial_context=self.cw.initial_context,
+                    body=await self.cw.build_view_body(exec_id=exec_id),
+                    tools=tools,
+                    tool_choice=self._compute_tool_choice(had_tool_calls=False)
+                    if tools
+                    else None,
+                    output_schema=self.llm_output_schema,
+                    stream=self.stream_llm,
+                    on_response=lambda response: self.ctx.usage_tracker.update(
+                        agent_name=self.agent_name, responses=[response]
+                    ),
+                )
         except Exception:
             logger.warning("the conversation summary request failed", exc_info=True)
             summary = ""
+        summary = summary.strip()
         if not summary:
             self.cw.note_compaction_failure()
             return
@@ -831,77 +834,6 @@ class AgentLoop[CtxT]:
         yield self.cw.compaction_done_event(
             fold, source=self.agent_name, exec_id=exec_id, forced=force
         )
-
-    async def _summarize(self, *, exec_id: str) -> str:
-        """The summary for :meth:`compact`, or ``""`` when none came back."""
-        custom = self.cw.custom_compactor
-        if custom is not None:
-            return (await custom(agent_ctx=self._agent_ctx, ctx=self.ctx)).strip()
-
-        policy = self.cw.compaction_policy
-        instructions = policy.instructions if policy else COMPACTION_INSTRUCTIONS
-        params = dict(self._last_llm_params or self._first_llm_params())
-        request = compaction_request(instructions)
-        body = list(await self.cw.build_view_body(exec_id=exec_id))
-        shrink_steps = list(SUMMARY_SHRINK_STEPS)
-        for attempt in range(1, MAX_SUMMARY_ATTEMPTS + 1):
-            view = repair_tool_call_pairing([*self.cw.initial_context, *body])
-            try:
-                response = await self._generate_detached([*view, request], params)
-            except LlmContextWindowError:
-                if not shrink_steps:
-                    raise
-                logger.warning(
-                    "the summary request exceeds the context window; shrinking "
-                    "it and retrying"
-                )
-                body = shrink_steps.pop(0)(body)
-                continue
-            except LLMToolCallValidationError as exc:
-                if exc.response is None:
-                    raise
-                response = exc.response
-            self.ctx.usage_tracker.update(
-                agent_name=self.agent_name, responses=[response]
-            )
-            summary = summary_text(response)
-            if summary:
-                if response.status == "incomplete":
-                    logger.warning("the conversation summary was cut off")
-                return summary
-            logger.warning(
-                "the summary response %s (attempt %d/%d)",
-                "called a tool" if response.tool_call_items else "held no text",
-                attempt,
-                MAX_SUMMARY_ATTEMPTS,
-            )
-        return ""
-
-    def _first_llm_params(self) -> dict[str, Any]:
-        # Before the run's first call: what that call will send, minus hooks.
-        tools = self._agent_ctx.tools or None
-        return {
-            "output_schema": self.llm_output_schema,
-            "tools": tools,
-            "tool_choice": (
-                self._compute_tool_choice(had_tool_calls=False) if tools else None
-            ),
-            **self._run_llm_settings,
-        }
-
-    async def _generate_detached(
-        self, view: Sequence[InputItem], params: dict[str, Any]
-    ) -> Response:
-        # A request whose events stay out of the agent's stream.
-        if not self.stream_llm:
-            return await self._llm.generate_response(input=view, **params)
-        response: Response | None = None
-        async for event in self._llm.generate_response_stream(input=view, **params):
-            if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
-                response = event.response
-        if response is None:
-            raise MissingLLMResponseError(proc_name=self.agent_name)
-        return response
 
     # --- Tool calling ---
 
@@ -1809,8 +1741,6 @@ class AgentLoop[CtxT]:
             )
 
         extra_llm_settings = deepcopy(extra_llm_settings or {})
-        self._run_llm_settings = extra_llm_settings
-        self._last_llm_params = None
 
         # A resident agent (inbox attached) loops until its task is cancelled from
         # outside — it must NOT exit on the lifetime turn budget, which bounds a lone

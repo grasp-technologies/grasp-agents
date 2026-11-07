@@ -24,13 +24,14 @@ the calls of its response.
 
 import logging
 import re
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from importlib.resources import files
 from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
 
 from grasp_agents.llm.model_info import ModelCapabilities, get_model_capabilities
 from grasp_agents.llm.token_counting import estimate_input_tokens
+from grasp_agents.types.errors import LLMToolCallValidationError
 from grasp_agents.types.folds import CompactionPlan, FoldSpec
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -38,12 +39,24 @@ from grasp_agents.types.items import (
     InputItem,
     InputMessageItem,
 )
+from grasp_agents.types.llm_errors import LlmContextWindowError
+from grasp_agents.types.llm_events import ResponseCompleted, ResponseIncomplete
 
-from .projection import SUMMARY_TAG, active_folds, is_fold_summary, is_user_authored
+from .projection import (
+    SUMMARY_TAG,
+    active_folds,
+    is_fold_summary,
+    is_user_authored,
+    repair_tool_call_pairing,
+)
 from .prompt_builder import SystemPromptSection
 from .system_reminder import wrap_in_system_reminder
 
 if TYPE_CHECKING:
+    from pydantic import BaseModel
+
+    from grasp_agents.llm.llm import LLM
+    from grasp_agents.tools.base import BaseTool, ToolChoice
     from grasp_agents.types.response import Response
 
 logger = logging.getLogger(__name__)
@@ -436,15 +449,13 @@ Requests per compaction: a response that calls a tool or holds no text, or a
 request that exceeds the context window, is retried until this many were sent.
 """
 
-SUMMARY_SHRINK_STEPS: tuple[Callable[[list[InputItem]], list[InputItem]], ...] = (
+# Rewrites of the view body, in order, for a summary request that exceeds the
+# context window: older tool outputs collapsed, then also the oldest half of the
+# rounds not yet summarized left out (the summary cannot cover them).
+_SHRINK_STEPS: tuple[Callable[[list[InputItem]], list[InputItem]], ...] = (
     _collapse_all_but_latest,
     _collapse_and_drop_oldest,
 )
-"""
-Rewrites of the view body, in order, for a summary request that exceeds the
-context window: older tool outputs collapsed, then also the oldest half of the
-rounds not yet summarized left out (the summary cannot cover them).
-"""
 
 
 def compaction_request(instructions: str) -> InputMessageItem:
@@ -468,6 +479,24 @@ def summary_text(response: "Response") -> str:
     return match.group(1) if match else text
 
 
+async def _generate(
+    llm: "LLM",
+    view: Sequence[InputItem],
+    params: Mapping[str, Any],
+    *,
+    stream: bool,
+) -> "Response | None":
+    # A request whose events reach no consumer; streamed when the agent
+    # streams, which providers require for long outputs.
+    if not stream:
+        return await llm.generate_response(input=view, **params)
+    response: Response | None = None
+    async for event in llm.generate_response_stream(input=view, **params):
+        if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
+            response = event.response
+    return response
+
+
 class CompactionPolicy(Budgeted):
     """
     When the agent folds its conversation into a summary, and what it keeps:
@@ -489,8 +518,8 @@ class CompactionPolicy(Budgeted):
     in all within ``pinned_user_tokens``; and the launch notes of the
     background tasks still running.
 
-    The agent's own model writes the summary, prompted by ``instructions``
-    (default :data:`COMPACTION_INSTRUCTIONS`), unless a
+    The agent's own model writes the summary (:meth:`summarize`), prompted by
+    ``instructions`` (default :data:`COMPACTION_INSTRUCTIONS`), unless a
     :class:`~grasp_agents.hooks.CustomCompactor` is registered.
     """
 
@@ -606,3 +635,69 @@ class CompactionPolicy(Budgeted):
         return CompactionPlan(
             end=keep_from, pinned=self._pinned(messages, keep_from, running_call_ids)
         )
+
+    async def summarize(
+        self,
+        llm: "LLM",
+        *,
+        initial_context: Sequence[InputItem],
+        body: Sequence[InputItem],
+        tools: "Mapping[str, BaseTool[BaseModel, Any, Any]] | None",
+        tool_choice: "ToolChoice | None",
+        output_schema: Any | None,
+        stream: bool,
+        on_response: "Callable[[Response], None] | None" = None,
+    ) -> str:
+        """
+        The conversation's summary, written by ``llm`` on the agent's own
+        request: ``initial_context`` and the view ``body``, with the agent's
+        ``tools``, ``tool_choice`` and ``output_schema``, and the compaction
+        request (:attr:`instructions`) appended. The provider's prompt cache
+        serves the shared prefix.
+
+        A reply that calls a tool or holds no text is retried, up to
+        :data:`MAX_SUMMARY_ATTEMPTS` requests in all; its calls are never
+        executed. A request that exceeds the context window is retried with the
+        body shrunk, and raises once it cannot shrink further. ``on_response``
+        sees each response, for usage accounting. Returns ``""`` when no
+        attempt gave a summary.
+        """
+        params = {
+            "tools": tools,
+            "tool_choice": tool_choice,
+            "output_schema": output_schema,
+        }
+        request = compaction_request(self.instructions)
+        body = list(body)
+        shrink_steps = list(_SHRINK_STEPS)
+        for attempt in range(1, MAX_SUMMARY_ATTEMPTS + 1):
+            view = [*repair_tool_call_pairing([*initial_context, *body]), request]
+            try:
+                response = await _generate(llm, view, params, stream=stream)
+            except LlmContextWindowError:
+                if not shrink_steps:
+                    raise
+                logger.warning(
+                    "the summary request exceeds the context window; shrinking "
+                    "it and retrying"
+                )
+                body = shrink_steps.pop(0)(body)
+                continue
+            except LLMToolCallValidationError as exc:
+                response = exc.response
+            if response is not None and on_response is not None:
+                on_response(response)
+            summary = summary_text(response) if response is not None else ""
+            if summary:
+                if response is not None and response.status == "incomplete":
+                    logger.warning("the conversation summary was cut off")
+                return summary
+            logger.warning(
+                "the summary response %s (attempt %d/%d)",
+                "called a tool"
+                if response is not None and response.tool_call_items
+                else "held no text",
+                attempt,
+                MAX_SUMMARY_ATTEMPTS,
+            )
+        return ""

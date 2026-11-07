@@ -349,6 +349,39 @@ def test_a_reply_that_calls_a_tool_holds_no_summary() -> None:
     assert summary_text(_tool_call_response("big", "{}", "x1")) == ""
 
 
+@pytest.mark.asyncio
+async def test_summarize_appends_the_request_and_reports_each_response() -> None:
+    llm = _RecordingLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "x1"),
+            _text_response("SUMMARY"),
+        ]
+    )
+    context = [_user("header")]
+    body = _rounds(2)
+    seen: list[Response] = []
+    policy = _policy(instructions="Summarize it.")
+
+    summary = await policy.summarize(
+        llm,
+        initial_context=context,
+        body=body,
+        tools=None,
+        tool_choice=None,
+        output_schema=None,
+        stream=False,
+        on_response=seen.append,
+    )
+
+    assert summary == "SUMMARY"
+    assert len(seen) == 2  # the tool-call reply too
+    calls = llm.calls  # type: ignore[attr-defined]
+    *prefix, request = calls[0].input
+    assert prefix == [*context, *body]
+    assert request.text == compaction_request("Summarize it.").text
+    assert calls[1].input == calls[0].input
+
+
 # --- Through the agent loop ---
 
 
