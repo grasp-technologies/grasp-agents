@@ -53,6 +53,7 @@ from grasp_agents.hooks import (
     OutputParser,
     ToolInputConverter,
     ToolOutputConverter,
+    UsageHook,
     ViewProjector,
 )
 from grasp_agents.llm.llm import LLM
@@ -1901,6 +1902,10 @@ class LLMAgent[InT, OutT, CtxT](
 
     def add_after_llm_hook(self, func: AfterLlmHook) -> AfterLlmHook:
         self._loop.after_llm_hooks.append(func)
+        return func
+
+    def add_usage_hook(self, func: UsageHook) -> UsageHook:
+        self._loop.usage_hooks.append(func)
         return func
 
     def add_before_tool_hook(self, func: BeforeToolHook[CtxT]) -> BeforeToolHook[CtxT]:

@@ -216,6 +216,7 @@ The primary path is decorator hooks on an `LLMAgent` instance. Subclassing with
 @agent.add_custom_compactor          # write compaction summaries instead of the model (single slot)
 @agent.add_before_llm_hook           # adjust settings before each LLM call of a turn (stacks)
 @agent.add_after_llm_hook            # observe a turn's responses (stacks)
+@agent.add_usage_hook                # every paid response, compaction summaries included (stacks)
 @agent.add_before_tool_hook          # per-call decision; most restrictive wins (stacks)
 @agent.add_after_tool_hook           # observe results (stacks)
 @agent.add_tool_input_converter(tool_name=...)

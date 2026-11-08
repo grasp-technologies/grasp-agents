@@ -15,6 +15,7 @@ means a later registration replaces the earlier one.
 |---|---|---|---|
 | `add_before_llm_hook` | `BeforeLlmHook(*, exec_id, turn, extra_llm_settings)` (agent turns, not compaction summaries) | stacks | `on_before_llm_impl` |
 | `add_after_llm_hook` | `AfterLlmHook(response, *, exec_id, turn)` (agent turns, not compaction summaries) | stacks | `on_after_llm_impl` |
+| `add_usage_hook` | `UsageHook(response, *, exec_id)` (every response the agent pays for: its turns and compaction summaries) | stacks | — |
 | `add_before_tool_hook` | `BeforeToolHook(*, tool_calls, ctx, exec_id) -> Mapping[call_id, ToolCallDecision] \| None` | stacks, most restrictive wins | `on_before_tool_impl` |
 | `add_after_tool_hook` | `AfterToolHook(*, tool_calls, tool_messages, exec_id)` | stacks | `on_after_tool_impl` |
 | `add_view_projector` | `ViewProjector(messages, *, exec_id, input_tokens) -> Sequence[InputItem]` | stacks (pipeline) | `project_view_impl` |

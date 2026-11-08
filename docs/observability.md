@@ -154,8 +154,13 @@ persistence failures are not downgraded to warnings: they fail the run.
 
 `SessionContext.usage_tracker` (`UsageTracker`) accumulates `ResponseUsage`
 (input, output, cached, cache-write and reasoning tokens, `cost`) per agent
-name. The agent loop updates it after every LLM response, counting both
-`usage` and `superseded_usage` (attempts replaced by a retry).
+name. The agent loop updates it after every LLM response, compaction's summary
+requests included, counting both `usage` and `superseded_usage` (attempts
+replaced by a retry).
+
+To record usage per response elsewhere (a billing table, for example), register
+`@agent.add_usage_hook`: it sees each response the agent pays for, compaction's
+summary requests included, which the LLM hooks do not see.
 
 ```python
 tracker = ctx.usage_tracker

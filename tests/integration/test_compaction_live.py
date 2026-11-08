@@ -31,6 +31,7 @@ from grasp_agents.types.events import (
     GenerationEndEvent,
 )
 from grasp_agents.types.items import InputMessageItem, OutputMessageItem
+from grasp_agents.types.response import Response
 
 if TYPE_CHECKING:
     from grasp_agents.llm.llm import LLM
@@ -124,6 +125,13 @@ async def test_compaction_summarizes_on_the_agents_own_request(
         )
     )
 
+    paid: list[Response] = []
+
+    @agent.add_usage_hook
+    async def _paid(response: Response, *, exec_id: str) -> None:
+        del exec_id
+        paid.append(response)
+
     events: list[Event[Any]] = []
     for question in (
         f"{_NOTES}\n\nReply with just: noted.",
@@ -141,12 +149,14 @@ async def test_compaction_summarizes_on_the_agents_own_request(
         assert isinstance(done, CompactionDoneEvent)
         assert done.data.summary.strip()
 
-    # The summary calls are extra LLM calls: counted in the usage, never written
-    # to the transcript, and the run answers from the folded view afterwards.
+    # The summary calls are extra LLM calls: counted in the usage, seen by the
+    # usage hooks, never written to the transcript, and the run answers from the
+    # folded view afterwards.
     generations = [e.data for e in events if isinstance(e, GenerationEndEvent)]
     total = ctx.usage_tracker.total_usage
     in_turns = sum(g.usage.input_tokens for g in generations if g.usage)
     assert total.input_tokens > in_turns
+    assert sum(r.usage.input_tokens for r in paid if r.usage) == total.input_tokens
     if caches:
         cached_in_turns = sum(
             g.usage.input_tokens_details.cached_tokens for g in generations if g.usage

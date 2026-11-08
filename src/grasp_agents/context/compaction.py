@@ -25,7 +25,14 @@ the calls of its response.
 import logging
 import re
 import time
-from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Collection,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass
 from importlib.resources import files
 from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
@@ -684,6 +691,7 @@ class Compactor(Budgeted):
         output_schema: Any | None,
         stream: bool,
         force: bool = False,
+        on_response: "Callable[[Response], Awaitable[None]] | None" = None,
     ) -> AsyncIterator[Event[Any]]:
         """
         Fold the agent's conversation into a summary if it is due: yields a
@@ -692,7 +700,8 @@ class Compactor(Budgeted):
 
         The agent's custom compactor writes the summary when one is
         registered; otherwise ``llm`` does (:meth:`summarize`), with the
-        agent's ``tool_choice`` and ``output_schema``. When no summary comes
+        agent's ``tool_choice`` and ``output_schema``, and ``on_response``
+        sees each of its responses, for usage accounting. When no summary comes
         back the turn proceeds without a fold. After
         :data:`MAX_COMPACTION_FAILURES` failed compactions in a row only
         forced ones run (``force``: the context-window-error recovery path,
@@ -736,9 +745,7 @@ class Compactor(Budgeted):
                     tool_choice=tool_choice,
                     output_schema=output_schema,
                     stream=stream,
-                    on_response=lambda response: ctx.usage_tracker.update(
-                        agent_name=agent_name, responses=[response]
-                    ),
+                    on_response=on_response,
                 )
         except Exception as exc:
             logger.warning("the conversation summary request failed", exc_info=True)
@@ -792,7 +799,7 @@ class Compactor(Budgeted):
         tool_choice: "ToolChoice | None",
         output_schema: Any | None,
         stream: bool,
-        on_response: "Callable[[Response], None] | None" = None,
+        on_response: "Callable[[Response], Awaitable[None]] | None" = None,
     ) -> str:
         """
         The summary of the view ``body`` (the part of the conversation to fold),
@@ -835,7 +842,7 @@ class Compactor(Budgeted):
             except LLMToolCallValidationError as exc:
                 response = exc.response
             if response is not None and on_response is not None:
-                on_response(response)
+                await on_response(response)
             summary = summary_text(response) if response is not None else ""
             if summary:
                 if response is not None and response.status == "incomplete":

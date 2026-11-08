@@ -101,6 +101,7 @@ if TYPE_CHECKING:
         FinalAnswerExtractor,
         ToolInputConverter,
         ToolOutputConverter,
+        UsageHook,
     )
     from grasp_agents.inbox import AgentInbox
     from grasp_agents.llm.llm import LLM
@@ -227,6 +228,7 @@ class AgentLoop[CtxT]:
 
     before_llm_hooks: list[BeforeLlmHook]
     after_llm_hooks: list[AfterLlmHook]
+    usage_hooks: list[UsageHook]
     before_tool_hooks: list[BeforeToolHook[CtxT]]
     after_tool_hooks: list[AfterToolHook]
     tool_output_converters: dict[str, ToolOutputConverter]
@@ -315,6 +317,7 @@ class AgentLoop[CtxT]:
 
         self.before_llm_hooks = []
         self.after_llm_hooks = []
+        self.usage_hooks = []
         self.tool_output_converters = {}
         self.tool_input_converters = {}
         self.before_tool_hooks = []
@@ -387,8 +390,13 @@ class AgentLoop[CtxT]:
     async def on_after_llm(
         self, response: Response, *, exec_id: str, turn: int
     ) -> None:
+        await self.on_usage(response, exec_id=exec_id)
         for hook in self.after_llm_hooks:
             await hook(response=response, exec_id=exec_id, turn=turn)
+
+    async def on_usage(self, response: Response, *, exec_id: str) -> None:
+        for hook in self.usage_hooks:
+            await hook(response, exec_id=exec_id)
 
     async def on_before_tool(
         self, *, tool_calls: Sequence[FunctionToolCallItem], exec_id: str
@@ -769,6 +777,13 @@ class AgentLoop[CtxT]:
         compactor = self.cw.compactor
         if compactor is None:
             return
+
+        async def account(response: Response) -> None:
+            self.ctx.usage_tracker.update(
+                agent_name=self.agent_name, responses=[response]
+            )
+            await self.on_usage(response, exec_id=exec_id)
+
         tools = self._agent_ctx.tools
         async for event in compactor.compact(
             agent_ctx=self._agent_ctx,
@@ -782,6 +797,7 @@ class AgentLoop[CtxT]:
             output_schema=self.llm_output_schema,
             stream=self.stream_llm,
             force=force,
+            on_response=account,
         ):
             yield event
 

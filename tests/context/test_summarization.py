@@ -393,6 +393,9 @@ async def test_summarize_appends_the_request_and_reports_each_response() -> None
     seen: list[Response] = []
     compactor = _compactor(instructions="Summarize it.")
 
+    async def _on_response(response: Response) -> None:
+        seen.append(response)
+
     summary = await compactor.summarize(
         llm,
         initial_context=context,
@@ -401,7 +404,7 @@ async def test_summarize_appends_the_request_and_reports_each_response() -> None
         tool_choice=None,
         output_schema=None,
         stream=False,
-        on_response=seen.append,
+        on_response=_on_response,
     )
 
     assert summary == "SUMMARY"
@@ -545,7 +548,7 @@ async def test_summary_request_extends_the_agents_own_request(
 
 
 @pytest.mark.asyncio
-async def test_summary_call_is_accounted_but_runs_no_llm_hooks() -> None:
+async def test_summary_call_reaches_usage_hooks_but_no_llm_hooks() -> None:
     llm = _RecordingLLM(
         responses_queue=[
             _tool_call_response("big", "{}", "c1"),
@@ -558,6 +561,12 @@ async def test_summary_call_is_accounted_but_runs_no_llm_hooks() -> None:
     agent, _ = _agent(llm, ctx=ctx)
     before: list[int] = []
     after: list[str] = []
+    paid: list[str] = []
+
+    @agent.add_usage_hook
+    async def _paid(response: Response, *, exec_id: str) -> None:
+        del exec_id
+        paid.append(response.output_text)
 
     @agent.add_before_llm_hook
     async def _before(*, exec_id: str, turn: int, extra_llm_settings: Any) -> None:
@@ -572,6 +581,7 @@ async def test_summary_call_is_accounted_but_runs_no_llm_hooks() -> None:
     await agent.run("go")
     assert len(before) == 3
     assert after == ["", "", "done"]
+    assert paid == ["", "", "SUMMARY", "done"]
     assert ctx.usage_tracker.total_usage.input_tokens == 4 * 10
 
 

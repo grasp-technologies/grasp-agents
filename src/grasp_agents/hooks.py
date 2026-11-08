@@ -64,6 +64,7 @@ __all__ = [
     "Selector",
     "ToolInputConverter",
     "ToolOutputConverter",
+    "UsageHook",
     "ViewProjector",
     "WorkflowLoopTerminator",
 ]
@@ -90,6 +91,16 @@ class AfterLlmHook(Protocol):
         exec_id: str,
         turn: int,
     ) -> None: ...
+
+
+class UsageHook(Protocol):
+    """
+    Sees each response the agent pays for: its turns' responses and the
+    summary requests of compaction, which no LLM hook sees. For usage
+    accounting.
+    """
+
+    async def __call__(self, response: Response, *, exec_id: str) -> None: ...
 
 
 class FinalAnswerExtractor(Protocol):
