@@ -1846,8 +1846,8 @@ class AgentLoop[CtxT]:
         class FinalAnswerTool(BaseTool[self.final_answer_type, None, Any]):
             name = "final_answer"
             description = (
-                "You must call this tool to provide the final answer. "
-                "DO NOT output your answer before calling the tool. "
+                "Call this tool to give your final answer to the task. Do not "
+                "write the answer as text before calling it."
             )
 
             async def _run(

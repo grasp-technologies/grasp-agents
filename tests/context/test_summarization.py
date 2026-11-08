@@ -43,12 +43,17 @@ from grasp_agents.context.projection import fold_summary_text, is_fold_summary
 from grasp_agents.context.system_reminder import wrap_in_system_reminder
 from grasp_agents.durability import InMemoryCheckpointStore
 from grasp_agents.durability.checkpoints import AgentCheckpoint
+from grasp_agents.llm.token_counting import estimate_input_tokens
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
 from grasp_agents.tools.function_tool import function_tool
 from grasp_agents.types.content import OutputMessageText, ReasoningSummary
 from grasp_agents.types.errors import ProcRunError
-from grasp_agents.types.events import CompactionDoneEvent, CompactionStartEvent
+from grasp_agents.types.events import (
+    CompactionDoneEvent,
+    CompactionFailedEvent,
+    CompactionStartEvent,
+)
 from grasp_agents.types.folds import CompactionPlan, FoldSpec
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -187,8 +192,9 @@ def test_target_tokens_lowers_the_threshold() -> None:
         budget=_budget(10_000_000), target_tokens=100, keep_recent_rounds=2
     )
     assert compactor.threshold == 100
-    assert _plan(compactor, _rounds(5), input_tokens=100) is None
-    assert _plan(compactor, _rounds(5), input_tokens=101) is not None
+    log = _rounds(5, output="Z" * 400)
+    assert _plan(compactor, log, input_tokens=100) is None
+    assert _plan(compactor, log, input_tokens=101) is not None
 
 
 def test_folds_everything_before_the_recent_rounds() -> None:
@@ -250,6 +256,29 @@ def test_a_new_fold_supersedes_the_previous_one() -> None:
     assert plan.to_fold("NEW") == FoldSpec(
         start=0, end=starts[-2], summary="NEW", pinned=plan.pinned
     )
+
+
+def test_a_refold_waits_until_a_quarter_of_the_threshold_is_new() -> None:
+    # A pinned message too large to leave the view keeps it over the threshold
+    # after a fold: a few small rounds later there is too little to fold again.
+    big_question = _user("Q" * 8000)
+    small = _rounds(3)
+    log = [big_question, _call("c0"), _result("c0"), *small]
+    previous = FoldSpec(start=0, end=3, summary="OLD", pinned=[0])
+    compactor = Compactor(
+        budget=_budget(4000), keep_recent_rounds=1, keep_recent_tokens=10**9
+    )
+    assert _plan(compactor, log, input_tokens=5000, folds=[previous]) is None
+
+    # Once a quarter of the threshold is new, it folds again.
+    log = [big_question, _call("c0"), _result("c0"), *_rounds(3, output="Z" * 4000)]
+    plan = _plan(compactor, log, input_tokens=5000, folds=[previous])
+    assert plan is not None
+    assert plan.pinned[0] == 0  # the large question stays pinned
+
+    # The context-window-error path folds whatever is new.
+    log = [big_question, _call("c0"), _result("c0"), *small]
+    assert _plan(compactor, log, input_tokens=5000, folds=[previous], force=True)
 
 
 def test_no_progress_past_the_previous_fold_is_no_plan() -> None:
@@ -421,6 +450,18 @@ class _RecordingLLM(MockLLM):
         )
 
 
+@dataclass(frozen=True)
+class _SizedLLM(_RecordingLLM):
+    """Reports each request's estimated size as its input tokens."""
+
+    async def _generate_response_once(self, input: Any, **kwargs: Any) -> Response:
+        response = await super()._generate_response_once(input, **kwargs)
+        usage = ResponseUsage(
+            input_tokens=estimate_input_tokens(input), output_tokens=5
+        )
+        return response.model_copy(update={"usage": usage})
+
+
 class _BigInput(BaseModel):
     pass
 
@@ -483,9 +524,10 @@ async def test_summary_request_extends_the_agents_own_request(
     calls = llm.calls  # type: ignore[attr-defined]
     before, summary_call, after = calls[1], calls[2], calls[3]
     assert _is_summary_request(summary_call.input)
-    # Same prefix, tools, tool choice and schema as the request before it: the
-    # provider's prompt cache serves it.
-    assert summary_call.input[: len(before.input)] == before.input
+    # The request that ended at the fold boundary, plus the compaction request,
+    # with the same tools, tool choice and schema: the provider's prompt cache
+    # serves it, and the kept round (c2) is not in it.
+    assert summary_call.input[:-1] == before.input
     assert summary_call.tools == before.tools
     assert summary_call.tool_choice == before.tool_choice
     assert summary_call.output_schema == before.output_schema
@@ -629,9 +671,38 @@ async def test_failures_stop_turn_boundary_compaction_but_not_recovery() -> None
 
 
 @pytest.mark.asyncio
+async def test_a_failed_fold_is_not_retried_until_its_end_moves() -> None:
+    llm = _RecordingLLM(
+        responses_queue=[
+            _tool_call_response("big", "{}", "c1"),
+            _tool_call_response("big", "{}", "c2"),
+            _text_response("done"),
+            _text_response("done again"),
+        ]
+    )
+    agent, _ = _agent(llm)
+    ends: list[int] = []
+
+    async def _failing(*, agent_ctx: AgentContext, ctx: SessionContext[Any]) -> str:
+        del ctx
+        ends.append(len(agent_ctx.cw.transcript))
+        return ""
+
+    agent.add_custom_compactor(_failing)
+    await agent.run("go")
+    assert ends == [5]  # before the turn that answered
+
+    # Before the next input the fold would end at the log's end; once the input
+    # is in, it ends at the same place, so it is not attempted again.
+    await agent.run("next")
+    assert ends == [5, 6]
+    assert agent.agent_ctx.cw.compaction_failures == 2
+
+
+@pytest.mark.asyncio
 async def test_an_oversized_summary_request_is_shrunk_and_retried() -> None:
     @dataclass(frozen=True)
-    class _TightLLM(_RecordingLLM):
+    class _TightLLM(_SizedLLM):
         def __post_init__(self) -> None:
             super().__post_init__()
             object.__setattr__(self, "overflows", 2)
@@ -645,13 +716,15 @@ async def test_an_oversized_summary_request_is_shrunk_and_retried() -> None:
 
     llm = _TightLLM(
         responses_queue=[
-            _tool_call_response("big", "{}", "c1"),
-            _tool_call_response("big", "{}", "c2"),
+            *(_tool_call_response("big", "{}", f"c{i}") for i in range(4)),
             _text_response("S"),
             _text_response("done"),
         ]
     )
-    agent, _ = _agent(llm)
+    # Folds once four rounds are in: three go into the summary request.
+    agent, _ = _agent(
+        llm, compactor=Compactor(budget=_budget(4500), keep_recent_rounds=1)
+    )
     await agent.run("go")
     assert agent.agent_ctx.cw.folds[-1].summary == "S"
 
@@ -947,7 +1020,7 @@ async def test_no_start_event_without_a_fold_to_make() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_failed_summary_has_a_start_but_no_fold() -> None:
+async def test_a_failed_summary_reports_its_reason_and_records_no_fold() -> None:
     @dataclass(frozen=True)
     class _FailingSummaryLLM(MockLLM):
         async def _generate_response_once(self, input: Any, **kwargs: Any) -> Any:
@@ -968,6 +1041,11 @@ async def test_a_failed_summary_has_a_start_but_no_fold() -> None:
     events = [event async for event in agent.run_stream("go")]
     assert sum(isinstance(e, CompactionStartEvent) for e in events) == 1
     assert not any(isinstance(e, CompactionDoneEvent) for e in events)
+    kinds = [type(e).__name__ for e in events]
+    assert kinds.index("CompactionStartEvent") < kinds.index("CompactionFailedEvent")
+    failed = next(e for e in events if isinstance(e, CompactionFailedEvent))
+    assert failed.data.reason == "LlmBadRequestError: boom"
+    assert not failed.data.forced
 
 
 @pytest.mark.asyncio

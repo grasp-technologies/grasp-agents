@@ -80,14 +80,23 @@ class TestUsageAnchor:
         count.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_cut_at_counted_prefix_keeps_the_anchor(self) -> None:
+    async def test_cut_of_the_response_drops_the_usage(self) -> None:
         cw = await _anchored(5)
-        cw.add_messages([_user("x"), _user("y")])
+        cw.add_messages([_answer("r"), _user("x")])
         cw.truncate_transcript(5)
 
+        assert cw.last_usage is None
+
+    @pytest.mark.asyncio
+    async def test_cut_after_the_response_keeps_the_anchor(self) -> None:
+        cw = await _anchored(5)
+        reply = _answer("r")
+        cw.add_messages([reply, _user("x")])
+        cw.truncate_transcript(6)
+
         with patch(_COUNT, return_value=7) as count:
-            assert cw.effective_input_tokens() == 1000
-        count.assert_not_called()
+            assert cw.effective_input_tokens() == 1007
+        assert count.call_args.args[0] == [reply]
 
     @pytest.mark.asyncio
     async def test_cut_clamps_the_basis_of_the_view_in_flight(self) -> None:
@@ -103,11 +112,11 @@ class TestUsageAnchor:
         count.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_a_fold_stops_anchoring_but_keeps_the_usage(self) -> None:
+    async def test_a_fold_drops_the_usage(self) -> None:
         cw = await _anchored(5)
         cw.record_fold(FoldSpec(start=0, end=3, summary="summary"))
 
-        assert cw.last_usage == _usage(1000)
+        assert cw.last_usage is None
         with patch(_COUNT, return_value=7) as count:
             assert cw.effective_input_tokens() == 7
         count.assert_called_once()

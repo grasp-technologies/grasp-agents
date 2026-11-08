@@ -815,6 +815,26 @@ def test_compaction_start_is_one_muted_line() -> None:
     )
 
 
+def test_compaction_failure_is_one_warning_line_with_the_reason() -> None:
+    from grasp_agents.types.events import (
+        CompactionFailedEvent,
+        CompactionFailureInfo,
+    )
+
+    ev = CompactionFailedEvent(
+        source="a",
+        data=CompactionFailureInfo(reason="LlmContextWindowError: too long"),
+    )
+    rendered = render_event(ev)
+    assert isinstance(rendered, Text)
+    assert rendered.plain == ("⊙ compaction failed — LlmContextWindowError: too long")
+
+    forced = CompactionFailedEvent(
+        source="a", data=CompactionFailureInfo(reason="x", forced=True)
+    )
+    assert "compaction failed (overflow)" in _render_to_text(render_event(forced))
+
+
 def test_compaction_notice_singular_round() -> None:
     from grasp_agents.types.events import CompactionDoneEvent, CompactionInfo
 
@@ -907,7 +927,7 @@ def test_tags_beat_markdown_inside_them() -> None:
     assert isinstance(panel.renderable, Syntax)
 
 
-def test_a_long_payload_is_still_recognised_as_tagged() -> None:
+def test_a_long_payload_is_still_recognized_as_tagged() -> None:
     """
     The format is decided before the display budget is applied. Cutting first
     removes the closing tag the check anchors on, and the document then rendered
@@ -945,7 +965,10 @@ def test_a_small_result_needs_no_fold() -> None:
 def test_expanding_still_scrubs_terminal_escapes() -> None:
     """The cut is a display budget; the sanitizing is not optional."""
     hostile = (
-        "<log>\n" + "\n".join(f"line {i}" for i in range(200)) + "\n\x1b[2Jgone\n</log>"
+        "<log>\n"
+        + "\n".join(f"line {i}" for i in range(200))
+        + "\n\x1b[2J"
+        + "gone\n</log>"
     )
     ev = _tool_event(hostile)
 

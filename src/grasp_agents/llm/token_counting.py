@@ -110,8 +110,9 @@ def estimate_input_tokens(items: Sequence[InputItem]) -> int:
     Fast, tokenizer-free token estimate of ``items``: chars / 4 for text, a
     flat cost per image and per by-reference file, and decoded-size estimates
     for inline files and encrypted reasoning. Linear in the text length, so it
-    is cheap on a view of any size; it tends to overcount dense text (code,
-    markup) by a few tens of percent.
+    is cheap on a view of any size. It runs high on English prose and low on
+    JSON and non-Latin text (by half or more), and tool schemas are not part
+    of it.
     """
     total = 0
     for item in items:

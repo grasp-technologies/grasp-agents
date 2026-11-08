@@ -66,7 +66,7 @@ Keys are `"<session_key>/<kind>[/<path>]"`, with kinds `agent`, `workflow`, `par
 
 | Location | Written |
 |---|---|
-| `AFTER_INPUT` | At turn 0 of a new step, whenever a run starts with the log ending in input, and after any turn boundary that appended inbox mail or task notes — always before the model responds. |
+| `AFTER_INPUT` | At turn 0 of a new step, whenever a run starts with the log ending in input, and after any turn boundary that appended inbox mail or task notes or recorded a compaction fold — always before the model responds. |
 | `AFTER_TOOL_RESULT` | After each tool round. |
 | `AFTER_FINAL_ANSWER` | When the run ends with an answer (own or forced; `stop_reason` says which). |
 | `AFTER_RESIDENT_ANSWER` | When a resident answers one inbox message. |

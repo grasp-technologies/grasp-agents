@@ -23,7 +23,7 @@ from grasp_agents.context.projection import (
     repair_tool_call_pairing,
 )
 from grasp_agents.context.system_reminder import wrap_in_system_reminder
-from grasp_agents.types.content import InputText
+from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.folds import FoldSpec
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -31,6 +31,7 @@ from grasp_agents.types.items import (
     InputItem,
     InputMessageItem,
 )
+from grasp_agents.types.message import USER_SENDER, TeamMessage
 
 
 def _user(text: str) -> InputMessageItem:
@@ -229,6 +230,20 @@ def test_framework_notes_are_not_user_authored() -> None:
     assert not is_user_authored(task_note)
     assert not is_user_authored(_call("c1"))
     assert is_user_authored(with_attachment)
+
+
+def test_peer_mail_is_not_user_authored_but_the_users_mail_is() -> None:
+    image = InputImage(image_url="https://example.com/a.png")
+
+    def _mail(sender: str) -> InputMessageItem:
+        return TeamMessage(
+            sender=sender,
+            routing=[["a"]],
+            payloads=["see this", image],
+        ).to_input_message()
+
+    assert not is_user_authored(_mail("peer"))
+    assert is_user_authored(_mail(USER_SENDER))
 
 
 def test_summary_cannot_forge_framework_tags() -> None:

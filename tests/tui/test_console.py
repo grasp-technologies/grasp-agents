@@ -941,6 +941,26 @@ class TestErrorEvents:
         assert "Error:" in output
         assert "connection lost" in output
 
+    @pytest.mark.asyncio
+    async def test_compaction_failure_is_printed(self):
+        from grasp_agents.types.events import (
+            CompactionFailedEvent,
+            CompactionFailureInfo,
+        )
+
+        ec, buf = _make_console()
+        events = [
+            CompactionFailedEvent(
+                data=CompactionFailureInfo(reason="TimeoutError: no reply"),
+                source="agent",
+                exec_id="c1",
+            )
+        ]
+        await _collect(ec, events)
+        output = buf.getvalue()
+        assert "compaction failed" in output
+        assert "TimeoutError: no reply" in output
+
 
 # ── Background tasks ──
 

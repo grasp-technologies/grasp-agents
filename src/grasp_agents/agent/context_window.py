@@ -88,16 +88,18 @@ class ContextWindowManager:
         self.folds: list[FoldSpec] = []
 
         # The latest response's reported usage, for the request that carried the
-        # first ``_usage_basis`` log messages. While ``_anchored`` (no fold since)
-        # its input_tokens anchor the budget: newer messages are estimated on
-        # top. ``_pending_view_count`` is the basis of the view being built,
-        # promoted when its response reports usage.
+        # first ``_usage_basis`` log messages: its input_tokens anchor the budget,
+        # and newer messages are estimated on top. Cleared when a fold or a cut
+        # changes the view it measured. ``_pending_view_count`` is the basis of
+        # the view being built, promoted when its response reports usage.
         self.last_usage: ResponseUsage | None = None
         self._usage_basis = 0
-        self._anchored = False
         self._pending_view_count = 0
 
+        # Failed compactions in a row, and the log index the last failed one
+        # would have folded up to (it is not retried at the same point).
         self._compaction_failures = 0
+        self.failed_fold_end: int | None = None
 
         # Model-derived budget, built lazily and shared into registered strategies
         # that don't bring their own (so the agent never has to construct one).
@@ -171,14 +173,18 @@ class ContextWindowManager:
         """
         return apply_folds(self._messages, self.folds)
 
-    async def build_view_body(self, *, exec_id: str) -> Sequence[InputItem]:
+    async def build_view_body(
+        self, *, exec_id: str, end: int | None = None
+    ) -> Sequence[InputItem]:
         """
         The conversation body of the view — folds then the projector pipeline,
-        without the header or pairing repair. Folds (summarized spans) apply
-        first; projectors then trim what remains. Both shape the view, never the
-        log.
+        without the header or pairing repair — over the log, or over its first
+        ``end`` messages. Folds (summarized spans) apply first; projectors then
+        trim what remains. Both shape the view, never the log.
         """
-        body: Sequence[InputItem] = self._messages
+        body: Sequence[InputItem] = (
+            self._messages if end is None else self._messages[:end]
+        )
         if self.folds:
             body = apply_folds(body, self.folds)
         if self.view_projectors:
@@ -201,20 +207,11 @@ class ContextWindowManager:
         estimates the whole current (folded) view. Estimates are
         :func:`~grasp_agents.llm.token_counting.estimate_input_tokens`.
         """
-        if self._anchor_valid() and self.last_usage is not None:
+        usage = self.last_usage
+        if usage is not None and usage.input_tokens > 0:
             delta = self._messages[self._usage_basis :]
-            return self.last_usage.input_tokens + (
-                estimate_input_tokens(delta) if delta else 0
-            )
+            return usage.input_tokens + (estimate_input_tokens(delta) if delta else 0)
         return estimate_input_tokens([*self.initial_context, *self.folded_messages()])
-
-    def _anchor_valid(self) -> bool:
-        return (
-            self._anchored
-            and self.last_usage is not None
-            and self.last_usage.input_tokens > 0
-            and self._usage_basis <= len(self._messages)
-        )
 
     async def projected_input_tokens(self, *, exec_id: str) -> int:
         """
@@ -223,7 +220,8 @@ class ContextWindowManager:
         provider already counted the projected view it was sent); otherwise the
         projected view is estimated.
         """
-        if self._anchor_valid() or not self.view_projectors:
+        anchored = self.last_usage is not None and self.last_usage.input_tokens > 0
+        if anchored or not self.view_projectors:
             return self.effective_input_tokens()
         body = await self.build_view_body(exec_id=exec_id)
         return estimate_input_tokens([*self.initial_context, *body])
@@ -232,14 +230,6 @@ class ContextWindowManager:
         """Record a response's reported usage; it anchors the budget."""
         self.last_usage = usage
         self._usage_basis = self._pending_view_count
-        self._anchored = True
-
-    def reset_anchor(self) -> None:
-        """
-        Stop anchoring on the latest usage, so the next count is estimated over
-        the current view. The usage itself is kept.
-        """
-        self._anchored = False
 
     # --- transcript surgery ---
     # Cutting or replacing the log repairs everything keyed to it — summary
@@ -250,17 +240,18 @@ class ContextWindowManager:
         Cut the transcript to its first ``message_count`` messages (rollback
         rewind, interrupt settling). Folds whose span extends past the cut are
         dropped (those messages are gone; the view falls back to the
-        originals); the token anchor survives unless the cut falls below its
-        counted prefix. A count past the end keeps everything.
+        originals), and so is the usage anchor when the cut removes the
+        response it came from. A count past the end keeps everything.
         """
         if message_count < 0:
             raise ValueError(f"message_count must be >= 0, got {message_count}")
         del self._messages[message_count:]
         self.folds = [f for f in self.folds if f.end <= message_count]
-        if self._usage_basis > message_count:
+        if self._usage_basis >= message_count:
             # The response that reported it is gone.
             self.last_usage = None
-            self._anchored = False
+        if self.failed_fold_end is not None and self.failed_fold_end > message_count:
+            self.failed_fold_end = None
         self._pending_view_count = min(self._pending_view_count, message_count)
 
     def replace_transcript(
@@ -290,8 +281,9 @@ class ContextWindowManager:
         basis = _latest_response_start(self._messages) if usage is not None else None
         self.last_usage = usage if basis is not None else None
         self._usage_basis = basis or 0
-        self._anchored = basis is not None
         self._pending_view_count = 0
+        self._compaction_failures = 0
+        self.failed_fold_end = None
 
     def clear_transcript(self) -> None:
         """Start a fresh conversation: empty transcript, no folds, anchor reset."""
@@ -308,12 +300,14 @@ class ContextWindowManager:
         """Record a compaction's fold; the view now summarizes its span."""
         self.folds.append(fold)
         self._compaction_failures = 0
+        self.failed_fold_end = None
         # The fold shrank the view, so the latest usage no longer measures it.
-        self.reset_anchor()
+        self.last_usage = None
 
-    def note_compaction_failure(self) -> None:
-        """Count a compaction that recorded no fold."""
+    def note_compaction_failure(self, fold_end: int) -> None:
+        """Count a compaction that recorded no fold ending at ``fold_end``."""
         self._compaction_failures += 1
+        self.failed_fold_end = fold_end
         logger.warning(
             "context compaction failed (%d in a row)%s",
             self._compaction_failures,

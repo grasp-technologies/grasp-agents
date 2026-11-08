@@ -86,8 +86,9 @@ def repair_tool_call_pairing(messages: Sequence[InputItem]) -> list[InputItem]:
 
 SUMMARY_TAG = "conversation_summary"
 
-# How a background task's notes open; they are delivered as user messages.
-_TASK_NOTIFICATION_OPEN = "<task_notification>"
+# How framework notes that arrive as user messages open: background task notes
+# and mail from other agents of a team.
+_NOTE_OPENINGS = ("<task_notification>", "<team_member_message")
 
 # Framework tags a summary must not be able to open or close: it is model-written
 # text that may echo untrusted content.
@@ -120,20 +121,20 @@ def is_fold_summary(item: InputItem) -> bool:
 def is_user_authored(item: InputItem) -> bool:
     """
     True for a message the user wrote: a user message with content besides
-    framework notes (``<system-reminder>`` input attachments and background
-    ``<task_notification>`` notes).
+    framework notes (``<system-reminder>`` input attachments, background
+    ``<task_notification>`` notes, and ``<team_member_message>`` mail from
+    other agents, images it carries included).
     """
     if not isinstance(item, InputMessageItem) or item.role != "user":
+        return False
+    first_text = next((p.text for p in item.content if isinstance(p, InputText)), "")
+    if first_text.lstrip().startswith(_NOTE_OPENINGS):
         return False
     for part in item.content:
         if not isinstance(part, InputText):
             return True
         text = part.text.strip()
-        if (
-            text
-            and not is_system_reminder(text)
-            and not text.startswith(_TASK_NOTIFICATION_OPEN)
-        ):
+        if text and not is_system_reminder(text):
             return True
     return False
 

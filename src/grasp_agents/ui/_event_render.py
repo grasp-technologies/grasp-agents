@@ -45,6 +45,8 @@ from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
     CompactionDoneEvent,
+    CompactionFailedEvent,
+    CompactionFailureInfo,
     CompactionInfo,
     CompactionStartEvent,
     CompactionStartInfo,
@@ -288,6 +290,9 @@ def render_event(
     if isinstance(event, CompactionDoneEvent):
         return render_compaction_notice(event.data)
 
+    if isinstance(event, CompactionFailedEvent):
+        return render_compaction_failure(event.data)
+
     if isinstance(event, BackgroundTaskLaunchedEvent):
         i = event.data
         text = f"⧗ {i.tool_name} launched in background (id: {i.task_id})"
@@ -343,12 +348,20 @@ def render_compaction_start(info: CompactionStartInfo) -> RenderableType:
     return Text(f"⊙ {head} · {size}", style=PALETTE["muted"])
 
 
+def render_compaction_failure(info: CompactionFailureInfo) -> RenderableType:
+    """One line marking that compaction folded nothing, with the reason."""
+    head = "compaction failed (overflow)" if info.forced else "compaction failed"
+    notice = Text(f"⊙ {head}", style=f"bold {PALETTE['warn']}")
+    notice.append(f" — {truncate(info.reason, 200)}", style=PALETTE["muted"])
+    return notice
+
+
 def render_compaction_notice(info: CompactionInfo) -> RenderableType:
     """
     Marks where context-window compaction folded older rounds into a summary.
 
-    Shows the rounds folded, the recent rounds kept verbatim, the earlier user
-    messages pinned in front of the summary, and the resulting context size, plus
+    Shows the rounds folded, the recent rounds kept verbatim, the messages
+    pinned in front of the summary, and the resulting context size, plus
     the summary the folded span was replaced with (a panel when the summary is
     present, a thin separator rule otherwise). "(overflow)" marks a compaction
     forced by a context-window error.
@@ -404,7 +417,7 @@ def render_tool_stream(
     """
     # Strip the trailing newline (tool output usually ends in one) so the box
     # hugs its content at the bottom instead of showing a blank line above the
-    # panel's own padding — matching the finalised result panel.
+    # panel's own padding — matching the finalized result panel.
     body = truncate_lines(truncate(text.rstrip("\n"), _TRUNC), _MAX_LINES)
     if background:
         title = f"{escape(tool)} · {escape(log_name)}" if log_name else escape(tool)

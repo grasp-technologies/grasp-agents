@@ -1,8 +1,8 @@
 """
 Live compaction on real providers: the summary request is the agent's own
-request plus a compaction request, sent with the agent's tools and reasoning
-settings, and the run carries on from the folded view. With conversation caching
-on (Anthropic's top-level ``cache_control``), the summary request reads the
+request up to the fold's end plus a compaction request, sent with the agent's
+tools and reasoning settings, and the run carries on from the folded view. With
+Anthropic's conversation caching (on by default), the summary request reads the
 conversation from the prompt cache.
 
 ``integration``-gated; each case skips without its provider key. Run:
@@ -44,6 +44,13 @@ _NOTES = "My notes for later. The launch code is ORCHID-7. " + " ".join(
     for i in range(250)
 )
 
+# Over a quarter of the compaction target: enough new conversation to fold again.
+_AGENDA = "More notes. " + " ".join(
+    f"Agenda item {i}: the team discussed catering, parking and signage, and "
+    "asked for quotes."
+    for i in range(30)
+)
+
 
 @function_tool
 def lookup(topic: str) -> str:
@@ -63,7 +70,6 @@ def _anthropic(key: str) -> LLM:
             "max_tokens": 8000,
             "thinking": {"type": "adaptive"},
             "output_config": {"effort": "medium"},
-            "cache_control": {"type": "ephemeral"},
         },
     )
 
@@ -81,7 +87,7 @@ def _openai_responses(key: str) -> LLM:
 
 
 # provider -> (key fixture, LLM builder, whether a cache hit is guaranteed:
-# Anthropic caches what ``cache_control`` marks, OpenAI's caching is best-effort)
+# Anthropic caches the conversation by default, OpenAI's caching is best-effort)
 _PROVIDERS = {
     "anthropic": ("anthropic_api_key", _anthropic, True),
     "openai_responses": ("openai_api_key", _openai_responses, False),
@@ -107,6 +113,8 @@ async def test_compaction_summarizes_on_the_agents_own_request(
     # The long first note puts the view over the threshold from the next
     # question on. While it is the newest user message it stays pinned; once a
     # later question is, it is too long to pin and only the summary carries it.
+    # The second question adds enough to fold again although the pinned note
+    # keeps the view over the threshold.
     agent.add_compaction(
         Compactor(
             budget=ContextBudget(llm.model_name, max_input_tokens=200_000),
@@ -119,7 +127,7 @@ async def test_compaction_summarizes_on_the_agents_own_request(
     events: list[Event[Any]] = []
     for question in (
         f"{_NOTES}\n\nReply with just: noted.",
-        "Reply with just: ok.",
+        f"{_AGENDA}\n\nReply with just: ok.",
         "What is the launch code?",
     ):
         events += [event async for event in agent.run_stream(question)]

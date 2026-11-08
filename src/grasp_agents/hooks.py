@@ -177,11 +177,14 @@ class CustomCompactor[CtxT](Protocol):
     the agent's own model.
 
     Called when compaction (``agent.add_compaction()``) folds: the summary
-    replaces the conversation up to the recent window, behind the pinned user
+    replaces the conversation up to the recent window, behind the pinned
     messages. ``agent_ctx.cw`` holds the conversation: the transcript, the
-    folds already recorded and the view the model sees. An empty summary or an
-    exception counts as a failed compaction, and the turn proceeds without a
-    fold. Single-slot (``@agent.add_custom_compactor``).
+    folds already recorded and the view the model sees. The compactor decides
+    where the fold ends, so summarize the whole conversation (for example
+    ``agent_ctx.cw.folded_messages()``). An empty summary or an exception
+    counts as a failed compaction: the turn proceeds without a fold, or, on the
+    context-window-error path, the original error is raised. Single-slot
+    (``@agent.add_custom_compactor``).
     """
 
     async def __call__(
