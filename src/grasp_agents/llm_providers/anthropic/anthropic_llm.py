@@ -65,6 +65,8 @@ logger = logging.getLogger(__name__)
 # above the cap is a hard 400 on the Messages API.
 DEFAULT_MAX_TOKENS = 32768
 
+_DEFAULT_CACHE_CONTROL: CacheControlEphemeralParam = {"type": "ephemeral"}
+
 WebSearchToolParam = WebSearchTool20260209Param | WebSearchTool20250305Param
 WebFetchToolParam = WebFetchTool20260209Param
 
@@ -98,9 +100,9 @@ class AnthropicLLMSettings(CloudLLMSettings, total=False):
 
     # Caches the whole prompt up to its last block on every request, so each
     # turn of an agent loop (and a compaction summary request) reads the
-    # conversation the previous request wrote. Off by default: a request that is
-    # never followed by one sharing its prefix pays the cache-write premium for
-    # nothing.
+    # conversation the previous request wrote. On the Anthropic API it defaults
+    # to ``{"type": "ephemeral"}`` (5 minutes); ``None`` turns it off. On Bedrock
+    # and Vertex it is off unless set.
     cache_control: CacheControlEphemeralParam | None
 
     metadata: MetadataParam | None
@@ -292,6 +294,10 @@ class AnthropicLLM(CloudLLM):
 
         merged: dict[str, Any] = dict(self.llm_settings or {})
         merged.update(extra_llm_settings)
+        if "cache_control" not in merged and self.platform is None:
+            merged["cache_control"] = _DEFAULT_CACHE_CONTROL
+        if merged.get("cache_control", ...) is None:
+            del merged["cache_control"]
 
         # Server-side tools: go into the tools list
         web_search_tool_param: WebSearchToolParam | None = merged.pop(
@@ -346,6 +352,13 @@ class AnthropicLLM(CloudLLM):
         )
 
         if self.apply_output_schema_via_provider:
+            # ``parse`` takes no ``cache_control`` argument; send it in the body.
+            cache_control = api_llm_settings.pop("cache_control", None)
+            if cache_control is not None:
+                api_llm_settings["extra_body"] = {
+                    **(api_llm_settings.get("extra_body") or {}),
+                    "cache_control": cache_control,
+                }
             return await self.client.messages.parse(
                 max_tokens=max_tokens,
                 messages=api_input,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 import openai
+import pytest
 from openai.types.chat import ChatCompletion
 
 from grasp_agents.llm_providers.openai_completions.error_mapping import map_api_error
@@ -238,7 +239,8 @@ class TestOpenAIContextWindowDetection:
         assert isinstance(mapped, LlmContextWindowError)
 
     def test_streamed_failure_maps_to_context_window(self) -> None:
-        # A ``response.failed`` frame inside a 200 stream carries no status.
+        # A streamed overflow arrives as an error frame inside a 200 stream,
+        # which the SDK raises as an APIError with no status.
         err = openai.APIError(
             message=_CONTEXT_WINDOW_BODY["message"],
             request=_REQUEST,
@@ -246,14 +248,31 @@ class TestOpenAIContextWindowDetection:
         )
         assert isinstance(map_api_error(err), LlmContextWindowError)
 
-    def test_gateway_message_without_code_maps(self) -> None:
-        # Chat Completions' wording, as relayed by a gateway that drops the code.
+    @pytest.mark.parametrize(
+        "message",
+        [
+            # OpenAI Chat Completions, relayed by a gateway that drops the code.
+            (
+                "This model's maximum context length is 128000 tokens. However, "
+                "your messages resulted in 700008 tokens. Please reduce the length "
+                "of the messages."
+            ),
+            # OpenRouter.
+            (
+                "This endpoint's maximum context length is 128000 tokens. However, "
+                "you requested about 129782 tokens (1782 of text input, 128000 in "
+                "the output). Please reduce the length of either one."
+            ),
+            # Mistral.
+            (
+                "Prompt contains 65673 tokens, too large for model with 32768 "
+                "maximum context length"
+            ),
+        ],
+    )
+    def test_overflow_message_without_code_maps(self, message: str) -> None:
         err = openai.APIStatusError(
-            "This model's maximum context length is 128000 tokens. However, your "
-            "messages resulted in 700008 tokens. Please reduce the length of the "
-            "messages.",
-            response=httpx.Response(400, request=_REQUEST),
-            body=None,
+            message, response=httpx.Response(400, request=_REQUEST), body=None
         )
         assert isinstance(map_api_error(err), LlmContextWindowError)
 

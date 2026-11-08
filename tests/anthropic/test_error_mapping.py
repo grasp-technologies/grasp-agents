@@ -94,5 +94,13 @@ class TestAnthropicErrorMapping:
         )
         assert isinstance(map_api_error(err), LlmContextWindowError)
 
+    def test_bedrock_input_too_long_maps_to_context_window(self) -> None:
+        err = anthropic.APIStatusError(
+            "Input is too long for requested model.",
+            response=httpx.Response(400, request=_REQUEST),
+            body=None,
+        )
+        assert isinstance(map_api_error(err), LlmContextWindowError)
+
     def test_plain_bad_request_is_not_context_window(self) -> None:
         assert not isinstance(map_api_error(_status_error(400)), LlmContextWindowError)

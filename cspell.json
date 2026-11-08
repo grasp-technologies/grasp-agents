@@ -25,7 +25,9 @@
         "notif"
     ],
     "words": [
+        "IMDS",
         "inlines",
+        "linkify",
         "ungated",
         "unheld",
         "unsuffixed",
@@ -106,6 +108,7 @@
         "unscored",
         "unvalidated",
         "unwedges",
+        "vertexaisearch",
         "WezTerm",
         "xhigh",
         "zmq"

@@ -37,14 +37,11 @@ def _select_cascade_error(errors: Sequence[Exception]) -> Exception:
     succeed later, and must not be masked by another member's deterministic
     failure (e.g. a misconfigured fallback). Among retryable errors, prefer
     one without a server-imposed backoff floor (shortest implied wait);
-    among floored rate limits, the smallest ``retry_after``. With none
-    retryable, prefer a context-window overflow: the caller can compact the
-    input and retry.
+    among floored rate limits, the smallest ``retry_after``.
     """
     retryable = [e for e in errors if is_retryable(classify_error(e))]
     if not retryable:
-        overflows = [e for e in errors if isinstance(e, LlmContextWindowError)]
-        return overflows[0] if overflows else errors[-1]
+        return errors[-1]
     no_floor = [
         e for e in retryable if not (isinstance(e, LlmRateLimitError) and e.retry_after)
     ]
@@ -67,8 +64,9 @@ class FallbackLLM(LLM):
     blip on the primary is retried on the primary, and a malformed response
     is re-sampled from the member that produced it; once that member's
     validation retries run out, the cascade advances. Deterministic member
-    errors (auth, bad request, context window) skip that member's retries
-    and advance the cascade immediately.
+    errors (auth, bad request) skip that member's retries and advance the
+    cascade immediately. A context-window overflow is raised at once, without
+    trying the other members: the input has to shrink.
 
     ``retry_policy`` must be ``None`` here: all retry behavior (API and
     validation) is member-level, and a composite policy would silently
@@ -181,6 +179,11 @@ class FallbackLLM(LLM):
                     **extra_llm_settings,
                 )
 
+            except LlmContextWindowError:
+                # The input must shrink (the agent compacts); another model
+                # is not a fix for it.
+                raise
+
             except _FALLBACK_ERRORS as e:
                 errors.append(e)
                 logger.warning(
@@ -221,6 +224,9 @@ class FallbackLLM(LLM):
                     seq = event.sequence_number
                     yield event
                 return
+
+            except LlmContextWindowError:
+                raise
 
             except _FALLBACK_ERRORS as e:
                 errors.append(e)

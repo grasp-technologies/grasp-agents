@@ -642,11 +642,6 @@ class TestCascadeErrorSelection:
         errors = [_rate_limited(60.0), smallest, _rate_limited(30.0)]
         assert _select_cascade_error(errors) is smallest
 
-    def test_context_window_preferred_over_other_deterministic(self) -> None:
-        """A shorter view can still succeed; an auth failure on a fallback can't."""
-        overflow = LlmContextWindowError("too long", response=_resp(400), body=None)
-        assert _select_cascade_error([overflow, _auth()]) is overflow
-
 
 class TestFallbackMemberRetries:
     """Retries-first cascade: members exhaust their own retries before failover."""
@@ -703,9 +698,7 @@ class TestFallbackMemberRetries:
         """Deterministic errors skip the member's retries — no pointless waits."""
         primary = ErrorLLM(
             model_name="primary",
-            error_to_raise=LlmContextWindowError(
-                "too long", response=_resp(400), body=None
-            ),
+            error_to_raise=_auth("bad key"),
             retry_policy=RetryPolicy(api_retries=3),
         )
         fallback = StubLLM(model_name="fallback", response=_text_response("rescued"))
@@ -716,6 +709,33 @@ class TestFallbackMemberRetries:
         assert result.output_text == "rescued"
         assert primary.call_count == 1
         assert mock_sleep.await_count == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_an_overflow_is_raised_without_trying_the_fallbacks(
+        self, *, stream: bool
+    ) -> None:
+        """The input must shrink; another model is not a fix for it."""
+        primary = ErrorLLM(
+            model_name="primary",
+            error_to_raise=LlmContextWindowError(
+                "too long", response=_resp(400), body=None
+            ),
+        )
+        fallback = StubLLM(model_name="fallback", response=_text_response("rescued"))
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+
+        async def _generate() -> None:
+            if stream:
+                async for _ in llm.generate_response_stream(_USER_MSG):
+                    pass
+            else:
+                await llm.generate_response(_USER_MSG)
+
+        with pytest.raises(LlmContextWindowError, match="too long"):
+            await _generate()
+        assert primary.call_count == 1
+        assert fallback.call_count == 0
 
     @pytest.mark.asyncio
     async def test_all_members_exhausted_raises(self) -> None:
