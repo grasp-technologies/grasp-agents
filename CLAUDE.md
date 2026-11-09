@@ -181,7 +181,7 @@ Routing is dynamic: a processor picks downstream recipients per payload via
 | `AgentContext` | `agent/agent_context.py` | Per-agent session state (cw, tools, file-edit state, background tasks, inbox, deferred-effects outbox, kernel/shell holders). Passed to each tool call as a per-call copy (`for_tool_call`), which keeps tools stateless. Tools defer durable writes with `defer_effect` |
 | `BackgroundTaskManager` | `agent/background_tasks.py`, `agent/task_progress.py` | Backgrounded tools and sub-agents, push-delivered task notes, log and result files, spill of large outputs, durable `TaskRecord`s |
 | Tool decisions & approvals | `agent/tool_decision.py`, `agent/approval_store.py`, `agent/approval_callback.py` | Allow / reject-with-content / raise per call; ONCE/SESSION/ALWAYS approvals |
-| Prompt + context strategies | `context/` (`prompt_builder.py`, `compaction.py`, `projection.py`, `system_reminder.py`, `env_section.py`, `untrusted_content.py`) | System-prompt sections, input attachments, opt-in compaction strategies (`Compaction`, `SummarizingCompactor`, `CollapseToolOutputsProjector`), untrusted-content fencing |
+| Prompt + context strategies | `context/` (`prompt_builder.py`, `compaction.py`, `projection.py`, `system_reminder.py`, `env_section.py`, `untrusted_content.py`) | System-prompt sections, input attachments, opt-in compaction (`Compactor`, `ContextBudget`, `CollapseToolOutputsProjector`), untrusted-content fencing |
 | `SessionContext[CtxT]` | `session_context.py` | Session-scoped DI container: user state, stores, environment, usage tracker, printer, session writer, fs-snapshot policy. Bound at construction (explicit → ambient `with` → process default); `current_session_context()` resolves it |
 | `BaseTool`, `@function_tool` | `tools/base.py`, `tools/function_tool.py` | Tool ABC (timeouts, background axes, spill, untrusted output, conflict keys); async function → typed tool |
 | `AgentTool` / `ProcessorTool` | `tools/agent_tool.py`, `tools/processor_tool.py` | `.as_tool()`: any agent or processor becomes a tool; stateless, ctx bound per call |
@@ -213,14 +213,15 @@ The primary path is decorator hooks on an `LLMAgent` instance. Subclassing with
 @agent.add_output_parser             # LLM text → typed output (single slot)
 @agent.add_final_answer_extractor    # decide when a turn's output is final (single slot)
 @agent.add_view_projector            # per-turn model-facing view of the log (stacks)
-@agent.add_compactor                 # record a summary fold under pressure (single slot)
-@agent.add_before_llm_hook           # adjust settings before each LLM call (stacks)
-@agent.add_after_llm_hook            # observe responses (stacks)
+@agent.set_compaction_summarizer     # write compaction summaries instead of the model (single slot)
+@agent.add_before_llm_hook           # adjust settings before each LLM call of a turn (stacks)
+@agent.add_after_llm_hook            # observe a turn's responses (stacks)
+@agent.add_usage_hook                # every paid response, compaction summaries included (stacks)
 @agent.add_before_tool_hook          # per-call decision; most restrictive wins (stacks)
 @agent.add_after_tool_hook           # observe results (stacks)
 @agent.add_tool_input_converter(tool_name=...)
 @agent.add_tool_output_converter(tool_name=...)
-agent.add_compaction()               # opt-in default compaction bundle
+LLMAgent(enable_compaction=True, compactor=...)  # opt-in compaction, fixed at construction
 agent.add_system_prompt_section(...) / agent.add_input_attachment(...)
 ```
 

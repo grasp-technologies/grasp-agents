@@ -36,6 +36,81 @@ def test_anthropic_forwards_new_settings(monkeypatch: pytest.MonkeyPatch) -> Non
     assert extra["output_config"] == {"effort": "low"}
 
 
+def test_anthropic_forwards_conversation_caching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy")
+    from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+
+    llm = AnthropicLLM(
+        model_name="claude-sonnet-4-5",
+        llm_settings={"cache_control": {"type": "ephemeral", "ttl": "1h"}},
+    )
+    extra = llm._make_api_input([]).get("extra_settings", {})
+    assert extra["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_anthropic_caches_the_conversation_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy")
+    from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+
+    default = AnthropicLLM(model_name="claude-sonnet-4-5")
+    extra = default._make_api_input([]).get("extra_settings", {})
+    assert extra["cache_control"] == {"type": "ephemeral"}
+
+    off = AnthropicLLM(
+        model_name="claude-sonnet-4-5", llm_settings={"cache_control": None}
+    )
+    assert "cache_control" not in off._make_api_input([]).get("extra_settings", {})
+
+
+def test_anthropic_on_bedrock_caches_by_default_unless_turned_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import Mock
+
+    from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+
+    monkeypatch.setattr("anthropic.AsyncAnthropicBedrock", Mock())
+    model = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+    llm = AnthropicLLM(model_name=model, platform="bedrock")
+    assert llm._make_api_input([])["extra_settings"]["cache_control"] == {
+        "type": "ephemeral"
+    }
+
+    off = AnthropicLLM(
+        model_name=model, platform="bedrock", llm_settings={"cache_control": None}
+    )
+    assert "cache_control" not in off._make_api_input([]).get("extra_settings", {})
+
+
+@pytest.mark.asyncio
+async def test_anthropic_parse_sends_cache_control_in_the_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock, Mock
+
+    from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy")
+    llm = AnthropicLLM(
+        model_name="claude-sonnet-4-5", apply_output_schema_via_provider=True
+    )
+    client = Mock()
+    client.messages.parse = AsyncMock(return_value="parsed")
+    object.__setattr__(llm, "client", client)
+
+    await llm._get_api_response(
+        [], cache_control={"type": "ephemeral"}, extra_body={"x": 1}
+    )
+
+    kwargs = client.messages.parse.await_args.kwargs
+    assert "cache_control" not in kwargs
+    assert kwargs["extra_body"] == {"x": 1, "cache_control": {"type": "ephemeral"}}
+
+
 def test_openai_completions_forwards_new_settings() -> None:
     from grasp_agents.llm_providers.openai_completions.completions_llm import (
         OpenAILLM,

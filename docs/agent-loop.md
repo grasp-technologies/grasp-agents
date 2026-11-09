@@ -24,7 +24,7 @@ The `agent/` names are exported from `grasp_agents.agent`, except `NextStepResid
 2. `agent.load_checkpoint()` — reloads this agent's transcript from the store on a cold start only.
 3. Entry validation: a run with no input is allowed only when there is something to resume, a resident inbox, or a finished background task to deliver. A run with no input while [parked after a rollback](rollback.md) is refused.
 4. Compose the ephemeral initial context (system prompt + sections). It is never written to the transcript (see [Context window](context-window.md)).
-5. For a new step: archive a rollback boundary, reset `turn` to 0, append the input message.
+5. For a new step: compact if compaction is enabled and the view is over its threshold (before the input, so the summary never covers it), archive a rollback boundary, reset `turn` to 0, append the input message.
 6. Run `AgentLoop.execute_stream`, then parse the final answer with the output parser.
 
 An interrupted run (`CancelledError`, consumer abort) or a failed one is *settled*: only the tool round in flight is dropped; completed rounds stay. `max_retries` re-enters the run and continues the settled delivery instead of re-sending the input.
@@ -33,7 +33,7 @@ An interrupted run (`CancelledError`, consumer abort) or a failed one is *settle
 
 Each loop iteration is one turn:
 
-- **PRE-ACT.** If the transcript does not owe a response, wait: a lone agent waits for the next background-task completion (bounded by the run deadline); a resident waits for inbox mail or a completion. Both re-emit background progress every 0.25 s while parked. Then deliver one inbox message (residents), bubble background events, deliver finished task notes, and checkpoint `AFTER_INPUT` if anything was appended. Run the compactor if one is registered. Emit `TurnStartEvent`.
+- **PRE-ACT.** If the transcript does not owe a response, wait: a lone agent waits for the next background-task completion (bounded by the run deadline); a resident waits for inbox mail or a completion. Both re-emit background progress every 0.25 s while parked. Then compact if compaction is enabled and the view is over its threshold (emitting `CompactionStartEvent` before the summary, then `CompactionDoneEvent` on a fold or `CompactionFailedEvent` when no summary came back), before any new input is delivered. Then deliver one inbox message (residents), bubble background events and deliver finished task notes. Checkpoint `AFTER_INPUT` if anything was appended or folded. Emit `TurnStartEvent`.
 - **ACT.** Run before-LLM hooks, pick `tool_choice`, project the view and call the LLM. Streamed items are committed to the transcript only after the response validates. Run after-LLM hooks; emit `GenerationEndEvent`.
 - **JUDGE.** `decide_next_step(...)` classifies the response.
 - **Dispatch.** Run the handler for the chosen `NextStep`.

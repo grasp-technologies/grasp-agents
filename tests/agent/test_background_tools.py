@@ -634,6 +634,23 @@ class TestMaxTurnsKeepsBackgroundTasks:
         await executor.agent_ctx.bg_tasks.cancel_all(ctx=ctx)
         assert not executor.agent_ctx.bg_tasks.has_live_tasks
 
+    @pytest.mark.asyncio
+    async def test_running_call_ids_name_the_live_tasks(self):
+        very_slow = SlowTool(delay=10.0, name="very_slow")
+        responses = [
+            _tool_call_response("very_slow", '{"text":"x"}', "tc1"),
+            _text_response("still thinking"),
+            _text_response("forced final"),
+        ]
+        executor, _, _ = _make_executor(responses, tools=[very_slow], max_turns=1)
+        ctx = SessionContext[None]()
+        await _collect_events(executor, ctx)
+
+        assert executor.agent_ctx.bg_tasks.running_call_ids() == {"tc1"}
+
+        await executor.agent_ctx.bg_tasks.cancel_all(ctx=ctx)
+        assert executor.agent_ctx.bg_tasks.running_call_ids() == frozenset()
+
 
 class TestFunctionToolBackground:
     """@function_tool(auto_background_at=0) creates a background tool."""

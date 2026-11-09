@@ -6,8 +6,9 @@ overrides (*_impl methods). The Protocols here define the callable signatures.
 
 Agent Loop Hooks (registered on AgentLoop via LLMAgent):
     ViewProjector  — derives the per-turn model-facing view from the log
-    BeforeLlmHook  — fires before each LLM call
-    AfterLlmHook   — fires after each LLM response
+    CompactionSummarizer — writes compaction summaries in place of the agent's model
+    BeforeLlmHook  — fires before each LLM call of an agent turn
+    AfterLlmHook   — fires after each LLM response of an agent turn
     FinalAnswerExtractor  — determines when the agent should stop
     BeforeToolHook      — fires before tool execution
     AfterToolHook       — fires after tool execution
@@ -27,7 +28,7 @@ Processor Hooks:
 """
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import BaseModel
 
@@ -35,7 +36,6 @@ from grasp_agents.agent.tool_decision import ToolCallDecision
 from grasp_agents.selector import Selector
 from grasp_agents.session_context import SessionContext
 from grasp_agents.types.content import Content
-from grasp_agents.types.folds import FoldSpec
 from grasp_agents.types.io import ProcName
 from grasp_agents.types.items import (
     FunctionToolCallItem,
@@ -47,12 +47,15 @@ from grasp_agents.types.items import (
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import Response
 
+if TYPE_CHECKING:
+    from grasp_agents.agent.agent_context import AgentContext
+
 __all__ = [
     "AfterLlmHook",
     "AfterToolHook",
     "BeforeLlmHook",
     "BeforeToolHook",
-    "Compactor",
+    "CompactionSummarizer",
     "FinalAnswerExtractor",
     "InitialContextBuilder",
     "InputContentBuilder",
@@ -61,6 +64,7 @@ __all__ = [
     "Selector",
     "ToolInputConverter",
     "ToolOutputConverter",
+    "UsageHook",
     "ViewProjector",
     "WorkflowLoopTerminator",
 ]
@@ -87,6 +91,16 @@ class AfterLlmHook(Protocol):
         exec_id: str,
         turn: int,
     ) -> None: ...
+
+
+class UsageHook(Protocol):
+    """
+    Sees each response the agent pays for: its turns' responses and the
+    summary requests of compaction, which no LLM hook sees. For usage
+    accounting.
+    """
+
+    async def __call__(self, response: Response, *, exec_id: str) -> None: ...
 
 
 class FinalAnswerExtractor(Protocol):
@@ -154,9 +168,11 @@ class ViewProjector(Protocol):
     before the provider call, then discarded — it is never persisted, so a
     projection must be deterministic enough to re-derive on the next turn and on
     resume. ``input_tokens`` is the current (folded) log's estimated cost: the last
-    response's reported input tokens plus a count of the messages appended since,
-    or a full count before any reported usage (or after a fold / rollback) — the
-    budget signal for size-reactive projectors.
+    response's reported input tokens plus an estimate of the messages appended
+    since, or an estimate of the whole view when there is no reported count (after
+    a fold or rollback) — the budget signal for size-reactive projectors. Every
+    projector in the pipeline gets the same value, the size before any of them
+    ran, not the size of the previous projector's output.
     """
 
     async def __call__(
@@ -168,28 +184,26 @@ class ViewProjector(Protocol):
     ) -> Sequence[InputItem]: ...
 
 
-class Compactor(Protocol):
+class CompactionSummarizer[CtxT](Protocol):
     """
-    Summarize an old span of the transcript log under context-window pressure.
+    Write the summary a compaction folds the conversation into, in place of
+    the agent's own model. Only the summary: when to fold and what to keep
+    stay with the agent's :class:`~grasp_agents.context.Compactor`.
 
-    Called once per turn with ``input_tokens`` (what the last view actually
-    cost) and the ``folds`` already recorded. Returns a new :class:`FoldSpec`
-    (a summarized span, applied to the view by ``apply_folds`` and persisted) or
-    ``None`` to leave the log as is. Single-slot (``@agent.add_compactor``).
-    Unlike a :class:`ViewProjector` it may call an LLM and produce persisted
-    state, so it runs at the turn boundary, not on every view. ``force`` is set
-    on the context-window-error recovery path: fold regardless of the budget.
+    Called when compaction (``LLMAgent(enable_compaction=True)``) folds: the
+    summary replaces the conversation up to the recent window, behind the
+    pinned messages. ``agent_ctx.cw`` holds the conversation: the transcript,
+    the folds already recorded and the view the model sees. The compactor
+    decides where the fold ends, so summarize the whole conversation (for
+    example ``agent_ctx.cw.folded_messages()``). An empty summary or an
+    exception counts as a failed compaction: the turn proceeds without a fold,
+    or, on the context-window-error path, the original error is raised.
+    Single-slot (``@agent.set_compaction_summarizer``).
     """
 
     async def __call__(
-        self,
-        messages: Sequence[InputItem],
-        *,
-        input_tokens: int,
-        folds: Sequence[FoldSpec],
-        exec_id: str,
-        force: bool = False,
-    ) -> FoldSpec | None: ...
+        self, *, agent_ctx: "AgentContext", ctx: SessionContext[CtxT]
+    ) -> str: ...
 
 
 # --- Prompt Hooks ---

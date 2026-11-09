@@ -17,7 +17,7 @@ violations. Before editing, read the relevant pages: `docs/durability.md`,
    `replace_transcript()`. Never mutate a message in place: in-place edits are not
    re-persisted. Replace the message instead.
 2. **Surgery repairs derived state in the same step.** Truncating or replacing
-   the log also fixes folds and the token anchor.
+   the log also fixes folds and the usage anchor.
 3. **Tool-call pairing.** Every function call gets a result before the next
    input. Closures, resume and rollback all preserve this.
 4. **Input is durable before generation.** An `AFTER_INPUT` checkpoint is written
@@ -83,7 +83,7 @@ for the area you touched:
 | Session checkpoint / fs snapshots | `tests/durability/test_session_checkpoint.py`, `test_checkpoint_fs_snapshot.py` |
 | Workflows / Runner checkpoints | `tests/durability/test_workflow_durability.py`, `tests/orchestration/` |
 
-New behaviour needs a crash test. Simulate the crash at the boundary you changed
+New behavior needs a crash test. Simulate the crash at the boundary you changed
 (for example, make the store raise after the log write and before the head), then
 resume and assert that no work was lost and nothing was duplicated.
 

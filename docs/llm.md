@@ -19,7 +19,7 @@ On top of the providers sit the retry layer (`RetryPolicy`), the model cascade
 | `LiteLLM` | `llm_providers/litellm/` | Long-tail providers through `litellm` |
 | `FallbackLLM` | `llm/fallback_llm.py` | Tries member LLMs in order |
 | `RetryPolicy` | `llm/resilience.py` | API and validation retry configuration |
-| `ModelCapabilities`, `get_model_capabilities`, `get_context_window`, `count_tokens`, `count_input_tokens` | `llm/model_info.py`, `llm/token_counting.py` | Metadata and token counting from LiteLLM's model database |
+| `ModelCapabilities`, `get_model_capabilities`, `get_context_window`, `count_tokens`, `count_input_tokens`, `estimate_input_tokens` | `llm/model_info.py`, `llm/token_counting.py` | Metadata and token counting from LiteLLM's model database |
 | `Llm*Error`, `LlmErrorTuple` | `types/llm_errors.py` | Typed provider errors |
 | `RecoveryHint`, `classify_error`, `register_recovery_hint` | `types/recovery.py` | What action recovers from an error |
 | `RateLimiter` | `rate_limiting/` | Requests-per-minute pacing + concurrency cap |
@@ -175,7 +175,9 @@ Retries come first: each member runs its whole pipeline (its own API retries,
 validation and validation retries) before the cascade moves on. The cascade
 advances on exhausted or deterministic API errors and on
 `LLMResponseValidationError` once the member's retries are spent. A content
-filter block also advances it. When every member fails, the raised error
+filter block also advances it. A context-window overflow does not: it is raised
+at once, without trying the other members, because the input has to shrink
+(the agent loop compacts and retries). When every member fails, the raised error
 prefers a retryable one (shortest implied wait).
 
 Constructor rules (`FallbackLLM.__post_init__`): `retry_policy`,
@@ -196,11 +198,19 @@ Providers map every SDK exception to a type in `types/llm_errors.py`
 | `TRANSIENT` | timeout, connection, 5xx, 409, other status errors | yes |
 | `RATE_LIMITED` | `LlmRateLimitError` | yes |
 | `QUOTA_EXCEEDED` | `LlmQuotaExceededError` | no |
-| `NEEDS_COMPACTION` | `LlmContextWindowError` | no (with a compactor registered, the agent loop forces one fold and retries once; see [Context window](context-window.md)) |
+| `NEEDS_COMPACTION` | `LlmContextWindowError` | no (with compaction enabled, the agent loop forces a fold and retries once; see [Context window](context-window.md)) |
 | `REAUTH_REQUIRED` | 401, 403 | no |
 | `CONTENT_REFUSED` | `LlmContentFilterError` | no |
 | `INVALID_REQUEST` | 400, 404, 422 | no |
 | `INVALID_RESPONSE` | `LlmResponseSchemaError` (our types rejected the provider's response) | no |
+
+`LlmContextWindowError` is OpenAI's `context_length_exceeded` code, Anthropic's
+400 "prompt is too long: … tokens > … maximum" and 413, Gemini's 400 "The input
+token count (…) exceeds the maximum number of tokens allowed (…)", OpenAI's own
+overflow wording when a gateway drops the code, and LiteLLM's
+`ContextWindowExceededError`. Anthropic and Gemini give the overflow no
+structured marker, so it is matched on the message
+(`_http_helpers.is_context_window_message`).
 
 Give your own exception a `recovery_hint` class attribute, or call
 `register_recovery_hint(exc_type, hint)` for types you don't own.
@@ -227,6 +237,19 @@ Completions) as an explicit `prompt_cache_breakpoint`; the others ignore it.
 OpenAI's TTL is set per request through the `prompt_cache_options` setting.
 The MCP instructions section carries a breakpoint by default.
 
+`AnthropicLLM` caches the conversation itself through the top-level
+`cache_control` setting (`AnthropicLLMSettings`). It defaults to
+`{"type": "ephemeral"}` (5 minutes) on every platform; set `{"type": "ephemeral",
+"ttl": "1h"}` for an hour, or `None` to turn it off. Bedrock rejects the setting
+for Claude Opus 4.6 and older models with a 400: set `None` for those. Every request then writes a cache entry ending at its last
+block, and the next request in an agent loop, compaction's summary request
+included, reads it. Anthropic finds an earlier entry only within about 20 blocks
+of a request's end, so a turn that adds more blocks than that (many parallel
+tool calls) misses once. A request no later request extends pays the
+cache-write premium for nothing. OpenAI and Gemini cache shared prefixes on
+their own; on OpenAI the `prompt_cache_retention` setting (`"in_memory"` or
+`"24h"`) chooses how long, and the provider picks when it is unset.
+
 ## Model metadata, tokens, cost
 
 `llm.capabilities` (`ModelCapabilities`: `function_calling`, `vision`,
@@ -235,7 +258,8 @@ The MCP instructions section carries a breakpoint by default.
 the resolved provider. An unknown model gets permissive defaults (every
 feature `True`, no limits) and a warning. `count_input_tokens(model, items)`
 counts a view with LiteLLM's tokenizer and estimates files and encrypted
-reasoning separately, falling back to a character estimate. `CloudLLM`
+reasoning separately, falling back to `estimate_input_tokens(items)`, a
+tokenizer-free character estimate (what compaction uses). `CloudLLM`
 stamps `usage.cost` from LiteLLM pricing when the response is produced.
 
 ## Rate limiting

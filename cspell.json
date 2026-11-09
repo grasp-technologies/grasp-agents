@@ -20,9 +20,17 @@
         "pytest",
         "numpy",
         "pandas",
-        "pylance"
+        "pylance",
+        "bgfn",
+        "notif"
     ],
     "words": [
+        "IMDS",
+        "inlines",
+        "linkify",
+        "ungated",
+        "unheld",
+        "unsuffixed",
         "acked",
         "acking",
         "acks",
@@ -100,6 +108,7 @@
         "unscored",
         "unvalidated",
         "unwedges",
+        "vertexaisearch",
         "WezTerm",
         "xhigh",
         "zmq"

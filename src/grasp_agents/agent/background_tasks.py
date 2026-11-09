@@ -753,6 +753,15 @@ class BackgroundTaskManager[CtxT]:
         """
         return any(not bt.consumer.done() for bt in self._tasks.values())
 
+    def running_call_ids(self) -> frozenset[str]:
+        """
+        The tool call ids of the tasks still running. A compaction keeps their
+        launch notes in front of the summary.
+        """
+        return frozenset(
+            bt.tool_call_id for bt in self._tasks.values() if not bt.consumer.done()
+        )
+
     @property
     def has_tracked_tasks(self) -> bool:
         """

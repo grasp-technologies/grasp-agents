@@ -11,7 +11,7 @@ from grasp_agents.types.items import InputItem
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 16
+CURRENT_SCHEMA_VERSION: int = 17
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -168,6 +168,14 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "TaskRecord.output_path was renamed to log_path: it is the task's "
         "streamed-output log, distinct from the .result file a large result is "
         "spilled to. v13-v15 records load fine (the old name is still read)."
+    ),
+    17: (
+        "FoldSpec gained ``pinned`` (log indices of messages kept verbatim before "
+        "the summary: user messages, and launch notes of background tasks still "
+        "running), and a newer fold covering an older one supersedes it. "
+        "AgentCheckpoint.usage now holds the latest response's usage, which "
+        "anchors a resumed agent's context size. v13-v16 records load fine: their "
+        "folds pin nothing and still apply, and their usage is empty."
     ),
 }
 """
@@ -393,6 +401,8 @@ class AgentCheckpoint(ProcessorCheckpoint):
     # head excludes it.
     messages: list[InputItem] = Field(default_factory=list[InputItem])
 
+    # The latest response's reported usage. Its input tokens measure the log up
+    # to that response, so a resumed agent estimates only the messages since.
     usage: ResponseUsage | None = None
 
     # The live position. ``current.message_count`` is the commit watermark —

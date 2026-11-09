@@ -41,7 +41,7 @@ await agent.run("Write a shorter conclusion")  # re-mints step 2 as a fresh deli
 1. Refuses if a run is active (`RuntimeError`) or `step` has no boundary (`KeyError`).
 2. Re-marks the persisted head `ROLLING_BACK` before any durable side effect. If the process dies mid-rollback, the next load completes the rollback instead of resuming the pre-rollback transcript.
 3. Restores the boundary's filesystem snapshot, if it has one, via `ctx.restore_fs_snapshot(ref, claimant=agent.name)` (the agent must be, or becomes, the session writer).
-4. Cuts the transcript to the boundary; folds past the cut are dropped and the token anchor is reset.
+4. Cuts the transcript to the boundary; folds past the cut are dropped (an earlier fold within the cut applies again) and the usage anchor is dropped when the cut removes the response it came from.
 5. Reapplies the boundary's agent-context state: read-before-write ledger, shell cwd, task-record flips. Kernels are re-attached when the filesystem was restored.
 6. Reconciles the side channels:
    - background tasks launched after the boundary are cancelled, and pending effects of removed calls are dropped;

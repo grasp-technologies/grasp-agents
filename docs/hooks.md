@@ -13,13 +13,13 @@ means a later registration replaces the earlier one.
 
 | Registration (on `LLMAgent` unless noted) | Protocol (`hooks.py`) | Slot | Subclass override |
 |---|---|---|---|
-| `add_before_llm_hook` | `BeforeLlmHook(*, exec_id, turn, extra_llm_settings)` | stacks | `on_before_llm_impl` |
-| `add_after_llm_hook` | `AfterLlmHook(response, *, exec_id, turn)` | stacks | `on_after_llm_impl` |
+| `add_before_llm_hook` | `BeforeLlmHook(*, exec_id, turn, extra_llm_settings)` (agent turns, not compaction summaries) | stacks | `on_before_llm_impl` |
+| `add_after_llm_hook` | `AfterLlmHook(response, *, exec_id, turn)` (agent turns, not compaction summaries) | stacks | `on_after_llm_impl` |
+| `add_usage_hook` | `UsageHook(response, *, exec_id)` (every response the agent pays for: its turns and compaction summaries) | stacks | — |
 | `add_before_tool_hook` | `BeforeToolHook(*, tool_calls, ctx, exec_id) -> Mapping[call_id, ToolCallDecision] \| None` | stacks, most restrictive wins | `on_before_tool_impl` |
 | `add_after_tool_hook` | `AfterToolHook(*, tool_calls, tool_messages, exec_id)` | stacks | `on_after_tool_impl` |
-| `add_view_projector` | `ViewProjector(messages, *, exec_id, input_tokens) -> Sequence[InputItem]` | stacks (pipeline) | `project_view_impl` |
-| `add_compactor` | `Compactor(messages, *, input_tokens, folds, exec_id, force=False) -> FoldSpec \| None` | single | — |
-| `add_compaction(compaction=None)` | registers a `Compaction` bundle's projector + compactor | — | — |
+| `add_view_projector` | `ViewProjector(messages, *, exec_id, input_tokens) -> Sequence[InputItem]` (every projector gets the same `input_tokens`, the size before any ran) | stacks (pipeline) | `project_view_impl` |
+| `set_compaction_summarizer` | `CompactionSummarizer(*, agent_ctx, ctx) -> str` (async; writes compaction summaries in place of the agent's model; needs `enable_compaction=True`) | single | — |
 | `add_initial_context_builder` | `InitialContextBuilder(messages, *, exec_id) -> Sequence[InputItem]` | single | `build_initial_context_impl` |
 | `add_input_content_builder` | `InputContentBuilder(in_args, *, exec_id) -> Content` | single | `build_input_content_impl` |
 | `add_output_parser` | `OutputParser(final_answer, *, in_args=None, exec_id) -> OutT` | single | `parse_output_impl` |
@@ -112,7 +112,7 @@ registration order. The input message gets `InputAttachment`s appended.
 |---|---|---|
 | Where it lands | system message (initial context) | the new user message |
 | When `compute` runs | once per run entry | once per delivered input |
-| `compute` receives | `ctx`, `exec_id`, `agent_ctx` | `input_message`, `ctx`, `exec_id`, `messages` (prior transcript), `agent_ctx`, `source` |
+| `compute` receives | `ctx`, `exec_id`, `agent_ctx` | `input_message`, `ctx`, `exec_id`, `messages` (the prior conversation as the model sees it: folds applied), `agent_ctx`, `source` |
 | Returns | text, or `None` to omit | text (wrapped in `<system-reminder subject="<name>">`), a list of `InputPart`s (appended verbatim), or `None` |
 | Use for | stable instructions and catalogs | per-turn signals: relevant memories, current time, sender attribution |
 
@@ -132,13 +132,16 @@ This is how you override the auto-attached ones. Built-in names:
 | `skills` | `enable_skills=True` | `skills/injection.py` |
 | `background_tasks` | always (renders nothing without backgroundable tools) | `agent/background_tasks.py` |
 | `mcp_instructions` | MCP clients | `mcp/section.py` |
+| `compaction` | `enable_compaction=True` | `context/compaction.py` |
 | `relevant_memories` (attachment) | `enable_memory=True` | `memory/injection.py` |
 | `current_time` (attachment) | `time_aware=True` or an attachment | `context/env_section.py` |
 | `team_sender` (attachment) | member of an `AgentTeam` | `agent_team/prompt.py` |
 
 `<system-reminder>` is the one tag for framework-injected notes
-(`context/system_reminder.py` → `wrap_in_system_reminder`). Attachments, skill
-invocations and compaction summaries use it.
+(`context/system_reminder.py` → `wrap_in_system_reminder`). Attachments and skill
+invocations use it. A compaction summary has its own `<conversation_summary>`
+tag, explained by the `compaction` section, so it does not read as runtime
+instructions.
 
 ## Routing and workflow hooks
 
@@ -202,7 +205,7 @@ await agent.run("hi", span_name="triage", span_attributes={"ticket.id": "T-1"})
 ## See also
 
 - [Agent loop](agent-loop.md) — where each hook fires; approvals.
-- [Context window](context-window.md) — projectors, compactors, `Compaction`.
+- [Context window](context-window.md) — projectors, compaction, `Compactor`.
 - [Orchestration](orchestration.md) — routing and workflows.
 - Code: `hooks.py`, `agent/llm_agent.py` (Decorator API), `context/prompt_builder.py`,
   `processors/processor.py`, `workflow/looped_workflow.py`.

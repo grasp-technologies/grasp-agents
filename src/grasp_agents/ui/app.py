@@ -50,7 +50,7 @@ from grasp_agents.types.content import InputImage
 from grasp_agents.types.events import (
     BackgroundTaskCompletedEvent,
     BackgroundTaskLaunchedEvent,
-    CompactionEvent,
+    CompactionDoneEvent,
     Event,
     GenerationEndEvent,
     LLMStreamEvent,
@@ -377,7 +377,7 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
         # Context-token meter: the last reported input-token count + model per
         # agent (the running context size), shown for the active pane's agent
         # against its window. The window is inferred — learned from
-        # CompactionEvents (the agent's managed budget), else the model's window;
+        # CompactionDoneEvents (the agent's managed budget), else the model's window;
         # ``run_tui_interactive`` seeds it from the agent up front.
         self._ga_input_tokens: dict[str, int] = {}
         self._ga_token_model: dict[str, str] = {}
@@ -1181,7 +1181,7 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
             self._ga_input_tokens[owner] = usage.input_tokens
             if event.data.model:
                 self._ga_token_model[owner] = event.data.model
-        elif isinstance(event, CompactionEvent):
+        elif isinstance(event, CompactionDoneEvent):
             # the post-fold view size — reflect the reduced context at once
             self._ga_input_tokens[owner] = event.data.context_tokens
             if event.data.context_window:
@@ -1209,7 +1209,7 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
 
         :func:`run_tui_interactive` calls this with the agent's managed context
         window so the meter shows it from the start; afterwards the window is
-        learned from CompactionEvents / the model (see :meth:`_window_for`).
+        learned from CompactionDoneEvents / the model (see :meth:`_window_for`).
         """
         self._ga_token_window[source] = window
 
@@ -1316,7 +1316,7 @@ class GraspAgentsApp(SessionRestoreMixin, App[None]):
                     UserMessageEvent,
                     SystemMessageEvent,
                     ToolOutputItemEvent,
-                    CompactionEvent,
+                    CompactionDoneEvent,
                 ),
             ):
                 # incoming-message border to the right (the compaction summary is
@@ -1758,6 +1758,6 @@ def run_tui_interactive(
     )
     if window and main_agent:
         # Seed the meter against the agent's managed context window; later updates
-        # come from CompactionEvents / the model (see ``_window_for``).
+        # come from CompactionDoneEvents / the model (see ``_window_for``).
         app.seed_context_window(main_agent, window)
     app.run()

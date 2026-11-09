@@ -55,7 +55,7 @@ Keys are `"<session_key>/<kind>[/<path>]"`, with kinds `agent`, `workflow`, `par
 - **Agent head** (`AgentCheckpoint`):
   - `current`, a `StepWatermark`: committed message count, log version, turn, step and filesystem ref, plus `AgentContextState` — the read-before-write ledger, shell cwd, deferred task-record flips, launch and mail high-water marks, and kernel context ids.
   - `step_watermarks`: rollback boundaries.
-  - `folds`.
+  - `folds` and `usage` (the latest response's reported usage, so a resumed agent sizes its context without re-estimating it).
   - `output` (the step's cached answer), `location`, `stop_reason`.
 - **Message log**: the transcript, as an append-only JSONL log next to the head. The head stores only a watermark (`message_count`), never the messages.
 - **Session record** (`SessionCheckpoint`, one per session): serialized `ctx.state` when `serialize_state=True`, the latest filesystem snapshot ref (`fs_snapshot_policy`), and `session_metadata`. `session_metadata` is write-only: persisted for inspection, never restored.
@@ -66,7 +66,7 @@ Keys are `"<session_key>/<kind>[/<path>]"`, with kinds `agent`, `workflow`, `par
 
 | Location | Written |
 |---|---|
-| `AFTER_INPUT` | At turn 0 of a new step, whenever a run starts with the log ending in input, and after any turn boundary that appended inbox mail or task notes — always before the model responds. |
+| `AFTER_INPUT` | At turn 0 of a new step, whenever a run starts with the log ending in input, and after any turn boundary that appended inbox mail or task notes or recorded a compaction fold — always before the model responds. |
 | `AFTER_TOOL_RESULT` | After each tool round. |
 | `AFTER_FINAL_ANSWER` | When the run ends with an answer (own or forced; `stop_reason` says which). |
 | `AFTER_RESIDENT_ANSWER` | When a resident answers one inbox message. |

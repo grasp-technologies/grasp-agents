@@ -101,6 +101,7 @@ if TYPE_CHECKING:
         FinalAnswerExtractor,
         ToolInputConverter,
         ToolOutputConverter,
+        UsageHook,
     )
     from grasp_agents.inbox import AgentInbox
     from grasp_agents.llm.llm import LLM
@@ -227,6 +228,7 @@ class AgentLoop[CtxT]:
 
     before_llm_hooks: list[BeforeLlmHook]
     after_llm_hooks: list[AfterLlmHook]
+    usage_hooks: list[UsageHook]
     before_tool_hooks: list[BeforeToolHook[CtxT]]
     after_tool_hooks: list[AfterToolHook]
     tool_output_converters: dict[str, ToolOutputConverter]
@@ -315,12 +317,16 @@ class AgentLoop[CtxT]:
 
         self.before_llm_hooks = []
         self.after_llm_hooks = []
+        self.usage_hooks = []
         self.tool_output_converters = {}
         self.tool_input_converters = {}
         self.before_tool_hooks = []
         self.after_tool_hooks = []
         self.final_answer_extractor = None
         self.checkpoint_callback = None
+
+        if agent_ctx.cw.compactor is not None:
+            self._check_summarizes_itself()
 
         self._final_answer_tool = self._make_final_answer_tool()
         if final_answer_as_tool_call:
@@ -331,6 +337,20 @@ class AgentLoop[CtxT]:
                     "final-answer tool; tool names must be unique."
                 )
             agent_ctx.tools[self._final_answer_tool.name] = self._final_answer_tool
+
+    def _check_summarizes_itself(self) -> None:
+        schema = self.llm_output_schema
+        if schema is not None and not is_str_type(schema):
+            raise ValueError(
+                f"Agent {self.agent_name!r} cannot enable compaction: it writes "
+                "its own summaries, and its replies follow a structured output "
+                "schema."
+            )
+        if self.force_react_mode:
+            raise ValueError(
+                f"Agent {self.agent_name!r} cannot enable compaction: it writes "
+                "its own summaries, and force_react_mode can require a tool call."
+            )
 
     @property
     def agent_ctx(self) -> AgentContext:
@@ -387,8 +407,13 @@ class AgentLoop[CtxT]:
     async def on_after_llm(
         self, response: Response, *, exec_id: str, turn: int
     ) -> None:
+        await self.on_usage(response, exec_id=exec_id)
         for hook in self.after_llm_hooks:
             await hook(response=response, exec_id=exec_id, turn=turn)
+
+    async def on_usage(self, response: Response, *, exec_id: str) -> None:
+        for hook in self.usage_hooks:
+            await hook(response, exec_id=exec_id)
 
     async def on_before_tool(
         self, *, tool_calls: Sequence[FunctionToolCallItem], exec_id: str
@@ -734,16 +759,11 @@ class AgentLoop[CtxT]:
             # The view overflowed the window despite (or without) proactive
             # compaction. Force a fold and retry once; if nothing can be
             # folded, surface the error.
-            fold = await self.cw.maybe_compact(exec_id=exec_id, force=True)
-            if fold is None:
+            folds_before = len(self.cw.folds)
+            async for event in self.maybe_compact(exec_id=exec_id, force=True):
+                yield event
+            if len(self.cw.folds) == folds_before:
                 raise
-            yield self.cw.compaction_event(
-                fold, source=self.agent_name, exec_id=exec_id
-            )
-            logger.warning(
-                "agent '%s' hit the context window; compacted and retrying",
-                self.agent_name,
-            )
             # Anything streamed for the failed attempt is superseded, exactly
             # as after an LLM-layer retry. Each retry layer counts its own
             # attempts, and this one retries once.
@@ -760,6 +780,44 @@ class AgentLoop[CtxT]:
                 extra_llm_settings=extra_llm_settings,
             ):
                 yield event
+
+    # --- Compaction ---
+
+    async def maybe_compact(
+        self, *, exec_id: str, force: bool = False
+    ) -> AsyncIterator[Event[Any]]:
+        """
+        Fold the conversation if the agent's compactor finds a fold due
+        (:meth:`~grasp_agents.context.Compactor.compact`), summarized on the
+        agent's own request or by its compaction summarizer; ``force`` on the
+        context-window-error path. A no-op without compaction.
+        """
+        compactor = self.cw.compactor
+        if compactor is None:
+            return
+
+        async def account(response: Response) -> None:
+            self.ctx.usage_tracker.update(
+                agent_name=self.agent_name, responses=[response]
+            )
+            await self.on_usage(response, exec_id=exec_id)
+
+        tools = self._agent_ctx.tools
+        async for event in compactor.compact(
+            agent_ctx=self._agent_ctx,
+            ctx=self.ctx,
+            llm=self._llm,
+            agent_name=self.agent_name,
+            exec_id=exec_id,
+            tool_choice=self._compute_tool_choice(had_tool_calls=False)
+            if tools
+            else None,
+            output_schema=self.llm_output_schema,
+            stream=self.stream_llm,
+            force=force,
+            on_response=account,
+        ):
+            yield event
 
     # --- Tool calling ---
 
@@ -1698,6 +1756,13 @@ class AgentLoop[CtxT]:
                     async for event in self._await_bg_tasks():
                         yield event
 
+            # Compaction: fold the conversation if the view outgrew the
+            # compaction threshold (no-op without a compactor), before new input
+            # is delivered, so the summary never covers it.
+            folds_before = len(self.cw.folds)
+            async for event in self.maybe_compact(exec_id=exec_id):
+                yield event
+
             # Turn-boundary delivery: the next resident inbox message as a user
             # turn, then the background tasks' live progress (bubbled events,
             # mirrored to the .grasp logs) and any completions.
@@ -1712,20 +1777,16 @@ class AgentLoop[CtxT]:
             async for event in self._drain_bg_completions(exec_id=exec_id):
                 yield event
 
-            if len(self.cw.transcript) > delivered_from:
+            if (
+                len(self.cw.transcript) > delivered_from
+                or len(self.cw.folds) > folds_before
+            ):
                 # Side-channel input is made durable before the turn responds to
                 # it, exactly like a step's input; the save also acks the inbox
-                # message and flips the delivered tasks' records.
+                # message and flips the delivered tasks' records. A new fold is
+                # saved too, so a crash doesn't re-run the summary.
                 await self.checkpoint(
                     turn=self.turn, location=AgentCheckpointLocation.AFTER_INPUT
-                )
-
-            # Compaction: fold an old span before generating if the view
-            # approaches the budget (no-op without a compactor / under budget).
-            fold = await self.cw.maybe_compact(exec_id=exec_id)
-            if fold is not None:
-                yield self.cw.compaction_event(
-                    fold, source=self.agent_name, exec_id=exec_id
                 )
 
             yield TurnStartEvent(
@@ -1819,8 +1880,8 @@ class AgentLoop[CtxT]:
         class FinalAnswerTool(BaseTool[self.final_answer_type, None, Any]):
             name = "final_answer"
             description = (
-                "You must call this tool to provide the final answer. "
-                "DO NOT output your answer before calling the tool. "
+                "Call this tool to give your final answer to the task. Do not "
+                "write the answer as text before calling it."
             )
 
             async def _run(
@@ -1844,7 +1905,7 @@ class AgentLoop[CtxT]:
         if usage is not None and usage.input_tokens:
             # Anchor the compaction budget on the provider's exact reported count
             # for the view just sent.
-            self.cw.note_response_usage(usage.input_tokens)
+            self.cw.note_response_usage(usage)
 
         self.ctx.usage_tracker.update(agent_name=self.agent_name, responses=[response])
 
