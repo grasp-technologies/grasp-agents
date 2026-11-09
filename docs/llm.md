@@ -238,10 +238,10 @@ OpenAI's TTL is set per request through the `prompt_cache_options` setting.
 The MCP instructions section carries a breakpoint by default.
 
 `AnthropicLLM` caches the conversation itself through the top-level
-`cache_control` setting (`AnthropicLLMSettings`). On the Anthropic API it
-defaults to `{"type": "ephemeral"}` (5 minutes); set `{"type": "ephemeral",
-"ttl": "1h"}` for an hour, or `None` to turn it off. On Bedrock and Vertex it is
-off unless set. Every request then writes a cache entry ending at its last
+`cache_control` setting (`AnthropicLLMSettings`). It defaults to
+`{"type": "ephemeral"}` (5 minutes) on every platform; set `{"type": "ephemeral",
+"ttl": "1h"}` for an hour, or `None` to turn it off. Bedrock rejects the setting
+for Claude Opus 4.6 and older models with a 400: set `None` for those. Every request then writes a cache entry ending at its last
 block, and the next request in an agent loop, compaction's summary request
 included, reads it. Anthropic finds an earlier entry only within about 20 blocks
 of a request's end, so a turn that adds more blocks than that (many parallel

@@ -100,9 +100,10 @@ class AnthropicLLMSettings(CloudLLMSettings, total=False):
 
     # Caches the whole prompt up to its last block on every request, so each
     # turn of an agent loop (and a compaction summary request) reads the
-    # conversation the previous request wrote. On the Anthropic API it defaults
-    # to ``{"type": "ephemeral"}`` (5 minutes); ``None`` turns it off. On Bedrock
-    # and Vertex it is off unless set.
+    # conversation the previous request wrote. Defaults to
+    # ``{"type": "ephemeral"}`` (5 minutes) on every platform; ``None`` turns it
+    # off. Bedrock rejects it for Claude Opus 4.6 and older models: set ``None``
+    # there.
     cache_control: CacheControlEphemeralParam | None
 
     metadata: MetadataParam | None
@@ -294,7 +295,7 @@ class AnthropicLLM(CloudLLM):
 
         merged: dict[str, Any] = dict(self.llm_settings or {})
         merged.update(extra_llm_settings)
-        if "cache_control" not in merged and self.platform is None:
+        if "cache_control" not in merged:
             merged["cache_control"] = _DEFAULT_CACHE_CONTROL
         if merged.get("cache_control", ...) is None:
             del merged["cache_control"]

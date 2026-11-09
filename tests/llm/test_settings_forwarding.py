@@ -66,7 +66,7 @@ def test_anthropic_caches_the_conversation_by_default(
     assert "cache_control" not in off._make_api_input([]).get("extra_settings", {})
 
 
-def test_anthropic_on_bedrock_does_not_cache_by_default(
+def test_anthropic_on_bedrock_caches_by_default_unless_turned_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from unittest.mock import Mock
@@ -74,10 +74,16 @@ def test_anthropic_on_bedrock_does_not_cache_by_default(
     from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
 
     monkeypatch.setattr("anthropic.AsyncAnthropicBedrock", Mock())
-    llm = AnthropicLLM(
-        model_name="anthropic.claude-sonnet-4-5-20250929-v1:0", platform="bedrock"
+    model = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+    llm = AnthropicLLM(model_name=model, platform="bedrock")
+    assert llm._make_api_input([])["extra_settings"]["cache_control"] == {
+        "type": "ephemeral"
+    }
+
+    off = AnthropicLLM(
+        model_name=model, platform="bedrock", llm_settings={"cache_control": None}
     )
-    assert "cache_control" not in llm._make_api_input([]).get("extra_settings", {})
+    assert "cache_control" not in off._make_api_input([]).get("extra_settings", {})
 
 
 @pytest.mark.asyncio
