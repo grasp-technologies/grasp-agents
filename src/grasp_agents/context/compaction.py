@@ -2,9 +2,9 @@
 Built-in context-window compaction.
 
 :class:`Compactor` compacts the agent's conversation
-(``agent.add_compaction()``): when the view outgrows its threshold, it folds
-everything before the most recent rounds into a summary. The agent's own model
-writes the summary, unless a custom compactor is registered: the agent's
+(``LLMAgent(enable_compaction=True)``): when the view outgrows its threshold, it
+folds everything before the most recent rounds into a summary. The agent's own
+model writes the summary, unless a compaction summarizer is set: the agent's
 current request — same view, tools and settings — with one
 ``<compaction_request>`` message (:func:`compaction_request`) appended, so the
 provider's prompt cache serves the shared prefix. The resulting
@@ -266,12 +266,14 @@ def keep_recent_start(
     at least the latest round; without it the window may be empty
     (``len(messages)``).
     """
-    starts = round_starts(messages)
+    # Where the window may begin: each round start, and, when it may be empty,
+    # the end of the log.
+    cuts = round_starts(messages)
     if not keep_latest:
-        starts = [*starts, len(messages)]
-    if len(starts) <= 1:
-        return starts[0] if starts else 0
-    candidates = starts[-max(1, keep_recent_rounds + (not keep_latest)) :]
+        cuts.append(len(messages))
+    if len(cuts) <= 1:
+        return cuts[0] if cuts else 0
+    candidates = cuts[-max(1, keep_recent_rounds + (not keep_latest)) :]
     if keep_recent_tokens is None:
         return candidates[0]
 
@@ -427,8 +429,8 @@ def make_compaction_section(
 ) -> SystemPromptSection:
     """
     The system-prompt section telling the model how to read a compaction
-    summary. ``agent.add_compaction()`` registers it. Its text is constant, so
-    it is cache-stable.
+    summary. An agent with compaction enabled registers it. Its text is
+    constant, so it is cache-stable.
     """
 
     def compute(**_: Any) -> str:
@@ -536,12 +538,12 @@ async def _generate(
 class Compactor(Budgeted):
     """
     Folds the agent's conversation into a summary under context-window
-    pressure: ``agent.add_compaction(Compactor(...))``.
+    pressure: ``LLMAgent(enable_compaction=True, compactor=Compactor(...))``.
 
     It folds once the view outgrows :attr:`threshold`: the budget's soft
     limit, lowered to ``target_tokens`` when set. A target well below the window
     keeps every request cheaper and faster, at the cost of compacting sooner.
-    ``budget`` is the agent's; the agent injects it on registration when
+    ``budget`` is the agent's; the agent injects it at construction when
     omitted.
 
     The fold covers the log from its start up to the recent window: the last
@@ -556,8 +558,9 @@ class Compactor(Budgeted):
 
     The agent's own model writes the summary (:meth:`summarize`), prompted by
     ``instructions`` (default :data:`COMPACTION_INSTRUCTIONS`), unless a
-    :class:`~grasp_agents.hooks.CustomCompactor` is registered. One instance
-    serves one agent.
+    :class:`~grasp_agents.hooks.CompactionSummarizer` is set. To change when
+    it folds or what it keeps beyond these settings, subclass it and override
+    :meth:`plan`. One instance serves one agent.
     """
 
     def __init__(
@@ -698,8 +701,8 @@ class Compactor(Budgeted):
         :class:`CompactionStartEvent`, gets the summary, records the fold in
         ``agent_ctx.cw`` and yields a :class:`CompactionDoneEvent`.
 
-        The agent's custom compactor writes the summary when one is
-        registered; otherwise ``llm`` does (:meth:`summarize`), with the
+        The agent's compaction summarizer writes the summary when one is
+        set; otherwise ``llm`` does (:meth:`summarize`), with the
         agent's ``tool_choice`` and ``output_schema``, and ``on_response``
         sees each of its responses, for usage accounting. When no summary comes
         back the turn proceeds without a fold. After
@@ -731,11 +734,11 @@ class Compactor(Budgeted):
         )
 
         started = time.monotonic()
-        custom = cw.custom_compactor
+        summarizer = cw.compaction_summarizer
         failure = "no summary came back"
         try:
-            if custom is not None:
-                summary = await custom(agent_ctx=agent_ctx, ctx=ctx)
+            if summarizer is not None:
+                summary = await summarizer(agent_ctx=agent_ctx, ctx=ctx)
             else:
                 summary = await self.summarize(
                     llm,

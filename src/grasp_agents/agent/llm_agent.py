@@ -46,7 +46,7 @@ from grasp_agents.hooks import (
     AfterToolHook,
     BeforeLlmHook,
     BeforeToolHook,
-    CustomCompactor,
+    CompactionSummarizer,
     FinalAnswerExtractor,
     InitialContextBuilder,
     InputContentBuilder,
@@ -83,10 +83,7 @@ from grasp_agents.types.message import USER_SENDER
 from grasp_agents.types.response import Response
 from grasp_agents.utils.callbacks import is_method_overridden
 from grasp_agents.utils.io import get_prompt
-from grasp_agents.utils.validation import (
-    is_str_type,
-    validate_obj_from_json_or_py_string,
-)
+from grasp_agents.utils.validation import validate_obj_from_json_or_py_string
 
 from .agent_context import AgentContext
 from .agent_loop import AgentLoop
@@ -203,6 +200,16 @@ class LLMAgent[InT, OutT, CtxT](
         # giving the agent a clock for deadlines / staleness / "now". Pass an
         # ``InputAttachment`` to customize. Default False.
         time_aware: "bool | InputAttachment" = False,
+        # Compaction toggle (opt-in). When True, the conversation before the
+        # recent rounds is folded into a summary written by the agent's own
+        # model once the view outgrows the ``compactor``'s threshold, and the
+        # ``compaction`` system-prompt section tells the model how to read
+        # summaries. ``compactor`` configures it (default: a ``Compactor``
+        # with the budget derived from the model). Fixed for the agent's
+        # lifetime. The agent's replies must be able to be plain text: not
+        # allowed with a structured output schema or ``force_react_mode``.
+        enable_compaction: bool = False,
+        compactor: Compactor | None = None,
         # Tracing on/off
         tracing_enabled: bool = True,
         # Fields to exclude from tracing input events
@@ -449,6 +456,14 @@ class LLMAgent[InT, OutT, CtxT](
             explicit_tool_names=explicit_tool_names,
             skill_filter=self._skill_filter,
         )
+        if compactor is not None and not enable_compaction:
+            raise ValueError(
+                f"Agent {self.name!r} got a compactor without enable_compaction=True."
+            )
+        if enable_compaction:
+            self._agent_ctx.cw.set_compactor(compactor or Compactor())
+            self._prompt_builder.add_system_prompt_section(make_compaction_section())
+
         self._loop: AgentLoop[CtxT] = AgentLoop[CtxT](
             llm=llm,
             ctx=self._ctx,
@@ -1668,7 +1683,7 @@ class LLMAgent[InT, OutT, CtxT](
             if not self.reset_transcript_on_run:
                 # Fold before the step's input lands: the summary never covers
                 # it, and its input attachments see the summarized view.
-                async for event in self._loop.compact(exec_id=exec_id):
+                async for event in self._loop.maybe_compact(exec_id=exec_id):
                     yield event
             # Start a fresh step: append the input message to the transcript
             messages_to_expose.extend(
@@ -1846,55 +1861,22 @@ class LLMAgent[InT, OutT, CtxT](
         self._agent_ctx.cw.add_view_projector(func)
         return func
 
-    def add_compaction(self, compactor: Compactor | None = None) -> Compactor:
-        """
-        Enable context compaction: once the view outgrows the ``compactor``'s
-        threshold, the conversation before the recent window is folded into a
-        summary. By default a :class:`~grasp_agents.context.Compactor` with
-        the budget derived from this agent's model; pass a configured one to
-        set a ``target_tokens`` threshold, the kept window, or the
-        summarization prompt. Also adds the system-prompt section that tells
-        the model how to read its summaries.
-
-        The agent's own model writes the summaries, from its own request, so
-        its reply must be able to be plain text: register a custom compactor
-        first (:meth:`add_custom_compactor`) for an agent with a structured
-        output schema or ``force_react_mode``.
-        """
-        if self._agent_ctx.cw.custom_compactor is None:
-            self._check_summarizes_itself()
-        compactor = compactor or Compactor()
-        self._agent_ctx.cw.set_compactor(compactor)
-        self.add_system_prompt_section(make_compaction_section())
-        return compactor
-
-    def add_custom_compactor(
-        self, func: CustomCompactor[CtxT]
-    ) -> CustomCompactor[CtxT]:
+    def set_compaction_summarizer(
+        self, func: CompactionSummarizer[CtxT]
+    ) -> CompactionSummarizer[CtxT]:
         """
         Write compaction summaries with ``func`` instead of the agent's own
-        model. Enables compaction with the default compactor unless
-        :meth:`add_compaction` already set one. Single-slot.
+        model. Only the summary changes: when to fold and what to keep stay
+        with the agent's compactor. Requires ``enable_compaction=True``.
+        Single-slot.
         """
-        self._agent_ctx.cw.custom_compactor = func
         if self._agent_ctx.cw.compactor is None:
-            self.add_compaction()
+            raise ValueError(
+                f"Agent {self.name!r} has no compaction to summarize for: "
+                "construct it with enable_compaction=True."
+            )
+        self._agent_ctx.cw.compaction_summarizer = func
         return func
-
-    def _check_summarizes_itself(self) -> None:
-        schema = self._loop.llm_output_schema
-        if schema is not None and not is_str_type(schema):
-            raise ValueError(
-                f"Agent {self.name!r} cannot write its own compaction summaries: "
-                "its replies follow a structured output schema. Register a "
-                "custom compactor first (add_custom_compactor)."
-            )
-        if self._loop.force_react_mode:
-            raise ValueError(
-                f"Agent {self.name!r} cannot write its own compaction summaries: "
-                "force_react_mode can require a tool call. Register a custom "
-                "compactor first (add_custom_compactor)."
-            )
 
     def add_before_llm_hook(self, func: BeforeLlmHook) -> BeforeLlmHook:
         self._loop.before_llm_hooks.append(func)

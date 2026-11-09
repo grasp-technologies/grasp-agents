@@ -18,7 +18,7 @@ calls.
 ## Principles
 
 1. **Opt-in layers.** Every capability beyond the loop is off until you wire it
-   (`enable_memory=`, `enable_skills=`, `checkpoint_store=`, `add_compaction()`,
+   (`enable_memory=`, `enable_skills=`, `checkpoint_store=`, `enable_compaction=`,
    an execution environment, …). Defaults never compact, persist, execute code
    or read files on your behalf.
 2. **Typed end to end.** Every unit is a `Processor[InT, OutT, CtxT]`, generic

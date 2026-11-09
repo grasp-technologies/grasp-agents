@@ -91,6 +91,12 @@ def build_copilot(
         checkpoint_store=FileCheckpointStore(_CHECKPOINTS),
         session_key="compaction-demo",
     )
+    # Normally compaction is one flag — ``enable_compaction=True`` — with the
+    # budget derived from the model. This demo passes a compactor with a tiny
+    # artificial window so summarization fires within a couple of questions.
+    budget = ContextBudget(
+        model=model, max_input_tokens=ARTIFICIAL_WINDOW, buffer_tokens=BUFFER_TOKENS
+    )
     agent = LLMAgent[str, str, None](
         name="researcher",
         ctx=ctx,
@@ -99,15 +105,8 @@ def build_copilot(
         sys_prompt=_SYS,
         max_turns=12,
         stream_llm=True,
-    )
-    # Normally compaction is one line — ``agent.add_compaction()`` — with the
-    # budget derived from the model. This demo overrides it with a tiny artificial
-    # window so summarization fires within a couple of questions.
-    budget = ContextBudget(
-        model=model, max_input_tokens=ARTIFICIAL_WINDOW, buffer_tokens=BUFFER_TOKENS
-    )
-    agent.add_compaction(
-        Compactor(budget=budget, keep_recent_rounds=KEEP_RECENT_ROUNDS)
+        enable_compaction=True,
+        compactor=Compactor(budget=budget, keep_recent_rounds=KEEP_RECENT_ROUNDS),
     )
     return agent, ctx
 

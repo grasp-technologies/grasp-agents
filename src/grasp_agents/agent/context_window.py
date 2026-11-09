@@ -32,7 +32,7 @@ from .llm_agent_transcript import LLMAgentTranscript
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from grasp_agents.hooks import CustomCompactor, ViewProjector
+    from grasp_agents.hooks import CompactionSummarizer, ViewProjector
     from grasp_agents.llm.model_info import ModelCapabilities
     from grasp_agents.types.folds import FoldSpec
     from grasp_agents.types.items import InputItem
@@ -77,11 +77,11 @@ class ContextWindowManager:
         # ``LLMAgent`` and prepended to the view; never written to the log.
         self.initial_context: list[InputItem] = []
 
-        # Stacked projector pipeline, the compactor and an optional custom
-        # compactor that writes its summaries (set via LLMAgent).
+        # Stacked projector pipeline, the compactor and an optional summarizer
+        # that writes its summaries (set via LLMAgent).
         self.view_projectors: list[ViewProjector] = []
         self.compactor: Compactor | None = None
-        self.custom_compactor: CustomCompactor[Any] | None = None
+        self.compaction_summarizer: CompactionSummarizer[Any] | None = None
 
         # Summarized log spans applied to the view; persisted, survive resume,
         # dropped past a rollback rewind.
@@ -180,7 +180,8 @@ class ContextWindowManager:
         The conversation body of the view — folds then the projector pipeline,
         without the header or pairing repair — over the log, or over its first
         ``end`` messages. Folds (summarized spans) apply first; projectors then
-        trim what remains. Both shape the view, never the log.
+        trim what remains, each given the same ``input_tokens``: the size before
+        any projector ran. Both shape the view, never the log.
         """
         body: Sequence[InputItem] = (
             self._messages if end is None else self._messages[:end]

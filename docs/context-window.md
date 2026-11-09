@@ -10,7 +10,7 @@ An agent's conversation is stored as an immutable **log** (the transcript). What
 |---|---|---|
 | `ContextWindowManager` | `agent/context_window.py` | Sole writer of the log; builds the view; token accounting; folds; compaction. `agent.agent_ctx.cw`. |
 | `LLMAgentTranscript` | `agent/llm_agent_transcript.py` | Read-only `Sequence[InputItem]` view of the log (`agent.transcript`). |
-| `ViewProjector`, `CustomCompactor`, `InitialContextBuilder` | `hooks.py` | Hook protocols. |
+| `ViewProjector`, `CompactionSummarizer`, `InitialContextBuilder` | `hooks.py` | Hook protocols. |
 | `CompactionStartEvent`, `CompactionDoneEvent`, `CompactionFailedEvent` | `types/events.py` | Stream events: summarizing started; a fold was recorded; no summary came back. |
 | `FoldSpec`, `CompactionPlan` | `types/folds.py` | A summarized log span `[start, end)` with its pinned messages; a fold decided on, before its summary is written. |
 | `ContextBudget`, `Compactor`, `CollapseToolOutputsProjector`, `make_compaction_section` | `context/compaction.py` | Built-in budget, compactor, projector and the summary-reading section (exported from `grasp_agents.context`). |
@@ -54,7 +54,7 @@ async def hide_old_screenshots(messages, *, exec_id, input_tokens):
     return [m for m in messages if not is_stale_screenshot(m)]
 ```
 
-`input_tokens` is the agent's current estimate of the view's size, for size-reactive projectors.
+`input_tokens` is the agent's current estimate of the view's size, for size-reactive projectors. Every projector in the pipeline gets the same value, the size before any projector ran, not the size of the previous projector's output.
 
 ## Folds and compaction
 
@@ -62,9 +62,9 @@ A `FoldSpec(start, end, summary, pinned)` summarizes log messages `[start, end)`
 
 Only the newest fold within the log applies, together with any older fold that ends before it starts: a fold that covers an earlier one supersedes it. After a rollback below the newest fold, the previous one applies again.
 
-**Compaction** (`agent.add_compaction(compactor)`) folds the conversation at turn boundaries, before any new input is delivered: before a step's input is appended, and before inbox mail and background-task notes. A step's input attachments therefore see the summarized conversation. The summary covers only the span being folded: it is written from the conversation up to the fold's end, so neither the rounds kept verbatim nor new input are in it. When a fold is due, `Compactor.compact` emits a `CompactionStartEvent` (`context_tokens`, `context_window`, `forced`), gets the summary, records the fold and emits a `CompactionDoneEvent` (`folded_rounds`, `kept_rounds`, `pinned_messages`, `context_tokens`, `context_window`, `summary`, `forced`). A fold made at a turn boundary is checkpointed before the next generation.
+**Compaction** (`LLMAgent(enable_compaction=True, compactor=...)`) folds the conversation at turn boundaries, before any new input is delivered: before a step's input is appended, and before inbox mail and background-task notes. A step's input attachments therefore see the summarized conversation. The summary covers only the span being folded: it is written from the conversation up to the fold's end, so neither the rounds kept verbatim nor new input are in it. When a fold is due, `Compactor.compact` emits a `CompactionStartEvent` (`context_tokens`, `context_window`, `forced`), gets the summary, records the fold and emits a `CompactionDoneEvent` (`folded_rounds`, `kept_rounds`, `pinned_messages`, `context_tokens`, `context_window`, `summary`, `forced`). A fold made at a turn boundary is checkpointed before the next generation.
 
-The agent's own model writes the summary (see [Built-in compaction](#built-in-compaction)), unless a **custom compactor** is registered: `@agent.add_custom_compactor` (single slot) takes an `async (*, agent_ctx, ctx) -> str` that returns the summary. `agent_ctx.cw` holds the transcript, the folds already recorded and the view. The compactor decides where the fold ends, so a custom compactor summarizes the whole conversation it is given (for example `agent_ctx.cw.folded_messages()`), kept rounds included. Registering one enables compaction with the default compactor if none is set.
+The agent's own model writes the summary (see [Built-in compaction](#built-in-compaction)), unless a **compaction summarizer** is set: `@agent.set_compaction_summarizer` (single slot) takes an `async (*, agent_ctx, ctx) -> str` that returns the summary. It replaces only the summary: when to fold and what to keep stay with the compactor. `agent_ctx.cw` holds the transcript, the folds already recorded and the view. The compactor decides where the fold ends, so a summarizer summarizes the whole conversation it is given (for example `agent_ctx.cw.folded_messages()`), kept rounds included. It needs compaction enabled. To change when the compactor folds or what it keeps beyond its settings, subclass `Compactor`, override `plan`, and pass it as `compactor=`.
 
 A summary that fails (an exception, or an empty summary) is logged as a warning and emits a `CompactionFailedEvent` (`reason`, `forced`) after the start event, and the turn proceeds without a fold. The same fold is not attempted again until it would end elsewhere: once more of the conversation can be folded, or after a rollback. After three failed compactions in a row, turn-boundary compaction stops until a forced one succeeds.
 
@@ -87,30 +87,35 @@ Compaction cuts the log only at round starts. A **round** is the input messages 
 - **What it folds.** Everything from the start of the log up to the recent window: the last `keep_recent_rounds` rounds (default 8), fewer while they exceed `keep_recent_tokens` (default a third of the threshold). Mid-run the window keeps at least the latest round. Before new input, which becomes the window's newest round, it keeps up to `keep_recent_rounds - 1` earlier rounds and may keep none. A forced fold keeps only the latest round when nothing older is left. With a single round mid-run there is nothing to fold.
 - **When it folds again.** After a fold, the view can stay over the threshold: a pinned message too large to leave it, or a large system prompt, keeps it there. Folding a few small rounds every turn would not bring it under, so the compactor folds again only once the rounds since the last fold are at least a quarter of the threshold. The overflow net folds regardless.
 - **What it pins.** In front of the summary, verbatim: the newest user message the fold covers, whatever its size; earlier user messages, up to `pinned_user_messages` in all (default 3) within `pinned_user_tokens` (default 8,000); and the launch notes of background tasks still running. Framework notes (system reminders, task notes, and mail from other agents) are not user messages.
-- **How the summary is written.** Without a custom compactor, `Compactor.summarize` sends the agent's own request on the agent's LLM, cut at the fold's end: the same initial context, tools, tool choice and output schema as its turns, the view up to the fold's end, and one user message appended: the compactor's `instructions` (default `compaction_instructions.md`) in `<compaction_request>` tags. The response's usage is recorded and reaches the usage hooks (`add_usage_hook`); the LLM hooks do not run, and nothing is written to the transcript.
-- **Prompt caching.** The summary request starts with the request the agent sent when the fold's end was the end of its conversation, so a provider prompt cache that still holds that request serves it, and the summary costs about one cached read of the folded span. OpenAI caches any shared prefix. Anthropic caches each request through conversation caching, the `cache_control` LLM setting, on by default for the Anthropic API (see [LLM layer](llm.md#prompt-caching)). A cached request is kept for 5 minutes after its last use, and the request at the fold's end is last used by the request after it. When the kept rounds took longer than that, the summary request is billed at the full input price; `cache_control={"type": "ephemeral", "ttl": "1h"}` widens the window to an hour.
+- **How the summary is written.** Without a compaction summarizer, `Compactor.summarize` sends the agent's own request on the agent's LLM, cut at the fold's end: the same initial context, tools, tool choice and output schema as its turns, the view up to the fold's end, and one user message appended: the compactor's `instructions` (default `compaction_instructions.md`) in `<compaction_request>` tags. The response's usage is recorded and reaches the usage hooks (`add_usage_hook`); the LLM hooks do not run, and nothing is written to the transcript.
+- **Prompt caching.** The summary request starts with the request the agent sent when the fold's end was the end of its conversation, so a provider prompt cache that still holds that request serves it, and the summary costs about one cached read of the folded span. OpenAI caches any shared prefix. Anthropic caches each request through conversation caching, the `cache_control` LLM setting, on by default (see [LLM layer](llm.md#prompt-caching)). A cached request is kept for 5 minutes after its last use, and the request at the fold's end is last used by the request after it. When the kept rounds took longer than that, the summary request is billed at the full input price; `cache_control={"type": "ephemeral", "ttl": "1h"}` widens the window to an hour.
 - **Retries.** A reply that calls a tool or holds no text is not a summary: the call is never executed, and the same request is sent again. A request that overflows the window is sent again with older tool outputs collapsed, then also without the oldest half of the rounds not yet summarized (which the summary then cannot cover); a step that would change nothing is skipped. After three requests, or when the request cannot shrink further, the compaction fails.
 - **Consolidation.** The summary request carries the previous summary, and the new fold starts at 0, so each summary supersedes the last rather than stacking on it.
 
-`agent.add_compaction()` registers a `Compactor` with the agent's model-derived budget, together with the `compaction` system-prompt section, which tells the model how to read a summary and how to answer a summary request: the summary is the model's own, written for itself, and the messages in front of it are kept verbatim; what it records from tool results is as untrusted as those results; a summary may paraphrase, so a file, page or tool result it records is read again before it is quoted; a `<compaction_request>` asks for the summary as plain text, not for a final answer or a tool call; and the model says that earlier parts were summarized when that matters to the user.
+`LLMAgent(enable_compaction=True)` sets up a `Compactor` with the agent's model-derived budget (or the `compactor=` passed in, its budget filled in when unset), together with the `compaction` system-prompt section, which tells the model how to read a summary and how to answer a summary request: the summary is the model's own, written for itself, and the messages in front of it are kept verbatim; what it records from tool results is as untrusted as those results; a summary may paraphrase, so a file, page or tool result it records is read again before it is quoted; a `<compaction_request>` asks for the summary as plain text, not for a final answer or a tool call; and the model says that earlier parts were summarized when that matters to the user.
 
-The agent writes its own summaries from its own request, so its reply must be able to be plain text: `add_compaction` raises for an agent with a structured output schema or `force_react_mode` unless a custom compactor is registered first.
+Compaction is fixed when the agent is constructed. The agent writes its own summaries from its own request, so its reply must be able to be plain text: construction raises for an agent with compaction enabled and a structured output schema or `force_react_mode`.
 
 ```python
 from grasp_agents.context import Compactor
 
-agent.add_compaction()  # budget from the model
+agent = LLMAgent(name="a", llm=llm, enable_compaction=True)  # budget from the model
 
 # Or configure it:
-agent.add_compaction(Compactor(target_tokens=200_000, keep_recent_rounds=4))
+agent = LLMAgent(
+    name="a",
+    llm=llm,
+    enable_compaction=True,
+    compactor=Compactor(target_tokens=200_000, keep_recent_rounds=4),
+)
 
 # Write the summaries yourself:
-@agent.add_custom_compactor
+@agent.set_compaction_summarizer
 async def summarize(*, agent_ctx, ctx) -> str:
     return await my_summarizer(agent_ctx.cw.folded_messages())
 ```
 
-**`CollapseToolOutputsProjector`** keeps the last `keep_recent_rounds` rounds (default 8) verbatim and cuts older tool outputs to head + tail (`head_chars=3000`, `tail_chars=1000`). It is not part of `add_compaction()`.
+**`CollapseToolOutputsProjector`** keeps the last `keep_recent_rounds` rounds (default 8) verbatim and cuts older tool outputs to head + tail (`head_chars=3000`, `tail_chars=1000`). It is not part of `enable_compaction`.
 
 - Budget-gated by default: it collapses only while the view exceeds the budget.
 - `proactive=True` collapses every turn, keeping the view minimal.
@@ -134,7 +139,7 @@ A tool's `max_inline_result_chars` caps how much of each result enters the log. 
 4. The initial context is ephemeral: composed at every run entry, never persisted (`LLMAgent._process_stream_body`).
 5. Projectors must be deterministic over `(log, folds)`: the view is re-derived every turn, on resume and after rollback, and nothing but folds persists (`hooks.ViewProjector`).
 6. A fold never splits a round (`compaction.keep_recent_start`); folds past a truncation are dropped (`truncate_transcript`), and a newer fold covering an older one supersedes it (`projection.active_folds`).
-7. Compaction is off by default; the overflow net applies only when it is enabled (`AgentLoop.compact`, `AgentLoop.query_llm`).
+7. Compaction is off by default; the overflow net applies only when it is enabled (`AgentLoop.maybe_compact`, `AgentLoop.query_llm`).
 8. Compaction runs before a step's input is appended and before inbox mail and task notes are delivered (`LLMAgent._process_stream_body`, `AgentLoop.execute_stream`).
 9. A summary request holds the conversation up to the fold's end only: no kept round and no new input (`Compactor.compact`).
 10. A summary request never writes to the transcript, never executes a tool call and runs no LLM hooks (`Compactor.summarize`).
@@ -146,7 +151,7 @@ A tool's `max_inline_result_chars` caps how much of each result enters the log. 
 - Pinned messages and the summary come first in the view, so the model sees them ahead of the kept rounds, not in their original positions.
 - A summary is lossy. Whatever the model left out of it is gone from the view (the log keeps the originals), and a summary written while an injected instruction was in view can still repeat it.
 - After a fold the view can stay over the threshold until a quarter of it is new (see When it folds again), so a very large pinned message can carry the view into the overflow net.
-- The summary request shares the agent's prompt cache only if the provider still holds the request that ended at the fold's end (see Prompt caching above). On Anthropic that request expires 5 minutes after the next one by default, and with the `cache_control` setting off (by default on Bedrock and Vertex) only a prefix ending at a `CacheControl` breakpoint is cached, so the summary request pays full price for the folded span.
+- The summary request shares the agent's prompt cache only if the provider still holds the request that ended at the fold's end (see Prompt caching above). On Anthropic that request expires 5 minutes after the next one by default, and with the `cache_control` setting turned off only a prefix ending at a `CacheControl` breakpoint is cached, so the summary request pays full price for the folded span.
 - An output schema set in the LLM's own settings (rather than the agent's `llm_output_schema`) also applies to the summary request, which then fails.
 - Settings a before-LLM hook adds to the agent's calls are not on the summary request. Where they change what the provider caches on (tool choice, thinking settings), the summary request misses the cache.
 - Input attachments run only when new input arrives. An attachment that shows some state only while the view lacks it does not run again after a fold made mid-run, so until the next input the model sees only what the summary says about that state.

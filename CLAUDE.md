@@ -213,7 +213,7 @@ The primary path is decorator hooks on an `LLMAgent` instance. Subclassing with
 @agent.add_output_parser             # LLM text → typed output (single slot)
 @agent.add_final_answer_extractor    # decide when a turn's output is final (single slot)
 @agent.add_view_projector            # per-turn model-facing view of the log (stacks)
-@agent.add_custom_compactor          # write compaction summaries instead of the model (single slot)
+@agent.set_compaction_summarizer     # write compaction summaries instead of the model (single slot)
 @agent.add_before_llm_hook           # adjust settings before each LLM call of a turn (stacks)
 @agent.add_after_llm_hook            # observe a turn's responses (stacks)
 @agent.add_usage_hook                # every paid response, compaction summaries included (stacks)
@@ -221,7 +221,7 @@ The primary path is decorator hooks on an `LLMAgent` instance. Subclassing with
 @agent.add_after_tool_hook           # observe results (stacks)
 @agent.add_tool_input_converter(tool_name=...)
 @agent.add_tool_output_converter(tool_name=...)
-agent.add_compaction()               # opt-in compaction: a Compactor (+ its prompt section)
+LLMAgent(enable_compaction=True, compactor=...)  # opt-in compaction, fixed at construction
 agent.add_system_prompt_section(...) / agent.add_input_attachment(...)
 ```
 

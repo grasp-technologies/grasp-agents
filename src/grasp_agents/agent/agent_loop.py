@@ -325,6 +325,9 @@ class AgentLoop[CtxT]:
         self.final_answer_extractor = None
         self.checkpoint_callback = None
 
+        if agent_ctx.cw.compactor is not None:
+            self._check_summarizes_itself()
+
         self._final_answer_tool = self._make_final_answer_tool()
         if final_answer_as_tool_call:
             if self._final_answer_tool.name in agent_ctx.tools:
@@ -334,6 +337,20 @@ class AgentLoop[CtxT]:
                     "final-answer tool; tool names must be unique."
                 )
             agent_ctx.tools[self._final_answer_tool.name] = self._final_answer_tool
+
+    def _check_summarizes_itself(self) -> None:
+        schema = self.llm_output_schema
+        if schema is not None and not is_str_type(schema):
+            raise ValueError(
+                f"Agent {self.agent_name!r} cannot enable compaction: it writes "
+                "its own summaries, and its replies follow a structured output "
+                "schema."
+            )
+        if self.force_react_mode:
+            raise ValueError(
+                f"Agent {self.agent_name!r} cannot enable compaction: it writes "
+                "its own summaries, and force_react_mode can require a tool call."
+            )
 
     @property
     def agent_ctx(self) -> AgentContext:
@@ -743,7 +760,7 @@ class AgentLoop[CtxT]:
             # compaction. Force a fold and retry once; if nothing can be
             # folded, surface the error.
             folds_before = len(self.cw.folds)
-            async for event in self.compact(exec_id=exec_id, force=True):
+            async for event in self.maybe_compact(exec_id=exec_id, force=True):
                 yield event
             if len(self.cw.folds) == folds_before:
                 raise
@@ -766,13 +783,14 @@ class AgentLoop[CtxT]:
 
     # --- Compaction ---
 
-    async def compact(
+    async def maybe_compact(
         self, *, exec_id: str, force: bool = False
     ) -> AsyncIterator[Event[Any]]:
         """
-        Run the agent's compactor, if any, on its own request
-        (:meth:`~grasp_agents.context.Compactor.compact`); ``force`` on the
-        context-window-error path.
+        Fold the conversation if the agent's compactor finds a fold due
+        (:meth:`~grasp_agents.context.Compactor.compact`), summarized on the
+        agent's own request or by its compaction summarizer; ``force`` on the
+        context-window-error path. A no-op without compaction.
         """
         compactor = self.cw.compactor
         if compactor is None:
@@ -1742,7 +1760,7 @@ class AgentLoop[CtxT]:
             # compaction threshold (no-op without a compactor), before new input
             # is delivered, so the summary never covers it.
             folds_before = len(self.cw.folds)
-            async for event in self.compact(exec_id=exec_id):
+            async for event in self.maybe_compact(exec_id=exec_id):
                 yield event
 
             # Turn-boundary delivery: the next resident inbox message as a user

@@ -18,9 +18,8 @@ means a later registration replaces the earlier one.
 | `add_usage_hook` | `UsageHook(response, *, exec_id)` (every response the agent pays for: its turns and compaction summaries) | stacks | — |
 | `add_before_tool_hook` | `BeforeToolHook(*, tool_calls, ctx, exec_id) -> Mapping[call_id, ToolCallDecision] \| None` | stacks, most restrictive wins | `on_before_tool_impl` |
 | `add_after_tool_hook` | `AfterToolHook(*, tool_calls, tool_messages, exec_id)` | stacks | `on_after_tool_impl` |
-| `add_view_projector` | `ViewProjector(messages, *, exec_id, input_tokens) -> Sequence[InputItem]` | stacks (pipeline) | `project_view_impl` |
-| `add_compaction(compactor=None)` | registers a `Compactor` and the `compaction` system-prompt section | single | — |
-| `add_custom_compactor` | `CustomCompactor(*, agent_ctx, ctx) -> str` (async; writes compaction summaries in place of the agent's model) | single | — |
+| `add_view_projector` | `ViewProjector(messages, *, exec_id, input_tokens) -> Sequence[InputItem]` (every projector gets the same `input_tokens`, the size before any ran) | stacks (pipeline) | `project_view_impl` |
+| `set_compaction_summarizer` | `CompactionSummarizer(*, agent_ctx, ctx) -> str` (async; writes compaction summaries in place of the agent's model; needs `enable_compaction=True`) | single | — |
 | `add_initial_context_builder` | `InitialContextBuilder(messages, *, exec_id) -> Sequence[InputItem]` | single | `build_initial_context_impl` |
 | `add_input_content_builder` | `InputContentBuilder(in_args, *, exec_id) -> Content` | single | `build_input_content_impl` |
 | `add_output_parser` | `OutputParser(final_answer, *, in_args=None, exec_id) -> OutT` | single | `parse_output_impl` |
@@ -133,7 +132,7 @@ This is how you override the auto-attached ones. Built-in names:
 | `skills` | `enable_skills=True` | `skills/injection.py` |
 | `background_tasks` | always (renders nothing without backgroundable tools) | `agent/background_tasks.py` |
 | `mcp_instructions` | MCP clients | `mcp/section.py` |
-| `compaction` | `add_compaction()` | `context/compaction.py` |
+| `compaction` | `enable_compaction=True` | `context/compaction.py` |
 | `relevant_memories` (attachment) | `enable_memory=True` | `memory/injection.py` |
 | `current_time` (attachment) | `time_aware=True` or an attachment | `context/env_section.py` |
 | `team_sender` (attachment) | member of an `AgentTeam` | `agent_team/prompt.py` |

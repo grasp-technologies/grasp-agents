@@ -5,7 +5,7 @@ the agent loop (``context.compaction``, ``agent.context_window``,
 
 Covers rounds and the kept window, the threshold, what stays pinned, the summary
 request sent on the agent's own request (prefix, tools, usage, hooks), retries
-of tool-call answers and oversized requests, custom compactors, folds
+of tool-call answers and oversized requests, compaction summarizers, folds
 superseding each other, compaction before new input, failure handling, the
 context-window-error path, persistence and rollback.
 """
@@ -496,9 +496,8 @@ def _agent(
         llm=llm,
         tools=[tool],
         stream_llm=stream_llm,
-    )
-    agent.add_compaction(
-        compactor or Compactor(budget=_budget(5), keep_recent_rounds=1)
+        enable_compaction=True,
+        compactor=compactor or Compactor(budget=_budget(5), keep_recent_rounds=1),
     )
     return agent, tool
 
@@ -675,7 +674,7 @@ async def test_failures_stop_turn_boundary_compaction_but_not_recovery() -> None
         summaries += 1
         return ""
 
-    agent.add_custom_compactor(_failing)
+    agent.set_compaction_summarizer(_failing)
     await agent.run("go")
     assert summaries == MAX_COMPACTION_FAILURES
 
@@ -698,7 +697,7 @@ async def test_a_failed_fold_is_not_retried_until_its_end_moves() -> None:
         ends.append(len(agent_ctx.cw.transcript))
         return ""
 
-    agent.add_custom_compactor(_failing)
+    agent.set_compaction_summarizer(_failing)
     await agent.run("go")
     assert ends == [5]  # before the turn that answered
 
@@ -820,9 +819,13 @@ async def test_a_running_tasks_launch_note_stays_in_front_of_the_summary() -> No
         ]
     )
     agent = LLMAgent[str, str, None](
-        name="a", ctx=SessionContext(), llm=llm, tools=[_BigTool(), watch]
+        name="a",
+        ctx=SessionContext(),
+        llm=llm,
+        tools=[_BigTool(), watch],
+        enable_compaction=True,
+        compactor=Compactor(budget=_budget(5), keep_recent_rounds=1),
     )
-    agent.add_compaction(Compactor(budget=_budget(5), keep_recent_rounds=1))
     try:
         await agent.run("go")
     finally:
@@ -837,44 +840,64 @@ async def test_a_running_tasks_launch_note_stays_in_front_of_the_summary() -> No
     assert texts.index(note) < texts.index(fold_summary_text("SUMMARY"))
 
 
-# --- Registration and custom compactors ---
+# --- Construction and compaction summarizers ---
 
 
-@pytest.mark.asyncio
-async def test_add_compaction_registers_the_section_and_injects_the_budget() -> None:
+def test_compaction_registers_the_section_and_injects_the_budget() -> None:
     agent = LLMAgent[str, str, None](
-        name="a", ctx=SessionContext(), llm=MockLLM(responses_queue=[])
+        name="a",
+        ctx=SessionContext(),
+        llm=MockLLM(responses_queue=[]),
+        enable_compaction=True,
     )
-    compactor = agent.add_compaction()
-    assert agent.agent_ctx.cw.compactor is compactor
+    compactor = agent.agent_ctx.cw.compactor
+    assert isinstance(compactor, Compactor)
     assert compactor.budget is not None
     names = [s.name for s in agent.system_prompt_sections]
     assert COMPACTION_SECTION_NAME in names
+
+
+def test_compaction_is_off_without_enable_compaction() -> None:
+    agent = LLMAgent[str, str, None](
+        name="a", ctx=SessionContext(), llm=MockLLM(responses_queue=[])
+    )
+    assert agent.agent_ctx.cw.compactor is None
+    assert COMPACTION_SECTION_NAME not in {s.name for s in agent.system_prompt_sections}
+
+    with pytest.raises(ValueError, match="enable_compaction"):
+        LLMAgent[str, str, None](
+            name="b",
+            ctx=SessionContext(),
+            llm=MockLLM(responses_queue=[]),
+            compactor=Compactor(),
+        )
 
 
 class _Verdict(BaseModel):
     ok: bool
 
 
-def test_own_summaries_need_a_reply_that_can_be_text() -> None:
-    structured = LLMAgent[str, _Verdict, None](
-        name="a", ctx=SessionContext(), llm=MockLLM(responses_queue=[])
-    )
+def test_compaction_needs_a_reply_that_can_be_text() -> None:
     with pytest.raises(ValueError, match="output schema"):
-        structured.add_compaction()
+        LLMAgent[str, _Verdict, None](
+            name="a",
+            ctx=SessionContext(),
+            llm=MockLLM(responses_queue=[]),
+            enable_compaction=True,
+        )
 
-    react = LLMAgent[str, str, None](
-        name="b",
-        ctx=SessionContext(),
-        llm=MockLLM(responses_queue=[]),
-        force_react_mode=True,
-    )
     with pytest.raises(ValueError, match="force_react_mode"):
-        react.add_compaction()
+        LLMAgent[str, str, None](
+            name="b",
+            ctx=SessionContext(),
+            llm=MockLLM(responses_queue=[]),
+            force_react_mode=True,
+            enable_compaction=True,
+        )
 
 
 @pytest.mark.asyncio
-async def test_a_custom_compactor_writes_the_summary() -> None:
+async def test_a_compaction_summarizer_writes_the_summary() -> None:
     llm = _RecordingLLM(
         responses_queue=[
             _tool_call_response("big", "{}", "c1"),
@@ -886,7 +909,7 @@ async def test_a_custom_compactor_writes_the_summary() -> None:
     agent, _ = _agent(llm, ctx=ctx)
     seen: list[tuple[int, SessionContext[Any]]] = []
 
-    @agent.add_custom_compactor
+    @agent.set_compaction_summarizer
     async def _summarize(*, agent_ctx: AgentContext, ctx: SessionContext[Any]) -> str:
         seen.append((len(agent_ctx.cw.transcript), ctx))
         return "  CUSTOM  "
@@ -899,9 +922,8 @@ async def test_a_custom_compactor_writes_the_summary() -> None:
     assert not any(_is_summary_request(c.input) for c in calls)
 
 
-@pytest.mark.asyncio
-async def test_a_custom_compactor_enables_compaction_for_any_agent() -> None:
-    agent = LLMAgent[str, _Verdict, None](
+def test_a_summarizer_needs_compaction_enabled() -> None:
+    agent = LLMAgent[str, str, None](
         name="a", ctx=SessionContext(), llm=MockLLM(responses_queue=[])
     )
 
@@ -909,9 +931,8 @@ async def test_a_custom_compactor_enables_compaction_for_any_agent() -> None:
         del agent_ctx, ctx
         return "S"
 
-    agent.add_custom_compactor(_summarize)
-    compactor = agent.add_compaction(Compactor(target_tokens=1000))
-    assert agent.agent_ctx.cw.compactor is compactor
+    with pytest.raises(ValueError, match="enable_compaction"):
+        agent.set_compaction_summarizer(_summarize)
 
 
 # --- Compaction before new input ---
@@ -920,14 +941,18 @@ async def test_a_custom_compactor_enables_compaction_for_any_agent() -> None:
 @pytest.mark.asyncio
 async def test_a_steps_input_lands_after_the_fold() -> None:
     llm = MockLLM(responses_queue=[_text_response(a) for a in ("a1", "a2", "a3")])
-    agent = LLMAgent[str, str, None](name="a", ctx=SessionContext(), llm=llm)
-    compactor = agent.add_compaction(
-        Compactor(budget=_budget(10**9), keep_recent_rounds=1)
+    compactor = Compactor(budget=_budget(10**9), keep_recent_rounds=1)
+    agent = LLMAgent[str, str, None](
+        name="a",
+        ctx=SessionContext(),
+        llm=llm,
+        enable_compaction=True,
+        compactor=compactor,
     )
     logs: list[list[str]] = []
     views: list[list[str]] = []
 
-    @agent.add_custom_compactor
+    @agent.set_compaction_summarizer
     async def _summarize(*, agent_ctx: AgentContext, ctx: SessionContext[Any]) -> str:
         del ctx
         logs.append(
@@ -1185,13 +1210,13 @@ async def test_a_crash_before_the_fold_is_saved_redoes_it_on_redelivery() -> Non
     store = _CrashingStore()
 
     def _build(*replies: str) -> tuple[LLMAgent[str, str, None], Compactor]:
+        compactor = Compactor(budget=_budget(10**9), keep_recent_rounds=1)
         agent = LLMAgent[str, str, None](
             name="a",
             ctx=SessionContext(checkpoint_store=store, session_key="s1"),
             llm=MockLLM(responses_queue=[_text_response(r) for r in replies]),
-        )
-        compactor = agent.add_compaction(
-            Compactor(budget=_budget(10**9), keep_recent_rounds=1)
+            enable_compaction=True,
+            compactor=compactor,
         )
         return agent, compactor
 

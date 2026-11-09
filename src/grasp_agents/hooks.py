@@ -6,7 +6,7 @@ overrides (*_impl methods). The Protocols here define the callable signatures.
 
 Agent Loop Hooks (registered on AgentLoop via LLMAgent):
     ViewProjector  — derives the per-turn model-facing view from the log
-    CustomCompactor — writes compaction summaries in place of the agent's model
+    CompactionSummarizer — writes compaction summaries in place of the agent's model
     BeforeLlmHook  — fires before each LLM call of an agent turn
     AfterLlmHook   — fires after each LLM response of an agent turn
     FinalAnswerExtractor  — determines when the agent should stop
@@ -55,7 +55,7 @@ __all__ = [
     "AfterToolHook",
     "BeforeLlmHook",
     "BeforeToolHook",
-    "CustomCompactor",
+    "CompactionSummarizer",
     "FinalAnswerExtractor",
     "InitialContextBuilder",
     "InputContentBuilder",
@@ -170,7 +170,9 @@ class ViewProjector(Protocol):
     resume. ``input_tokens`` is the current (folded) log's estimated cost: the last
     response's reported input tokens plus an estimate of the messages appended
     since, or an estimate of the whole view when there is no reported count (after
-    a fold or rollback) — the budget signal for size-reactive projectors.
+    a fold or rollback) — the budget signal for size-reactive projectors. Every
+    projector in the pipeline gets the same value, the size before any of them
+    ran, not the size of the previous projector's output.
     """
 
     async def __call__(
@@ -182,20 +184,21 @@ class ViewProjector(Protocol):
     ) -> Sequence[InputItem]: ...
 
 
-class CustomCompactor[CtxT](Protocol):
+class CompactionSummarizer[CtxT](Protocol):
     """
     Write the summary a compaction folds the conversation into, in place of
-    the agent's own model.
+    the agent's own model. Only the summary: when to fold and what to keep
+    stay with the agent's :class:`~grasp_agents.context.Compactor`.
 
-    Called when compaction (``agent.add_compaction()``) folds: the summary
-    replaces the conversation up to the recent window, behind the pinned
-    messages. ``agent_ctx.cw`` holds the conversation: the transcript, the
-    folds already recorded and the view the model sees. The compactor decides
-    where the fold ends, so summarize the whole conversation (for example
-    ``agent_ctx.cw.folded_messages()``). An empty summary or an exception
-    counts as a failed compaction: the turn proceeds without a fold, or, on the
-    context-window-error path, the original error is raised. Single-slot
-    (``@agent.add_custom_compactor``).
+    Called when compaction (``LLMAgent(enable_compaction=True)``) folds: the
+    summary replaces the conversation up to the recent window, behind the
+    pinned messages. ``agent_ctx.cw`` holds the conversation: the transcript,
+    the folds already recorded and the view the model sees. The compactor
+    decides where the fold ends, so summarize the whole conversation (for
+    example ``agent_ctx.cw.folded_messages()``). An empty summary or an
+    exception counts as a failed compaction: the turn proceeds without a fold,
+    or, on the context-window-error path, the original error is raised.
+    Single-slot (``@agent.set_compaction_summarizer``).
     """
 
     async def __call__(

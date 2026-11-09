@@ -103,6 +103,11 @@ async def test_compaction_summarizes_on_the_agents_own_request(
     key_fixture, build, caches = _PROVIDERS[provider]
     llm = build(request.getfixturevalue(key_fixture))
     ctx: SessionContext[None] = SessionContext()
+    # The long first note puts the view over the threshold from the next
+    # question on. While it is the newest user message it stays pinned; once a
+    # later question is, it is too long to pin and only the summary carries it.
+    # The second question adds enough to fold again although the pinned note
+    # keeps the view over the threshold.
     agent = LLMAgent[str, str, None](
         name="assistant",
         ctx=ctx,
@@ -110,19 +115,13 @@ async def test_compaction_summarizes_on_the_agents_own_request(
         tools=[lookup],
         sys_prompt="You are a concise assistant. Answer in one short sentence.",
         stream_llm=True,
-    )
-    # The long first note puts the view over the threshold from the next
-    # question on. While it is the newest user message it stays pinned; once a
-    # later question is, it is too long to pin and only the summary carries it.
-    # The second question adds enough to fold again although the pinned note
-    # keeps the view over the threshold.
-    agent.add_compaction(
-        Compactor(
+        enable_compaction=True,
+        compactor=Compactor(
             budget=ContextBudget(llm.model_name, max_input_tokens=200_000),
             target_tokens=1500,
             keep_recent_rounds=1,
             pinned_user_tokens=100,
-        )
+        ),
     )
 
     paid: list[Response] = []
