@@ -14,6 +14,11 @@ session. Serial and process-local.
 Unlike the local session there is no per-command interrupt over the ``commands``
 API (no SIGINT to a process group), so a timeout kills the shell and closes the
 session — a fresh one is opened on the next call.
+
+The shell lives in the sandbox the session was opened on. Once a restore or an
+exit replaces that sandbox, the session counts as closed and never addresses
+the new one: its shell's pid there could belong to another process, such as
+another agent's shell.
 """
 
 from __future__ import annotations
@@ -91,13 +96,15 @@ class E2BExecSession(ExecSession):
 
     def __init__(
         self,
-        get_sandbox: Callable[[], AsyncSandbox],
+        get_sandbox: Callable[[], AsyncSandbox | None],
         *,
         cwd: str | None,
         env: dict[str, str] | None,
         backend: str,
         max_output_chars: int,
     ) -> None:
+        # Returns the sandbox the session was opened on while it is still the
+        # live one, else None.
         self._get_sandbox = get_sandbox
         self._cwd = cwd
         self._env = env
@@ -118,7 +125,7 @@ class E2BExecSession(ExecSession):
 
     @property
     def closed(self) -> bool:
-        return self._closed
+        return self._closed or self._get_sandbox() is None
 
     @property
     def expired(self) -> bool:
@@ -132,10 +139,9 @@ class E2BExecSession(ExecSession):
             return False
         return time.monotonic() - self._started_at >= _SESSION_SHELL_TIMEOUT - 60.0
 
-    async def _ensure_started(self) -> None:
+    async def _ensure_started(self, sb: AsyncSandbox) -> None:
         if self._handle is not None:
             return
-        sb = self._get_sandbox()
 
         def on_stdout(data: str) -> None:
             self._queue.put_nowait(("stdout", data))
@@ -159,12 +165,15 @@ class E2BExecSession(ExecSession):
     async def run(
         self, command: str, *, timeout: float | None = None
     ) -> AsyncIterator[ExecChunk | ExecResult]:
+        # The lock spans the yields so one command owns the shell at a time;
+        # the consumer closes this stream when it stops early, releasing it.
+        # ruff: disable[yield-in-context-manager-in-async-generator]
         async with self._lock:
-            if self._closed:
+            sb = self._get_sandbox()
+            if self._closed or sb is None:
                 raise RuntimeError("shell session is closed; open a new one")
             start = time.monotonic()
-            await self._ensure_started()
-            sb = self._get_sandbox()
+            await self._ensure_started(sb)
             assert self._pid is not None
 
             # Fresh queue per command — the shell is idle between commands, so
@@ -221,6 +230,7 @@ class E2BExecSession(ExecSession):
                     # the next run starts clean.
                     await self._kill()
                     self._closed = True
+        # ruff: enable[yield-in-context-manager-in-async-generator]
 
     def _result(
         self,
@@ -241,10 +251,12 @@ class E2BExecSession(ExecSession):
         )
 
     async def _kill(self) -> None:
-        if self._pid is None:
+        sb = self._get_sandbox()
+        if self._pid is None or sb is None:
+            # The shell went with its sandbox; on the live one the pid may
+            # belong to another process.
             return
         with contextlib.suppress(Exception):
-            sb = self._get_sandbox()
             await sb.commands.kill(self._pid)
 
     async def close(self) -> None:
