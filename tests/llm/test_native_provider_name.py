@@ -13,11 +13,10 @@ can verify them.
   verbatim, and neither the caller's input list nor its items are ever mutated
 * fallback rescue — a reasoning item tagged for the failed primary's provider
   does not poison the fallback member's request
-* resolution — the OpenAI dialects take the endpoint serving the model, since
-  OpenAI reasoning verifies only where it was encrypted; Anthropic and Gemini
-  take the vendor, whatever platform serves the model; LiteLLM takes the
-  provider it routes to, so its items stay with the backend that can verify
-  them
+* resolution — the vendor on its own API, and the vendor plus the platform
+  on a cloud platform, which encrypts with its own keys and serves several
+  vendors; LiteLLM takes the provider it routes to, so its items stay with the
+  backend that can verify them
 """
 
 from __future__ import annotations
@@ -50,6 +49,7 @@ from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
 from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 from grasp_agents.llm_providers.litellm.lite_llm import LiteLLM
 from grasp_agents.llm_providers.openai_completions.completions_llm import (
+    BedrockMantleClientConfig,
     OpenAILLM,
 )
 from grasp_agents.llm_providers.openai_responses.responses_llm import OpenAIResponsesLLM
@@ -80,11 +80,7 @@ from tests.llm.test_resilience import (
 _ANTHROPIC_PROVIDER = APIProvider(name="anthropic", base_url=None, api_key="test-key")
 _OPENAI_PROVIDER = APIProvider(name="openai", base_url=None, api_key="test-key")
 _GEMINI_PROVIDER = APIProvider(name="gemini", base_url=None, api_key="test-key")
-_MANTLE_PROVIDER = APIProvider(
-    name="bedrock_mantle",
-    base_url="https://bedrock-mantle.us-east-1.api.aws/openai/v1",
-    api_key="test-key",
-)
+_MANTLE_CONFIG = BedrockMantleClientConfig(aws_region="us-east-1", api_key="test-key")
 _OPENROUTER_PROVIDER = APIProvider(
     name="openrouter",
     base_url="https://openrouter.ai/api/v1",
@@ -474,10 +470,11 @@ class TestDroppingForeignReasoning:
     async def test_mantle_drops_reasoning_encrypted_by_openai(self) -> None:
         llm = _StubOpenAIResponsesLLM(
             model_name="openai.gpt-5.6-luna",
-            api_provider=_MANTLE_PROVIDER,
+            platform="bedrock_mantle",
+            platform_config=_MANTLE_CONFIG,
             served=_openai_response([_openai_message_item("ok")]),
         )
-        history = _history_with_reasoning(foreign="openai", own="bedrock_mantle")
+        history = _history_with_reasoning(foreign="openai", own="openai:bedrock_mantle")
 
         await llm.generate_response(history)
 
@@ -660,31 +657,53 @@ class TestOriginResolution:
         assert responses.native_provider_name == "openai"
         assert completions.native_provider_name == "openai"
 
-    def test_openai_dialects_on_another_endpoint_take_that_endpoint(self) -> None:
+    def test_openai_dialects_on_bedrock_mantle_share_one_origin(self) -> None:
         responses = OpenAIResponsesLLM(
-            model_name="openai.gpt-5.6-luna", api_provider=_MANTLE_PROVIDER
+            model_name="openai.gpt-5.6-luna",
+            platform="bedrock_mantle",
+            platform_config=_MANTLE_CONFIG,
         )
         completions = OpenAILLM(
-            model_name="openai.gpt-5.6-luna", api_provider=_MANTLE_PROVIDER
+            model_name="openai.gpt-5.6-luna",
+            platform="bedrock_mantle",
+            platform_config=_MANTLE_CONFIG,
         )
 
-        assert responses.native_provider_name == "bedrock_mantle"
-        assert completions.native_provider_name == "bedrock_mantle"
+        assert responses.native_provider_name == "openai:bedrock_mantle"
+        assert completions.native_provider_name == "openai:bedrock_mantle"
 
-    def test_openai_credentials_without_a_base_url_stay_openai(self) -> None:
-        llm = OpenAIResponsesLLM(
+    def test_one_platform_keeps_its_vendors_apart(self) -> None:
+        gpt = OpenAIResponsesLLM(
+            model_name="openai.gpt-5.6-luna",
+            platform="bedrock_mantle",
+            platform_config=_MANTLE_CONFIG,
+        )
+        claude = AnthropicLLM(
+            model_name="anthropic.claude-opus-5",
+            platform="bedrock_mantle",
+            platform_config={"aws_region": "us-east-1", "api_key": "key"},
+        )
+
+        assert gpt.native_provider_name != claude.native_provider_name
+
+    def test_origin_is_the_client_vendor_on_a_compatible_endpoint(self) -> None:
+        llm = OpenAILLM(
             model_name="gpt-5.6-luna",
-            api_provider=APIProvider(name="openai", base_url=None, api_key="key"),
+            api_provider=APIProvider(
+                name="proxy",
+                base_url="https://proxy.example.com/v1",
+                api_key="proxy-key",
+            ),
         )
 
         assert llm.native_provider_name == "openai"
 
-    def test_gateway_served_model_takes_the_gateway(self) -> None:
+    def test_gateway_served_model_takes_the_client_vendor(self) -> None:
         llm = OpenAILLM(
             model_name="google/gemma-4-31b-it", api_provider=_OPENROUTER_PROVIDER
         )
 
-        assert llm.native_provider_name == "openrouter"
+        assert llm.native_provider_name == "openai"
 
     def test_openai_on_azure_takes_the_platform(self) -> None:
         llm = OpenAIResponsesLLM(
@@ -697,16 +716,16 @@ class TestOriginResolution:
             },
         )
 
-        assert llm.native_provider_name == "azure"
+        assert llm.native_provider_name == "openai:azure"
 
-    def test_claude_on_bedrock_keeps_the_vendor(self) -> None:
+    def test_claude_on_bedrock_takes_the_platform(self) -> None:
         llm = AnthropicLLM(
             model_name="global.anthropic.claude-opus-5",
             platform="bedrock",
             platform_config={"aws_region": "us-east-1", "api_key": "key"},
         )
 
-        assert llm.native_provider_name == "anthropic"
+        assert llm.native_provider_name == "anthropic:bedrock"
 
     def test_litellm_tags_with_the_provider_it_routes_to(self) -> None:
         expected = {

@@ -97,10 +97,6 @@ class CloudLLM(LLM):
     # "gemini"): names the endpoint for the ``api_provider`` entry when the
     # caller supplies none, and is the default ``native_provider_name``.
     _native_provider_name: ClassVar[str | None] = None
-    # True when the vendor's reasoning payloads verify only at the endpoint
-    # that produced them: ``native_provider_name`` is then the serving
-    # endpoint, not the vendor.
-    _reasoning_bound_to_endpoint: ClassVar[bool] = False
     # Env vars holding the vendor's API key, in precedence order.
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ()
     # Cloud platforms this provider builds a dedicated client for, configured
@@ -321,17 +317,18 @@ class CloudLLM(LLM):
     @property
     def native_provider_name(self) -> str | None:
         """
-        Backend that verifies this model's reasoning payloads. Usually the
-        vendor ("anthropic", "gemini"), whatever platform serves the model;
-        for a vendor whose payloads verify only where they were produced
-        (OpenAI), the serving endpoint ("openai", "bedrock_mantle", "azure").
-        Stamped on the items this model produces and used to keep reasoning
-        another backend signed out of its requests; ``None`` stamps and drops
-        nothing.
+        Backend that verifies this model's reasoning payloads: the vendor
+        ("openai", "anthropic", "gemini") on its own API, or the vendor and
+        the cloud platform serving the model ("openai:bedrock_mantle",
+        "anthropic:bedrock", "gemini:vertex"). A platform encrypts with its
+        own keys, and one platform serves several vendors. Stamped on the
+        items this model produces and used to keep reasoning another backend
+        signed out of its requests; ``None`` stamps and drops nothing.
         """
-        if self._reasoning_bound_to_endpoint:
-            return self._resolve_provider_name()
-        return self._native_provider_name
+        vendor = self._native_provider_name
+        if vendor is None or self.platform is None:
+            return vendor
+        return f"{vendor}:{self.platform}"
 
     # --- Native provider name stamping ---
 

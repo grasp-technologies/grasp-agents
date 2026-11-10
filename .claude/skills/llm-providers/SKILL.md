@@ -32,8 +32,6 @@ are optional extras in `pyproject.toml`.
 1. **ClassVars:**
    - `_settings_type`: the provider's settings TypedDict.
    - `_native_provider_name`: the API family, e.g. `"anthropic"`.
-   - `_reasoning_bound_to_endpoint`: `True` when the vendor's reasoning
-     verifies only at the endpoint that produced it (OpenAI).
    - `_native_api_key_env_vars`: key env vars, in precedence order.
    - `_cloud_platforms`: platforms with a dedicated client, configured via
      `platform_config`.
@@ -50,8 +48,8 @@ are optional extras in `pyproject.toml`.
    limiting, validation and the terminal event live in the base classes, so don't
    re-implement them per provider.
 4. **`platform=` vs `api_provider=`.**
-   - `platform=` is a cloud that needs a dedicated client (Bedrock, Vertex,
-     Azure).
+   - `platform=` is a cloud that needs a dedicated client or endpoint
+     (Bedrock, Bedrock Mantle, Vertex, Azure).
    - `api_provider=` points the vendor's own SDK at any endpoint speaking that API.
      Its `name` is the pricing and capability identity.
    - Model-name prefix routing does not exist. Don't add it back.
@@ -68,12 +66,10 @@ are optional extras in `pyproject.toml`.
   stream-end error.
 - **Unknown vendor items** round-trip as `UnknownItem` rather than being dropped.
 - **Foreign reasoning.** Reasoning items are tagged with the producing
-  `native_provider_name`: the backend that verifies them. That is the vendor
-  for Anthropic and Gemini, and the serving endpoint for the OpenAI classes
-  (`_reasoning_bound_to_endpoint`), whose encrypted reasoning verifies only
-  where it was encrypted. A consumer drops reasoning tagged for another
-  backend, and untagged reasoning carrying an encrypted payload, before
-  sending.
+  `native_provider_name`: the backend that verifies them, the vendor on its
+  own API and `"<vendor>:<platform>"` on a cloud platform. A consumer drops
+  reasoning tagged for another backend, and untagged reasoning carrying an
+  encrypted payload, before sending.
 - **Thought signatures** (`llm/thought_signatures.py`):
   - Gemini signs function calls and the message, never the reasoning item.
   - LiteLLM encodes the signature into the tool-call id (`…__thought__<sig>`).

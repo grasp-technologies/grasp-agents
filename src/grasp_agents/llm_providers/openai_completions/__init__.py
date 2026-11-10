@@ -86,6 +86,7 @@ from openai.types.shared_params.function_definition import (
 
 from .completions_llm import (
     AzureClientConfig,
+    BedrockMantleClientConfig,
     OpenAICloudPlatform,
     OpenAILLM,
     OpenAILLMSettings,
@@ -97,6 +98,7 @@ from .response_to_provider_inputs import (
 
 __all__ = [
     "AzureClientConfig",
+    "BedrockMantleClientConfig",
     "OpenAICloudPlatform",
     "OpenAILLM",
     "OpenAILLMSettings",

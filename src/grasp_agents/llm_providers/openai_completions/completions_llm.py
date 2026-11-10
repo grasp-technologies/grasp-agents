@@ -1,7 +1,8 @@
 import logging
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Literal, TypedDict
+from typing import Any, ClassVar, Literal, TypedDict, cast
 
 from openai import AsyncAzureOpenAI, AsyncOpenAI, AsyncStream
 from openai._types import omit  # type: ignore  # ruff: ignore[import-private-name]
@@ -50,7 +51,7 @@ from .tool_converters import to_api_tool, to_api_tool_choice
 logger = logging.getLogger(__name__)
 
 
-OpenAICloudPlatform = Literal["azure"]
+OpenAICloudPlatform = Literal["azure", "bedrock_mantle"]
 
 CompletionsReasoningEffort = Literal[
     "none", "disable", "minimal", "low", "medium", "high", "xhigh", "max"
@@ -119,14 +120,53 @@ class AzureClientConfig(TypedDict, total=False):
     base_url: str
 
 
+class BedrockMantleClientConfig(TypedDict, total=False):
+    """
+    Client args for ``platform="bedrock_mantle"``: Amazon Bedrock's
+    OpenAI-compatible endpoint, reached with a plain ``AsyncOpenAI`` client.
+
+    ``aws_region`` falls back to AWS_REGION, then AWS_DEFAULT_REGION, and
+    names the endpoint unless ``base_url`` is given. ``api_key`` is a Bedrock
+    API key and falls back to AWS_BEARER_TOKEN_BEDROCK. ``model_name`` is the
+    Bedrock model ID, e.g. ``"openai.gpt-5.6-luna"``.
+    """
+
+    aws_region: str
+    api_key: str
+    base_url: str
+
+
+def bedrock_mantle_api_provider(config: BedrockMantleClientConfig) -> APIProvider:
+    """The endpoint and Bedrock API key a ``bedrock_mantle`` client uses."""
+    base_url = config.get("base_url")
+    if base_url is None:
+        region = (
+            config.get("aws_region")
+            or os.getenv("AWS_REGION")
+            or os.getenv("AWS_DEFAULT_REGION")
+        )
+        if not region:
+            raise ValueError(
+                "platform='bedrock_mantle' needs a region: set "
+                "platform_config['aws_region'] or AWS_REGION, or give a base_url."
+            )
+        base_url = f"https://bedrock-mantle.{region}.api.aws/openai/v1"
+    api_key = config.get("api_key") or os.getenv("AWS_BEARER_TOKEN_BEDROCK")
+    if not api_key:
+        raise ValueError(
+            "platform='bedrock_mantle' needs a Bedrock API key: set "
+            "platform_config['api_key'] or AWS_BEARER_TOKEN_BEDROCK."
+        )
+    return APIProvider(name="bedrock_mantle", base_url=base_url, api_key=api_key)
+
+
 @dataclass(frozen=True)
 class OpenAILLM(CloudLLM):
     _settings_type: ClassVar[Any] = OpenAILLMSettings
 
     _native_provider_name: ClassVar[str] = "openai"
-    _reasoning_bound_to_endpoint: ClassVar[bool] = True
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ("OPENAI_API_KEY",)
-    _cloud_platforms: ClassVar[frozenset[str]] = frozenset({"azure"})
+    _cloud_platforms: ClassVar[frozenset[str]] = frozenset({"azure", "bedrock_mantle"})
 
     llm_settings: OpenAILLMSettings | None = None
 
@@ -137,13 +177,17 @@ class OpenAILLM(CloudLLM):
     extra_openai_client_params: dict[str, Any] | None = None
 
     # "azure" builds an ``AsyncAzureOpenAI`` client (the Chat Completions
-    # surface is identical); ``None`` uses the plain client — pointed by
-    # ``api_provider`` at api.openai.com (the default) or at any
+    # surface is identical); "bedrock_mantle" points the plain client at
+    # Bedrock's OpenAI-compatible endpoint; ``None`` uses the plain client —
+    # pointed by ``api_provider`` at api.openai.com (the default) or at any
     # OpenAI-compatible endpoint.
     platform: OpenAICloudPlatform | None = None
-    # Azure client args (see AzureClientConfig). ``model_name`` is the Azure
-    # *deployment* name. May carry secrets — kept out of repr.
-    platform_config: AzureClientConfig | None = field(default=None, repr=False)
+    # Azure client args (see AzureClientConfig; ``model_name`` is the Azure
+    # *deployment* name), or Bedrock's (see BedrockMantleClientConfig). May
+    # carry secrets — kept out of repr.
+    platform_config: AzureClientConfig | BedrockMantleClientConfig | None = field(
+        default=None, repr=False
+    )
 
     client: AsyncOpenAI = field(init=False)
 
@@ -175,8 +219,13 @@ class OpenAILLM(CloudLLM):
                 api_key=config.get("api_key"),
             )
         else:
-            # api.openai.com, or any OpenAI-compatible endpoint.
-            _api_provider = self.api_provider or self._default_api_provider()
+            # api.openai.com, Bedrock's OpenAI-compatible endpoint, or any
+            # OpenAI-compatible endpoint.
+            _api_provider = (
+                bedrock_mantle_api_provider(cast("BedrockMantleClientConfig", config))
+                if self.platform == "bedrock_mantle"
+                else self.api_provider or self._default_api_provider()
+            )
             client_params: dict[str, Any] = {
                 "api_key": _api_provider.get("api_key"),
                 "base_url": _api_provider.get("base_url"),

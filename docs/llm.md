@@ -72,7 +72,7 @@ Two separate axes on `CloudLLM`:
 
 | Provider | `platform` values | `platform_config` type | API-key env vars |
 |---|---|---|---|
-| `OpenAIResponsesLLM`, `OpenAILLM` | `"azure"` | `AzureClientConfig` | `OPENAI_API_KEY` |
+| `OpenAIResponsesLLM`, `OpenAILLM` | `"azure"`, `"bedrock_mantle"` | `AzureClientConfig` / `BedrockMantleClientConfig` | `OPENAI_API_KEY` |
 | `AnthropicLLM` | `"bedrock"`, `"bedrock_mantle"`, `"vertex"` | `BedrockClientConfig` / `VertexClientConfig` | `ANTHROPIC_API_KEY` |
 | `GeminiLLM` | `"vertex"` | `GeminiVertexClientConfig` | `GOOGLE_API_KEY`, `GEMINI_API_KEY` |
 | `LiteLLM` | — (routes by model name) | — | litellm's own resolution |
@@ -272,15 +272,14 @@ can be shared between LLM instances. For streaming it paces stream acquisition.
 
 Items a model produces are stamped with its `native_provider_name` when a
 backend verifies their payload (reasoning items; messages and tool calls
-carrying a thought signature). The name is the backend that can verify the
-payload:
-
-- Anthropic and Gemini: the vendor, on any platform. Claude thinking signed on
-  Bedrock or Vertex verifies on Anthropic's API, and back.
-- OpenAI (`OpenAIResponsesLLM`, `OpenAILLM`): the serving endpoint, `"openai"`
-  on OpenAI's own API, else the platform or the `api_provider` name
-  (`"azure"`, `"bedrock_mantle"`, `"openrouter"`). Encrypted reasoning verifies
-  only where it was encrypted; both dialects on one endpoint share a name.
+carrying a thought signature). The name is the vendor on its own API
+(`"openai"`, `"anthropic"`, `"gemini"`), and the vendor and the platform on a
+cloud platform (`"openai:bedrock_mantle"`, `"openai:azure"`,
+`"anthropic:bedrock"`, `"gemini:vertex"`): a platform encrypts reasoning with
+its own keys, and one platform serves several vendors. The OpenAI Responses
+and Chat Completions classes on one platform share a name. An `api_provider`
+endpoint keeps the vendor's name, so reach a cloud platform through
+`platform=`.
 
 Before a request, `CloudLLM` drops reasoning items stamped by another backend,
 and untagged reasoning items carrying an encrypted payload (stored before
@@ -297,9 +296,7 @@ Subclass `CloudLLM` (a frozen dataclass) and:
 
 1. Set the ClassVars: `_settings_type` (your settings `TypedDict`, decorated
    with `@with_config(ConfigDict(extra="allow"))`), `_native_provider_name`,
-   `_reasoning_bound_to_endpoint` (when the vendor's reasoning verifies only
-   at the endpoint that produced it), `_native_api_key_env_vars`,
-   `_cloud_platforms`, `_litellm_provider_aliases`.
+   `_native_api_key_env_vars`, `_cloud_platforms`, `_litellm_provider_aliases`.
 2. In `__post_init__` (after `super().__post_init__()`), build the client for
    the selected `platform` or the resolved `api_provider`, and set
    `litellm_provider` to `self._resolve_litellm_provider()`.

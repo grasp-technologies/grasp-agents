@@ -55,7 +55,9 @@ from grasp_agents.llm.cloud_llm import (
 )
 from grasp_agents.llm_providers.openai_completions.completions_llm import (
     AzureClientConfig,
+    BedrockMantleClientConfig,
     OpenAICloudPlatform,
+    bedrock_mantle_api_provider,
 )
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.items import InputItem
@@ -157,19 +159,23 @@ class OpenAIResponsesLLM(CloudLLM):
     _settings_type: ClassVar[Any] = OpenAIResponsesLLMSettings
 
     _native_provider_name: ClassVar[str] = "openai"
-    _reasoning_bound_to_endpoint: ClassVar[bool] = True
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ("OPENAI_API_KEY",)
-    _cloud_platforms: ClassVar[frozenset[str]] = frozenset({"azure"})
+    _cloud_platforms: ClassVar[frozenset[str]] = frozenset({"azure", "bedrock_mantle"})
 
     llm_settings: OpenAIResponsesLLMSettings | None = None
     # "azure" builds an ``AsyncAzureOpenAI`` client — its Responses API
     # requires ``api_version`` >= "2025-03-01-preview" (or the version-less v1
-    # surface); ``None`` uses the plain client — pointed by ``api_provider`` at
-    # api.openai.com (the default) or at any OpenAI-compatible endpoint.
+    # surface); "bedrock_mantle" points the plain client at Bedrock's
+    # OpenAI-compatible endpoint; ``None`` uses the plain client — pointed by
+    # ``api_provider`` at api.openai.com (the default) or at any
+    # OpenAI-compatible endpoint.
     platform: OpenAICloudPlatform | None = None
-    # Azure client args (see AzureClientConfig). ``model_name`` is the Azure
-    # *deployment* name. May carry secrets — kept out of repr.
-    platform_config: AzureClientConfig | None = field(default=None, repr=False)
+    # Azure client args (see AzureClientConfig; ``model_name`` is the Azure
+    # *deployment* name), or Bedrock's (see BedrockMantleClientConfig). May
+    # carry secrets — kept out of repr.
+    platform_config: AzureClientConfig | BedrockMantleClientConfig | None = field(
+        default=None, repr=False
+    )
     openai_client_timeout: float = 120.0
     # SDK-level retries default to 0: ``LLM.retry_policy`` is the retry
     # system, and a non-zero value here would multiply with it.
@@ -206,8 +212,13 @@ class OpenAIResponsesLLM(CloudLLM):
                 api_key=config.get("api_key"),
             )
         else:
-            # api.openai.com, or any OpenAI-compatible endpoint.
-            _api_provider = self.api_provider or self._default_api_provider()
+            # api.openai.com, Bedrock's OpenAI-compatible endpoint, or any
+            # OpenAI-compatible endpoint.
+            _api_provider = (
+                bedrock_mantle_api_provider(cast("BedrockMantleClientConfig", config))
+                if self.platform == "bedrock_mantle"
+                else self.api_provider or self._default_api_provider()
+            )
             client_params: dict[str, Any] = {
                 "api_key": _api_provider.get("api_key"),
                 "base_url": _api_provider.get("base_url"),

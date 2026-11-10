@@ -225,6 +225,7 @@ streaming, structured outputs, and `FallbackLLM` all work unchanged.
 ```python
 from grasp_agents.llm_providers.anthropic import AnthropicLLM
 from grasp_agents.llm_providers.openai_completions import OpenAILLM
+from grasp_agents.llm_providers.openai_responses import OpenAIResponsesLLM
 from grasp_agents.llm_providers.gemini import GeminiLLM
 
 # Claude on AWS Bedrock (AWS cred chain / profile / bearer token)
@@ -249,6 +250,13 @@ azure = OpenAILLM(
         "azure_endpoint": "https://my-resource.openai.azure.com",
         "api_version": "2024-10-21",
     },
+)
+
+# GPT on Bedrock's OpenAI-compatible endpoint (Bedrock API key)
+gpt_bedrock = OpenAIResponsesLLM(
+    model_name="openai.gpt-5.6-luna",
+    platform="bedrock_mantle",
+    platform_config={"aws_region": "us-east-1"},  # key: AWS_BEARER_TOKEN_BEDROCK
 )
 
 # Gemini on Google Vertex AI
