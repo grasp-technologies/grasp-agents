@@ -1,20 +1,23 @@
 """
-Native provider name: stamp and drop provider-bound items by the vendor of the
-client that produced them.
+Native provider name: stamp and drop provider-bound items by the backend that
+can verify them.
 
 * stamping — an untagged reasoning item gets this client's native provider
   name on the non-stream and stream paths alike, as does a message or tool
   call carrying a thought signature; items without a signature and items
   already tagged are left untouched
 * dropping — a reasoning item tagged for a foreign provider never reaches the
-  wire; a foreign-tagged signed message or tool call is forwarded without its
-  signature; own and untagged items pass through verbatim, and neither the
-  caller's input list nor its items are ever mutated
+  wire, nor does an untagged one carrying an encrypted payload; a
+  foreign-tagged signed message or tool call is forwarded without its
+  signature; own items and untagged items without a payload pass through
+  verbatim, and neither the caller's input list nor its items are ever mutated
 * fallback rescue — a reasoning item tagged for the failed primary's provider
   does not poison the fallback member's request
-* resolution — the native provider name is the client class's vendor, whatever
-  model name, endpoint or platform is in play; LiteLLM takes the provider it
-  routes to, so its items stay with the backend that can verify them
+* resolution — the OpenAI dialects take the endpoint serving the model, since
+  OpenAI reasoning verifies only where it was encrypted; Anthropic and Gemini
+  take the vendor, whatever platform serves the model; LiteLLM takes the
+  provider it routes to, so its items stay with the backend that can verify
+  them
 """
 
 from __future__ import annotations
@@ -77,6 +80,11 @@ from tests.llm.test_resilience import (
 _ANTHROPIC_PROVIDER = APIProvider(name="anthropic", base_url=None, api_key="test-key")
 _OPENAI_PROVIDER = APIProvider(name="openai", base_url=None, api_key="test-key")
 _GEMINI_PROVIDER = APIProvider(name="gemini", base_url=None, api_key="test-key")
+_MANTLE_PROVIDER = APIProvider(
+    name="bedrock_mantle",
+    base_url="https://bedrock-mantle.us-east-1.api.aws/openai/v1",
+    api_key="test-key",
+)
 _OPENROUTER_PROVIDER = APIProvider(
     name="openrouter",
     base_url="https://openrouter.ai/api/v1",
@@ -423,7 +431,7 @@ class TestStamping:
 
 class TestDroppingForeignReasoning:
     @pytest.mark.asyncio
-    async def test_anthropic_drops_foreign_keeps_own_and_untagged(self) -> None:
+    async def test_anthropic_keeps_only_its_own_signed_reasoning(self) -> None:
         llm = _StubAnthropicLLM(
             model_name="claude-sonnet-4-5",
             api_provider=_ANTHROPIC_PROVIDER,
@@ -437,11 +445,11 @@ class TestDroppingForeignReasoning:
         signatures = [
             b["signature"] for b in _anthropic_thinking_blocks(llm.captured_api_input)
         ]
-        assert signatures == ["own-sig", "untagged-sig"]
+        assert signatures == ["own-sig"]
         assert len(history) == before_len
 
     @pytest.mark.asyncio
-    async def test_openai_responses_drops_foreign_keeps_own_and_untagged(self) -> None:
+    async def test_openai_responses_keeps_only_its_own_signed_reasoning(self) -> None:
         llm = _StubOpenAIResponsesLLM(
             model_name="gpt-5.1",
             api_provider=_OPENAI_PROVIDER,
@@ -456,14 +464,38 @@ class TestDroppingForeignReasoning:
         reasoning_dicts = [
             d for d in captured if isinstance(d, dict) and d.get("type") == "reasoning"
         ]
-        assert [d["encrypted_content"] for d in reasoning_dicts] == [
-            "own-sig",
-            "untagged-sig",
-        ]
+        assert [d["encrypted_content"] for d in reasoning_dicts] == ["own-sig"]
         assert not any(
             "native_provider_name" in d for d in captured if isinstance(d, dict)
         )
         assert len(history) == before_len
+
+    @pytest.mark.asyncio
+    async def test_mantle_drops_reasoning_encrypted_by_openai(self) -> None:
+        llm = _StubOpenAIResponsesLLM(
+            model_name="openai.gpt-5.6-luna",
+            api_provider=_MANTLE_PROVIDER,
+            served=_openai_response([_openai_message_item("ok")]),
+        )
+        history = _history_with_reasoning(foreign="openai", own="bedrock_mantle")
+
+        await llm.generate_response(history)
+
+        reasoning_dicts = [
+            d
+            for d in llm.captured_api_input
+            if isinstance(d, dict) and d.get("type") == "reasoning"
+        ]
+        assert [d["encrypted_content"] for d in reasoning_dicts] == ["own-sig"]
+
+    def test_untagged_reasoning_without_a_payload_passes_through(self) -> None:
+        llm = OpenAIResponsesLLM(
+            model_name="gpt-5.6-luna", api_provider=_OPENAI_PROVIDER
+        )
+        plain = ReasoningItem(summary=[ReasoningSummary(text="plain")])
+        signed = ReasoningItem(encrypted_content="untagged-sig")
+
+        assert list(llm._drop_foreign_reasoning([plain, signed])) == [plain]
 
 
 # ---------- 3. Thought signatures ----------
@@ -579,6 +611,39 @@ class TestFallbackRescue:
         assert result.output_text == "rescued"
         assert _anthropic_thinking_blocks(fallback.captured_api_input) == []
 
+    @pytest.mark.asyncio
+    async def test_fallback_drops_untagged_signed_reasoning(self) -> None:
+        primary = ErrorLLM(
+            model_name="primary",
+            retry_policy=None,
+            error_to_raise=LlmInternalServerError(
+                "down", response=_resp(503), body=None
+            ),
+        )
+        fallback = _StubAnthropicLLM(
+            model_name="claude-sonnet-4-5",
+            platform="bedrock",
+            platform_config={"aws_region": "us-east-1", "api_key": "test-key"},
+            served=_anthropic_message([TextBlock(type="text", text="rescued")]),
+        )
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+        history: list[InputItem] = [
+            InputMessageItem.from_text("hi"),
+            ReasoningItem(
+                encrypted_content="gAAAA-openai-ciphertext",
+                summary=[ReasoningSummary(text="plan")],
+            ),
+            OutputMessageItem(
+                status="completed", content=[OutputMessageText(text="done")]
+            ),
+            InputMessageItem.from_text("more"),
+        ]
+
+        result = await llm.generate_response(history)
+
+        assert result.output_text == "rescued"
+        assert _anthropic_thinking_blocks(fallback.captured_api_input) == []
+
 
 # ---------- 5. Origin resolution ----------
 
@@ -595,24 +660,53 @@ class TestOriginResolution:
         assert responses.native_provider_name == "openai"
         assert completions.native_provider_name == "openai"
 
-    def test_origin_is_the_client_vendor_regardless_of_endpoint(self) -> None:
-        llm = OpenAILLM(
+    def test_openai_dialects_on_another_endpoint_take_that_endpoint(self) -> None:
+        responses = OpenAIResponsesLLM(
+            model_name="openai.gpt-5.6-luna", api_provider=_MANTLE_PROVIDER
+        )
+        completions = OpenAILLM(
+            model_name="openai.gpt-5.6-luna", api_provider=_MANTLE_PROVIDER
+        )
+
+        assert responses.native_provider_name == "bedrock_mantle"
+        assert completions.native_provider_name == "bedrock_mantle"
+
+    def test_openai_credentials_without_a_base_url_stay_openai(self) -> None:
+        llm = OpenAIResponsesLLM(
             model_name="gpt-5.6-luna",
-            api_provider=APIProvider(
-                name="proxy",
-                base_url="https://proxy.example.com/v1",
-                api_key="proxy-key",
-            ),
+            api_provider=APIProvider(name="openai", base_url=None, api_key="key"),
         )
 
         assert llm.native_provider_name == "openai"
 
-    def test_gateway_served_model_takes_the_client_vendor(self) -> None:
+    def test_gateway_served_model_takes_the_gateway(self) -> None:
         llm = OpenAILLM(
             model_name="google/gemma-4-31b-it", api_provider=_OPENROUTER_PROVIDER
         )
 
-        assert llm.native_provider_name == "openai"
+        assert llm.native_provider_name == "openrouter"
+
+    def test_openai_on_azure_takes_the_platform(self) -> None:
+        llm = OpenAIResponsesLLM(
+            model_name="gpt-5.6-luna",
+            platform="azure",
+            platform_config={
+                "azure_endpoint": "https://example.openai.azure.com",
+                "api_key": "key",
+                "api_version": "2025-04-01-preview",
+            },
+        )
+
+        assert llm.native_provider_name == "azure"
+
+    def test_claude_on_bedrock_keeps_the_vendor(self) -> None:
+        llm = AnthropicLLM(
+            model_name="global.anthropic.claude-opus-5",
+            platform="bedrock",
+            platform_config={"aws_region": "us-east-1", "api_key": "key"},
+        )
+
+        assert llm.native_provider_name == "anthropic"
 
     def test_litellm_tags_with_the_provider_it_routes_to(self) -> None:
         expected = {

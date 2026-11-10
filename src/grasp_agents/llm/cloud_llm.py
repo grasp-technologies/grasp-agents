@@ -97,6 +97,10 @@ class CloudLLM(LLM):
     # "gemini"): names the endpoint for the ``api_provider`` entry when the
     # caller supplies none, and is the default ``native_provider_name``.
     _native_provider_name: ClassVar[str | None] = None
+    # True when the vendor's reasoning payloads verify only at the endpoint
+    # that produced them: ``native_provider_name`` is then the serving
+    # endpoint, not the vendor.
+    _reasoning_bound_to_endpoint: ClassVar[bool] = False
     # Env vars holding the vendor's API key, in precedence order.
     _native_api_key_env_vars: ClassVar[tuple[str, ...]] = ()
     # Cloud platforms this provider builds a dedicated client for, configured
@@ -317,12 +321,16 @@ class CloudLLM(LLM):
     @property
     def native_provider_name(self) -> str | None:
         """
-        Vendor whose backend verifies this model's reasoning payloads
-        ("openai", "anthropic", "gemini"), whatever endpoint or platform serves
-        the model. Stamped on the items this model produces and used to keep
-        another vendor's signed reasoning out of its requests; ``None`` stamps
-        and drops nothing.
+        Backend that verifies this model's reasoning payloads. Usually the
+        vendor ("anthropic", "gemini"), whatever platform serves the model;
+        for a vendor whose payloads verify only where they were produced
+        (OpenAI), the serving endpoint ("openai", "bedrock_mantle", "azure").
+        Stamped on the items this model produces and used to keep reasoning
+        another backend signed out of its requests; ``None`` stamps and drops
+        nothing.
         """
+        if self._reasoning_bound_to_endpoint:
+            return self._resolve_provider_name()
         return self._native_provider_name
 
     # --- Native provider name stamping ---
@@ -365,12 +373,14 @@ class CloudLLM(LLM):
         A reasoning item tagged with a native provider name other than THIS model's is
         dropped whole: providers verify reasoning payloads server-side, so a
         foreign one is rejected at the wire and nothing is left of the item
-        once its payload is gone. A foreign-tagged message or tool call is
+        once its payload is gone. An untagged reasoning item carrying an
+        encrypted payload is dropped too: no backend is known to have signed
+        it. A foreign-tagged message or tool call is
         instead forwarded as a copy without its thought signature — dropping it
         would break tool-call pairing and lose the text. The caller's items are
         never modified, so the signature is still there if a later turn goes
-        back to the model that produced it. Untagged items (name ``None``)
-        pass through as they are.
+        back to the model that produced it. Other untagged items (name
+        ``None``) pass through as they are.
         """
         native_provider_name = self.native_provider_name
         if native_provider_name is None:
@@ -379,7 +389,9 @@ class CloudLLM(LLM):
         kept: list[InputItem] = []
         for item in input:
             if isinstance(item, ReasoningItem):
-                if item.native_provider_name in {None, native_provider_name}:
+                if item.native_provider_name == native_provider_name or (
+                    item.native_provider_name is None and not item.encrypted_content
+                ):
                     kept.append(item)
             elif (
                 isinstance(item, (OutputMessageItem, FunctionToolCallItem))

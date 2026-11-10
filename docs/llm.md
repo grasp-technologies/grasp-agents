@@ -270,13 +270,25 @@ can be shared between LLM instances. For streaming it paces stream acquisition.
 
 ## Reasoning across providers
 
-Items a model produces are stamped with its `native_provider_name` when the
-vendor's backend verifies their payload (reasoning items; messages and tool
-calls carrying a thought signature). Before a request, `CloudLLM` drops
-reasoning items stamped by another vendor and strips foreign thought signatures
-from messages and tool calls (without modifying the transcript), so switching
-models mid-conversation, or a `FallbackLLM` cascade, does not send a payload the
-backend would reject. Gemini thought signatures arriving through `LiteLLM` are
+Items a model produces are stamped with its `native_provider_name` when a
+backend verifies their payload (reasoning items; messages and tool calls
+carrying a thought signature). The name is the backend that can verify the
+payload:
+
+- Anthropic and Gemini: the vendor, on any platform. Claude thinking signed on
+  Bedrock or Vertex verifies on Anthropic's API, and back.
+- OpenAI (`OpenAIResponsesLLM`, `OpenAILLM`): the serving endpoint, `"openai"`
+  on OpenAI's own API, else the platform or the `api_provider` name
+  (`"azure"`, `"bedrock_mantle"`, `"openrouter"`). Encrypted reasoning verifies
+  only where it was encrypted; both dialects on one endpoint share a name.
+
+Before a request, `CloudLLM` drops reasoning items stamped by another backend,
+and untagged reasoning items carrying an encrypted payload (stored before
+stamping, so no backend is known to have signed them). It strips foreign
+thought signatures from messages and tool calls. The transcript is never
+modified, so switching models or endpoints mid-conversation, or a `FallbackLLM`
+cascade, does not send a payload the backend would reject; the cost is the
+dropped reasoning. Gemini thought signatures arriving through `LiteLLM` are
 normalized in `llm/thought_signatures.py`.
 
 ## Adding a provider
@@ -285,7 +297,9 @@ Subclass `CloudLLM` (a frozen dataclass) and:
 
 1. Set the ClassVars: `_settings_type` (your settings `TypedDict`, decorated
    with `@with_config(ConfigDict(extra="allow"))`), `_native_provider_name`,
-   `_native_api_key_env_vars`, `_cloud_platforms`, `_litellm_provider_aliases`.
+   `_reasoning_bound_to_endpoint` (when the vendor's reasoning verifies only
+   at the endpoint that produced it), `_native_api_key_env_vars`,
+   `_cloud_platforms`, `_litellm_provider_aliases`.
 2. In `__post_init__` (after `super().__post_init__()`), build the client for
    the selected `platform` or the resolved `api_provider`, and set
    `litellm_provider` to `self._resolve_litellm_provider()`.

@@ -25,6 +25,7 @@
         "notif"
     ],
     "words": [
+        "chatcmpl",
         "IMDS",
         "inlines",
         "linkify",
