@@ -154,10 +154,7 @@ class AnthropicLLM(CloudLLM):
     _cloud_platforms: ClassVar[frozenset[str]] = frozenset(
         {"bedrock", "bedrock_mantle", "vertex"}
     )
-    _litellm_provider_aliases: ClassVar[Mapping[str, str]] = {
-        "bedrock_mantle": "bedrock",
-        "vertex": "vertex_ai",
-    }
+    _litellm_provider_aliases: ClassVar[Mapping[str, str]] = {"vertex": "vertex_ai"}
 
     llm_settings: AnthropicLLMSettings | None = None
 

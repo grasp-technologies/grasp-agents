@@ -115,7 +115,7 @@ class TestCloudPlatformLitellmProvider:
         ("platform", "expected"),
         [
             ("bedrock", "bedrock"),
-            ("bedrock_mantle", "bedrock"),
+            ("bedrock_mantle", "bedrock_mantle"),
             ("vertex", "vertex_ai"),
         ],
     )
