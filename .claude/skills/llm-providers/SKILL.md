@@ -65,11 +65,11 @@ are optional extras in `pyproject.toml`.
 - **A cut-off stream must not be reported as `completed`.** It raises the typed
   stream-end error.
 - **Unknown vendor items** round-trip as `UnknownItem` rather than being dropped.
-- **Foreign reasoning.** Reasoning items are tagged with the producing
-  `native_provider_name`: the backend that verifies them, the vendor on its
-  own API and `"<vendor>:<platform>"` on a cloud platform. A consumer drops
-  reasoning tagged for another backend, and untagged reasoning carrying an
-  encrypted payload, before sending.
+- **Foreign reasoning.** Reasoning items are tagged with the producing model's
+  `native_provider_name` (the vendor, on any platform) and `platform` (`None`
+  for the vendor's own API). A consumer drops reasoning tagged with another
+  vendor or platform, and untagged reasoning carrying an encrypted payload,
+  before sending.
 - **Thought signatures** (`llm/thought_signatures.py`):
   - Gemini signs function calls and the message, never the reasoning item.
   - LiteLLM encodes the signature into the tool-call id (`…__thought__<sig>`).

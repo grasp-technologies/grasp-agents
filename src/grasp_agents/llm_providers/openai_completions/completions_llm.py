@@ -1,10 +1,9 @@
 import logging
-import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Literal, TypedDict, cast
+from typing import Any, ClassVar, Literal, TypedDict
 
-from openai import AsyncAzureOpenAI, AsyncOpenAI, AsyncStream
+from openai import AsyncAzureOpenAI, AsyncBedrockOpenAI, AsyncOpenAI, AsyncStream
 from openai._types import omit  # type: ignore  # ruff: ignore[import-private-name]
 from openai.lib.streaming.chat import (
     AsyncChatCompletionStreamManager as OpenAIAsyncChatCompletionStreamManager,
@@ -122,42 +121,24 @@ class AzureClientConfig(TypedDict, total=False):
 
 class BedrockMantleClientConfig(TypedDict, total=False):
     """
-    Client args for ``platform="bedrock_mantle"``: Amazon Bedrock's
-    OpenAI-compatible endpoint, reached with a plain ``AsyncOpenAI`` client.
+    Client args for ``platform="bedrock_mantle"`` (an ``AsyncBedrockOpenAI``
+    client): Amazon Bedrock's OpenAI-compatible endpoint, whose URL the client
+    builds from the region.
 
-    ``aws_region`` falls back to AWS_REGION, then AWS_DEFAULT_REGION, and
-    names the endpoint unless ``base_url`` is given. ``api_key`` is a Bedrock
-    API key and falls back to AWS_BEARER_TOKEN_BEDROCK. ``model_name`` is the
-    Bedrock model ID, e.g. ``"openai.gpt-5.6-luna"``.
+    Unset values fall back to the SDK's AWS resolution: AWS_REGION /
+    AWS_DEFAULT_REGION for the region, AWS_BEARER_TOKEN_BEDROCK for a Bedrock
+    API key, else the AWS credential chain (SigV4). ``api_key`` and the
+    ``aws_*`` secrets are kept out of repr with the whole config.
+    ``model_name`` is the Bedrock model ID, e.g. ``"openai.gpt-5.6-luna"``.
     """
 
     aws_region: str
     api_key: str
+    aws_profile: str
+    aws_access_key_id: str
+    aws_secret_access_key: str
+    aws_session_token: str
     base_url: str
-
-
-def bedrock_mantle_api_provider(config: BedrockMantleClientConfig) -> APIProvider:
-    """The endpoint and Bedrock API key a ``bedrock_mantle`` client uses."""
-    base_url = config.get("base_url")
-    if base_url is None:
-        region = (
-            config.get("aws_region")
-            or os.getenv("AWS_REGION")
-            or os.getenv("AWS_DEFAULT_REGION")
-        )
-        if not region:
-            raise ValueError(
-                "platform='bedrock_mantle' needs a region: set "
-                "platform_config['aws_region'] or AWS_REGION, or give a base_url."
-            )
-        base_url = f"https://bedrock-mantle.{region}.api.aws/openai/v1"
-    api_key = config.get("api_key") or os.getenv("AWS_BEARER_TOKEN_BEDROCK")
-    if not api_key:
-        raise ValueError(
-            "platform='bedrock_mantle' needs a Bedrock API key: set "
-            "platform_config['api_key'] or AWS_BEARER_TOKEN_BEDROCK."
-        )
-    return APIProvider(name="bedrock_mantle", base_url=base_url, api_key=api_key)
 
 
 @dataclass(frozen=True)
@@ -218,14 +199,16 @@ class OpenAILLM(CloudLLM):
                 base_url=config.get("azure_endpoint") or config.get("base_url"),
                 api_key=config.get("api_key"),
             )
-        else:
-            # api.openai.com, Bedrock's OpenAI-compatible endpoint, or any
-            # OpenAI-compatible endpoint.
-            _api_provider = (
-                bedrock_mantle_api_provider(cast("BedrockMantleClientConfig", config))
-                if self.platform == "bedrock_mantle"
-                else self.api_provider or self._default_api_provider()
+        elif self.platform == "bedrock_mantle":
+            _client = AsyncBedrockOpenAI(**{**common, **config, **extra})
+            _api_provider = APIProvider(
+                name=self.platform,
+                base_url=str(_client.base_url),
+                api_key=config.get("api_key"),
             )
+        else:
+            # api.openai.com, or any OpenAI-compatible endpoint.
+            _api_provider = self.api_provider or self._default_api_provider()
             client_params: dict[str, Any] = {
                 "api_key": _api_provider.get("api_key"),
                 "base_url": _api_provider.get("base_url"),

@@ -77,6 +77,14 @@ Two separate axes on `CloudLLM`:
 | `GeminiLLM` | `"vertex"` | `GeminiVertexClientConfig` | `GOOGLE_API_KEY`, `GEMINI_API_KEY` |
 | `LiteLLM` | — (routes by model name) | — | litellm's own resolution |
 
+On Amazon Bedrock, each class reaches the endpoint that speaks its vendor's
+API. `bedrock_mantle` serves both the OpenAI and the Anthropic API, so both
+families have it: the OpenAI classes through the OpenAI SDK's
+`AsyncBedrockOpenAI`, `AnthropicLLM` through `AsyncAnthropicBedrockMantle`.
+The Bedrock runtime (`bedrock`) serves Claude through Anthropic's Messages API
+but OpenAI models only through Bedrock's own Converse API, so only
+`AnthropicLLM` has it.
+
 ```python
 from grasp_agents.llm.cloud_llm import APIProvider
 from grasp_agents.llm_providers import AnthropicLLM, OpenAILLM
@@ -270,18 +278,18 @@ can be shared between LLM instances. For streaming it paces stream acquisition.
 
 ## Reasoning across providers
 
-Items a model produces are stamped with its `native_provider_name` when a
-backend verifies their payload (reasoning items; messages and tool calls
-carrying a thought signature). The name is the vendor on its own API
-(`"openai"`, `"anthropic"`, `"gemini"`), and the vendor and the platform on a
-cloud platform (`"openai:bedrock_mantle"`, `"openai:azure"`,
-`"anthropic:bedrock"`, `"gemini:vertex"`): a platform encrypts reasoning with
-its own keys, and one platform serves several vendors. The OpenAI Responses
-and Chat Completions classes on one platform share a name. An `api_provider`
-endpoint keeps the vendor's name, so reach a cloud platform through
-`platform=`.
+Items a model produces are stamped when a backend verifies their payload
+(reasoning items; messages and tool calls carrying a thought signature) with
+the model's `native_provider_name`, the vendor (`"openai"`, `"anthropic"`,
+`"gemini"`) whatever platform serves it, and its `platform` (`None` for the
+vendor's own API, else for example `"bedrock_mantle"`, `"azure"`,
+`"vertex"`). Both are compared: a platform encrypts reasoning with its own
+keys, and one platform serves several vendors. The OpenAI Responses and Chat
+Completions classes on one platform match. An `api_provider` endpoint has no
+platform, so reach a cloud platform through `platform=`.
 
-Before a request, `CloudLLM` drops reasoning items stamped by another backend,
+Before a request, `CloudLLM` drops reasoning items stamped by another vendor
+or platform,
 and untagged reasoning items carrying an encrypted payload (stored before
 stamping, so no backend is known to have signed them). It strips foreign
 thought signatures from messages and tool calls. The transcript is never

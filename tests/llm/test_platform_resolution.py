@@ -7,6 +7,7 @@ result is priced under.
 from typing import Any
 
 import pytest
+from openai import AsyncBedrockOpenAI, OpenAIError
 
 from grasp_agents.llm.cloud_llm import APIProvider
 from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
@@ -269,6 +270,7 @@ class TestBedrockMantleClient:
             platform_config={"aws_region": "eu-west-1", "api_key": "bedrock-key"},
         )
 
+        assert isinstance(llm.client, AsyncBedrockOpenAI)
         assert str(llm.client.base_url) == (
             "https://bedrock-mantle.eu-west-1.api.aws/openai/v1/"
         )
@@ -308,22 +310,28 @@ class TestBedrockMantleClient:
         monkeypatch.delenv("AWS_REGION", raising=False)
         monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
 
-        with pytest.raises(ValueError, match="region"):
+        with pytest.raises(OpenAIError, match="region"):
             OpenAILLM(
                 model_name="openai.gpt-5.6-luna",
                 platform="bedrock_mantle",
                 platform_config={"api_key": "bedrock-key"},
             )
 
-    def test_missing_key_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_without_a_key_the_aws_credential_chain_signs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
 
-        with pytest.raises(ValueError, match="API key"):
-            OpenAILLM(
-                model_name="openai.gpt-5.6-luna",
-                platform="bedrock_mantle",
-                platform_config={"aws_region": "us-east-1"},
-            )
+        llm = OpenAILLM(
+            model_name="openai.gpt-5.6-luna",
+            platform="bedrock_mantle",
+            platform_config={"aws_region": "us-east-1"},
+        )
+
+        assert isinstance(llm.client, AsyncBedrockOpenAI)
+        assert not llm.client.api_key
+        assert llm.api_provider is not None
+        assert llm.api_provider.get("api_key") is None
 
 
 class TestCompatibleEndpointClient:

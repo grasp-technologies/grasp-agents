@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal, cast
 
-from openai import AsyncAzureOpenAI, AsyncOpenAI
+from openai import AsyncAzureOpenAI, AsyncBedrockOpenAI, AsyncOpenAI
 from openai._types import omit  # ruff: ignore[import-private-name]
 from openai.lib.streaming.responses._responses import (
     AsyncResponseStreamManager,
@@ -57,7 +57,6 @@ from grasp_agents.llm_providers.openai_completions.completions_llm import (
     AzureClientConfig,
     BedrockMantleClientConfig,
     OpenAICloudPlatform,
-    bedrock_mantle_api_provider,
 )
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.items import InputItem
@@ -211,14 +210,16 @@ class OpenAIResponsesLLM(CloudLLM):
                 base_url=config.get("azure_endpoint") or config.get("base_url"),
                 api_key=config.get("api_key"),
             )
-        else:
-            # api.openai.com, Bedrock's OpenAI-compatible endpoint, or any
-            # OpenAI-compatible endpoint.
-            _api_provider = (
-                bedrock_mantle_api_provider(cast("BedrockMantleClientConfig", config))
-                if self.platform == "bedrock_mantle"
-                else self.api_provider or self._default_api_provider()
+        elif self.platform == "bedrock_mantle":
+            _client = AsyncBedrockOpenAI(**{**common, **config, **extra})
+            _api_provider = APIProvider(
+                name=self.platform,
+                base_url=str(_client.base_url),
+                api_key=config.get("api_key"),
             )
+        else:
+            # api.openai.com, or any OpenAI-compatible endpoint.
+            _api_provider = self.api_provider or self._default_api_provider()
             client_params: dict[str, Any] = {
                 "api_key": _api_provider.get("api_key"),
                 "base_url": _api_provider.get("base_url"),

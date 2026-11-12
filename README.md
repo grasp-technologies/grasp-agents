@@ -256,7 +256,7 @@ azure = OpenAILLM(
 gpt_bedrock = OpenAIResponsesLLM(
     model_name="openai.gpt-5.6-luna",
     platform="bedrock_mantle",
-    platform_config={"aws_region": "us-east-1"},  # key: AWS_BEARER_TOKEN_BEDROCK
+    platform_config={"aws_region": "us-east-1"},  # AWS_BEARER_TOKEN_BEDROCK or AWS creds
 )
 
 # Gemini on Google Vertex AI
