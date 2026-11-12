@@ -259,72 +259,87 @@ class TestDefaultApiProvider:
         assert "sk-secret-xyz" not in repr(llm)
 
 
-class TestBedrockMantleClient:
+_BEDROCK_URLS = {
+    "bedrock": "https://bedrock-runtime.{region}.amazonaws.com/openai/v1/",
+    "bedrock_mantle": "https://bedrock-mantle.{region}.api.aws/openai/v1/",
+}
+
+
+class TestBedrockOpenAIClient:
     @pytest.mark.parametrize("llm_cls", [OpenAILLM, OpenAIResponsesLLM])
+    @pytest.mark.parametrize("platform", ["bedrock", "bedrock_mantle"])
     def test_points_the_openai_client_at_the_regional_endpoint(
-        self, llm_cls: type[OpenAILLM] | type[OpenAIResponsesLLM]
+        self,
+        llm_cls: type[OpenAILLM] | type[OpenAIResponsesLLM],
+        platform: Any,
     ) -> None:
         llm = llm_cls(
-            model_name="openai.gpt-5.6-luna",
-            platform="bedrock_mantle",
+            model_name="global.openai.gpt-6-luna",
+            platform=platform,
             platform_config={"aws_region": "eu-west-1", "api_key": "bedrock-key"},
         )
 
         assert isinstance(llm.client, AsyncBedrockOpenAI)
-        assert str(llm.client.base_url) == (
-            "https://bedrock-mantle.eu-west-1.api.aws/openai/v1/"
+        assert str(llm.client.base_url) == _BEDROCK_URLS[platform].format(
+            region="eu-west-1"
         )
         assert llm.client.api_key == "bedrock-key"
-        assert llm.litellm_provider == "bedrock_mantle"
+        assert llm.litellm_provider == platform
 
+    @pytest.mark.parametrize("platform", ["bedrock", "bedrock_mantle"])
     def test_region_and_key_fall_back_to_the_aws_env(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, platform: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("AWS_REGION", "us-east-1")
         monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "env-bedrock-key")
 
         llm = OpenAIResponsesLLM(
-            model_name="openai.gpt-5.6-luna", platform="bedrock_mantle"
+            model_name="global.openai.gpt-6-luna", platform=platform
         )
 
-        assert str(llm.client.base_url) == (
-            "https://bedrock-mantle.us-east-1.api.aws/openai/v1/"
+        assert str(llm.client.base_url) == _BEDROCK_URLS[platform].format(
+            region="us-east-1"
         )
         assert llm.client.api_key == "env-bedrock-key"
 
-    def test_base_url_overrides_the_region(self) -> None:
+    @pytest.mark.parametrize("platform", ["bedrock", "bedrock_mantle"])
+    def test_base_url_overrides_the_region(self, platform: Any) -> None:
         llm = OpenAILLM(
-            model_name="openai.gpt-5.6-luna",
-            platform="bedrock_mantle",
+            model_name="global.openai.gpt-6-luna",
+            platform=platform,
             platform_config={
-                "base_url": "https://mantle.example.test/openai/v1",
+                "base_url": "https://bedrock.example.test/openai/v1",
                 "api_key": "bedrock-key",
             },
         )
 
         assert str(llm.client.base_url).startswith(
-            "https://mantle.example.test/openai/v1"
+            "https://bedrock.example.test/openai/v1"
         )
 
-    def test_missing_region_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize("platform", ["bedrock", "bedrock_mantle"])
+    def test_missing_region_is_rejected(
+        self, platform: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.delenv("AWS_REGION", raising=False)
         monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
 
-        with pytest.raises(OpenAIError, match="region"):
+        with pytest.raises((OpenAIError, ValueError), match="region"):
             OpenAILLM(
-                model_name="openai.gpt-5.6-luna",
-                platform="bedrock_mantle",
+                model_name="global.openai.gpt-6-luna",
+                platform=platform,
                 platform_config={"api_key": "bedrock-key"},
             )
 
+    @pytest.mark.parametrize("platform", ["bedrock", "bedrock_mantle"])
     def test_without_a_key_the_aws_credential_chain_signs(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, platform: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
 
         llm = OpenAILLM(
-            model_name="openai.gpt-5.6-luna",
-            platform="bedrock_mantle",
+            model_name="global.openai.gpt-6-luna",
+            platform=platform,
             platform_config={"aws_region": "us-east-1"},
         )
 

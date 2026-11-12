@@ -314,7 +314,9 @@ class TestMessageIdNotSent:
     def test_grasp_part_fields_stripped(self) -> None:
         """Part-level grasp fields (e.g. ``mime_type``) must not reach the API."""
         image = InputImage.from_base64(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAA=", mime_type="image/png"
+            # cSpell:disable-next-line
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAA=",
+            mime_type="image/png",
         )
         assert image.mime_type == "image/png"
 
@@ -480,10 +482,10 @@ class TestGraspExtensionFieldsAreScrubbed:
 
     def test_origin_never_reaches_the_wire(self) -> None:
         items = [
-            ReasoningItem(native_provider_name="openai", encrypted_content="enc"),
+            ReasoningItem(origin="openai", encrypted_content="enc"),
             OutputMessageItem(
                 status="completed",
-                native_provider_name="gemini",
+                origin="gemini",
                 content=[OutputMessageText(text="hi")],
                 provider_specific_fields={"thought_signature": "sig"},
             ),
@@ -491,13 +493,13 @@ class TestGraspExtensionFieldsAreScrubbed:
                 call_id="call_1",
                 name="add",
                 arguments="{}",
-                native_provider_name="gemini",
+                origin="gemini",
                 provider_specific_fields={"thought_signature": "sig"},
             ),
         ]
 
         for param in items_to_provider_inputs(items):
-            assert "native_provider_name" not in param
+            assert "origin" not in param
             assert "provider_specific_fields" not in param
 
     def test_reasoning_status_not_sent_back(self) -> None:

@@ -11,7 +11,7 @@ from openai.types.responses import (
     ResponseOutputMessage,
     ResponseReasoningItem,
 )
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import to_jsonable_python
 
 from .content import (
@@ -93,17 +93,25 @@ class InputMessageItem(ResponseInputMessageItem):
         return cls(content=[InputText(text=text)], role=role)
 
 
+def _origin_field() -> Any:
+    # Items persisted before schema version 18 carry the vendor under its old
+    # name, ``native_provider_name``.
+    return Field(
+        default=None, validation_alias=AliasChoices("origin", "native_provider_name")
+    )
+
+
 class OutputMessageItem(ResponseOutputMessage):
     """
     Assistant message produced by the model.
 
-    ``native_provider_name`` names the vendor of the client/provider family that
-    produced the item ("openai", "anthropic", "gemini"), and ``platform`` the
-    cloud platform that served it (``None`` for the vendor's own API). Both are
-    set only when ``provider_specific_fields`` carries a payload signed by that
-    backend — such a payload is replayable only through the same vendor on the
-    same platform. ``None`` means the producing vendor is not known (a
-    LiteLLM-served or pre-existing item); such items are never dropped.
+    ``origin`` names the backend that produced the item: the vendor on its own
+    API ("openai", "anthropic", "gemini"), or the vendor and the cloud platform
+    that served it ("openai:bedrock", "anthropic:bedrock_mantle"). It is set
+    only when ``provider_specific_fields`` carries a payload signed by that
+    backend — such a payload is replayable only through the same backend.
+    ``None`` means the producing backend is not known (a LiteLLM-served or
+    pre-existing item); such items are never dropped.
     """
 
     # OpenResponses fields (Message):
@@ -120,8 +128,7 @@ class OutputMessageItem(ResponseOutputMessage):
     # Provider-specific opaque data for round-trip fidelity
     # (e.g. Gemini thought_signature on regular text parts)
     provider_specific_fields: dict[str, Any] | None = None
-    native_provider_name: str | None = None
-    platform: str | None = None
+    origin: str | None = _origin_field()
 
     @property
     def text(self) -> str:
@@ -173,8 +180,7 @@ class FunctionToolCallItem(ResponseFunctionToolCall):
     # (e.g. Gemini thought_signature on function_call parts)
     provider_specific_fields: dict[str, Any] | None = None
     cache_control: CacheControl | None = None
-    native_provider_name: str | None = None
-    platform: str | None = None
+    origin: str | None = _origin_field()
 
 
 class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
@@ -263,8 +269,7 @@ class ReasoningItem(ResponseReasoningItem):
     # grasp-agents fields:
 
     redacted: bool = False
-    native_provider_name: str | None = None
-    platform: str | None = None
+    origin: str | None = _origin_field()
 
     @property
     def content_text(self) -> str | None:

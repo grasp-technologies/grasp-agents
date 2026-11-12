@@ -126,8 +126,8 @@ def _attributed_to_gemini(item: InputItem) -> InputItem:
         )
         if call_id != item.call_id:
             update |= {"call_id": call_id, "provider_specific_fields": fields}
-    if item.native_provider_name is None:
-        update["native_provider_name"] = _GEMINI
+    if item.origin is None:
+        update["origin"] = _GEMINI
     return item.model_copy(update=update) if update else item
 
 

@@ -252,10 +252,11 @@ azure = OpenAILLM(
     },
 )
 
-# GPT on Bedrock's OpenAI-compatible endpoint (Bedrock API key)
+# GPT on the Bedrock runtime's OpenAI-compatible endpoint
+# ("bedrock_mantle" with "openai.gpt-6-luna" for Bedrock Mantle)
 gpt_bedrock = OpenAIResponsesLLM(
-    model_name="openai.gpt-5.6-luna",
-    platform="bedrock_mantle",
+    model_name="global.openai.gpt-6-luna",
+    platform="bedrock",
     platform_config={"aws_region": "us-east-1"},  # AWS_BEARER_TOKEN_BEDROCK or AWS creds
 )
 

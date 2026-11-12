@@ -72,18 +72,18 @@ Two separate axes on `CloudLLM`:
 
 | Provider | `platform` values | `platform_config` type | API-key env vars |
 |---|---|---|---|
-| `OpenAIResponsesLLM`, `OpenAILLM` | `"azure"`, `"bedrock_mantle"` | `AzureClientConfig` / `BedrockMantleClientConfig` | `OPENAI_API_KEY` |
+| `OpenAIResponsesLLM`, `OpenAILLM` | `"azure"`, `"bedrock"`, `"bedrock_mantle"` | `AzureClientConfig` / `BedrockOpenAIClientConfig` | `OPENAI_API_KEY` |
 | `AnthropicLLM` | `"bedrock"`, `"bedrock_mantle"`, `"vertex"` | `BedrockClientConfig` / `VertexClientConfig` | `ANTHROPIC_API_KEY` |
 | `GeminiLLM` | `"vertex"` | `GeminiVertexClientConfig` | `GOOGLE_API_KEY`, `GEMINI_API_KEY` |
 | `LiteLLM` | — (routes by model name) | — | litellm's own resolution |
 
-On Amazon Bedrock, each class reaches the endpoint that speaks its vendor's
-API. `bedrock_mantle` serves both the OpenAI and the Anthropic API, so both
-families have it: the OpenAI classes through the OpenAI SDK's
-`AsyncBedrockOpenAI`, `AnthropicLLM` through `AsyncAnthropicBedrockMantle`.
-The Bedrock runtime (`bedrock`) serves Claude through Anthropic's Messages API
-but OpenAI models only through Bedrock's own Converse API, so only
-`AnthropicLLM` has it.
+Amazon Bedrock serves both the OpenAI and the Anthropic API on two endpoints,
+the Bedrock runtime (`"bedrock"`) and Bedrock Mantle (`"bedrock_mantle"`). The
+OpenAI classes reach both through the OpenAI SDK's `AsyncBedrockOpenAI`, at
+`/openai/v1` on each; `AnthropicLLM` through `AsyncAnthropicBedrock` and
+`AsyncAnthropicBedrockMantle`. On the runtime a model is called by an inference
+profile (`"global.openai.gpt-6-luna"`), on Mantle by its plain ID
+(`"openai.gpt-6-luna"`).
 
 ```python
 from grasp_agents.llm.cloud_llm import APIProvider
@@ -278,19 +278,19 @@ can be shared between LLM instances. For streaming it paces stream acquisition.
 
 ## Reasoning across providers
 
-Items a model produces are stamped when a backend verifies their payload
-(reasoning items; messages and tool calls carrying a thought signature) with
-the model's `native_provider_name`, the vendor (`"openai"`, `"anthropic"`,
-`"gemini"`) whatever platform serves it, and its `platform` (`None` for the
-vendor's own API, else for example `"bedrock_mantle"`, `"azure"`,
-`"vertex"`). Both are compared: a platform encrypts reasoning with its own
-keys, and one platform serves several vendors. The OpenAI Responses and Chat
-Completions classes on one platform match. An `api_provider` endpoint has no
-platform, so reach a cloud platform through `platform=`.
+Items a model produces are stamped with its `origin` when a backend verifies
+their payload (reasoning items; messages and tool calls carrying a thought
+signature). The origin is the vendor on its own API (`"openai"`,
+`"anthropic"`, `"gemini"`), and `"<vendor>:<platform>"` on a cloud platform
+(`"openai:bedrock"`, `"anthropic:bedrock_mantle"`, `"gemini:vertex"`): a
+platform encrypts reasoning with its own keys, and one platform serves several
+vendors. `native_provider_name` stays the vendor on any platform. The OpenAI
+Responses and Chat Completions classes on one platform share an origin. An
+`api_provider` endpoint has no platform, so reach a cloud platform through
+`platform=`.
 
-Before a request, `CloudLLM` drops reasoning items stamped by another vendor
-or platform,
-and untagged reasoning items carrying an encrypted payload (stored before
+Before a request, `CloudLLM` drops reasoning items from another origin, and
+untagged reasoning items carrying an encrypted payload (stored before
 stamping, so no backend is known to have signed them). It strips foreign
 thought signatures from messages and tool calls. The transcript is never
 modified, so switching models or endpoints mid-conversation, or a `FallbackLLM`

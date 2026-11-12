@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from .litellm import LiteLLM, LiteLLMSettings
     from .openai_completions import (
         AzureClientConfig,
-        BedrockMantleClientConfig,
+        BedrockOpenAIClientConfig,
         OpenAICloudPlatform,
         OpenAILLM,
         OpenAILLMSettings,
@@ -55,7 +55,7 @@ _SUBMODULE_BY_NAME: dict[str, str] = {
     "LiteLLM": "litellm",
     "LiteLLMSettings": "litellm",
     "AzureClientConfig": "openai_completions",
-    "BedrockMantleClientConfig": "openai_completions",
+    "BedrockOpenAIClientConfig": "openai_completions",
     "OpenAICloudPlatform": "openai_completions",
     "OpenAILLM": "openai_completions",
     "OpenAILLMSettings": "openai_completions",
@@ -96,7 +96,7 @@ __all__ = [
     "AnthropicLLMSettings",
     "AzureClientConfig",
     "BedrockClientConfig",
-    "BedrockMantleClientConfig",
+    "BedrockOpenAIClientConfig",
     "GeminiCloudPlatform",
     "GeminiLLM",
     "GeminiLLMSettings",

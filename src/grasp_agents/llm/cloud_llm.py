@@ -316,21 +316,30 @@ class CloudLLM(LLM):
 
     @property
     def native_provider_name(self) -> str | None:
-        """
-        Vendor of this model ("openai", "anthropic", "gemini"), whatever
-        platform serves it. With ``platform`` it names the backend that
-        verifies the model's reasoning payloads: stamped on the items the
-        model produces, and used to keep reasoning another backend signed out
-        of its requests. ``None`` stamps and drops nothing.
-        """
+        """Vendor of this model ("openai", "anthropic", "gemini"), on any platform."""
         return self._native_provider_name
 
-    # --- Native provider name stamping ---
-
-    def _stamp_item_native_provider_name(self, item: OutputItem) -> None:
+    @property
+    def origin(self) -> str | None:
         """
-        Stamp an untagged item with THIS model's native provider name and
-        platform.
+        Backend that verifies this model's reasoning payloads: the vendor on
+        its own API, or ``"<vendor>:<platform>"`` on a cloud platform
+        (``"openai:bedrock"``, ``"anthropic:bedrock_mantle"``). A platform
+        encrypts with its own keys, and one platform serves several vendors.
+        Stamped on the items this model produces, and used to keep reasoning
+        another backend signed out of its requests. ``None`` stamps and drops
+        nothing.
+        """
+        vendor = self.native_provider_name
+        if vendor is None or self.platform is None:
+            return vendor
+        return f"{vendor}:{self.platform}"
+
+    # --- Origin stamping ---
+
+    def _stamp_item_origin(self, item: OutputItem) -> None:
+        """
+        Stamp an untagged item with THIS model's origin.
 
         Only items whose payload the producing company's backend verifies are
         stamped: reasoning items always, message and tool-call items when they
@@ -341,18 +350,17 @@ class CloudLLM(LLM):
                 return
         elif not isinstance(item, ReasoningItem):
             return
-        if item.native_provider_name is None:
-            item.native_provider_name = self.native_provider_name
-            item.platform = self.platform
+        if item.origin is None:
+            item.origin = self.origin
 
-    def _stamp_native_provider_name(self, response: Response) -> None:
-        """Stamp untagged response items with THIS model's native provider name."""
+    def _stamp_origin(self, response: Response) -> None:
+        """Stamp untagged response items with THIS model's origin."""
         for item in response.output:
-            self._stamp_item_native_provider_name(item)
+            self._stamp_item_origin(item)
 
     def _finalize_response(self, response: Response) -> None:
         self._stamp_cost(response)
-        self._stamp_native_provider_name(response)
+        self._stamp_origin(response)
 
     # --- Foreign reasoning ---
 
@@ -364,9 +372,8 @@ class CloudLLM(LLM):
         Keep out of the request any reasoning payload only a foreign backend
         can verify.
 
-        An item is foreign when its native provider name or platform differs
-        from THIS model's: a platform encrypts reasoning with its own keys, and
-        one platform serves several vendors. A foreign reasoning item is
+        An item is foreign when its origin differs from THIS model's. A foreign
+        reasoning item is
         dropped whole: providers verify reasoning payloads server-side, so a
         foreign one is rejected at the wire and nothing is left of the item
         once its payload is gone. An untagged reasoning item carrying an
@@ -378,22 +385,20 @@ class CloudLLM(LLM):
         back to the model that produced it. Other untagged items (name
         ``None``) pass through as they are.
         """
-        native_provider_name = self.native_provider_name
-        if native_provider_name is None:
+        origin = self.origin
+        if origin is None:
             return input
-        own = (native_provider_name, self.platform)
 
         kept: list[InputItem] = []
         for item in input:
             if isinstance(item, ReasoningItem):
-                if (item.native_provider_name, item.platform) == own or (
-                    item.native_provider_name is None and not item.encrypted_content
+                if item.origin == origin or (
+                    item.origin is None and not item.encrypted_content
                 ):
                     kept.append(item)
             elif (
                 isinstance(item, (OutputMessageItem, FunctionToolCallItem))
-                and item.native_provider_name is not None
-                and (item.native_provider_name, item.platform) != own
+                and item.origin not in {None, origin}
                 and has_thought_signature(item)
             ):
                 kept.append(without_thought_signature(item))
@@ -554,7 +559,7 @@ class CloudLLM(LLM):
                 # is free to hand out objects distinct from the ones in the
                 # terminal response, so each item is stamped where it flows
                 # rather than only on the response it ends up in.
-                self._stamp_item_native_provider_name(event.item)
+                self._stamp_item_origin(event.item)
             if isinstance(event, (ResponseCompleted, ResponseIncomplete)):
                 terminal_seen = True
                 self._finalize_response(event.response)

@@ -66,10 +66,10 @@ are optional extras in `pyproject.toml`.
   stream-end error.
 - **Unknown vendor items** round-trip as `UnknownItem` rather than being dropped.
 - **Foreign reasoning.** Reasoning items are tagged with the producing model's
-  `native_provider_name` (the vendor, on any platform) and `platform` (`None`
-  for the vendor's own API). A consumer drops reasoning tagged with another
-  vendor or platform, and untagged reasoning carrying an encrypted payload,
-  before sending.
+  `origin`: the vendor on its own API, `"<vendor>:<platform>"` on a cloud
+  platform. `native_provider_name` stays the vendor on any platform. A
+  consumer drops reasoning from another origin, and untagged reasoning carrying
+  an encrypted payload, before sending.
 - **Thought signatures** (`llm/thought_signatures.py`):
   - Gemini signs function calls and the message, never the reasoning item.
   - LiteLLM encodes the signature into the tool-call id (`…__thought__<sig>`).
