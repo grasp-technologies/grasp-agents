@@ -67,7 +67,7 @@ class TestSchemaVersion:
         # v17: FoldSpec.pinned, and AgentCheckpoint.usage holds the latest
         # response's usage — readable over the v13 floor (items dropped the
         # *_parts mirror fields; older logs unreadable).
-        assert CURRENT_SCHEMA_VERSION == 17
+        assert CURRENT_SCHEMA_VERSION == 18
         assert CURRENT_SCHEMA_VERSION in SCHEMA_VERSION_SUMMARIES
 
     def test_new_fields_default_to_none(self) -> None:

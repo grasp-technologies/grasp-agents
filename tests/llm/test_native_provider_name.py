@@ -1,6 +1,6 @@
 """
-Native provider name: stamp and drop provider-bound items by the backend that
-can verify them.
+Native provider name and platform: stamp and drop provider-bound items by the
+backend that can verify them, the vendor plus the platform serving it.
 
 * stamping — an untagged reasoning item gets this client's native provider
   name on the non-stream and stream paths alike, as does a message or tool
@@ -13,10 +13,10 @@ can verify them.
   verbatim, and neither the caller's input list nor its items are ever mutated
 * fallback rescue — a reasoning item tagged for the failed primary's provider
   does not poison the fallback member's request
-* resolution — the vendor on its own API, and the vendor plus the platform
-  on a cloud platform, which encrypts with its own keys and serves several
-  vendors; LiteLLM takes the provider it routes to, so its items stay with the
-  backend that can verify them
+* resolution — the native provider name is the vendor, whatever platform
+  serves it; the platform is recorded beside it, since a platform encrypts
+  with its own keys and serves several vendors; LiteLLM takes the provider it
+  routes to, so its items stay with the backend that can verify them
 """
 
 from __future__ import annotations
@@ -209,13 +209,24 @@ def _signatures(items: Iterable[Any]) -> list[Any]:
     ]
 
 
-def _history_with_reasoning(*, foreign: str, own: str) -> list[InputItem]:
+def _history_with_reasoning(
+    *,
+    foreign: str,
+    own: str,
+    foreign_platform: str | None = None,
+    own_platform: str | None = None,
+) -> list[InputItem]:
     """A turn carrying foreign, own-native_provider_name and untagged reasoning."""
     return [
         InputMessageItem.from_text("hi"),
-        ReasoningItem(native_provider_name=foreign, encrypted_content="foreign-sig"),
+        ReasoningItem(
+            native_provider_name=foreign,
+            platform=foreign_platform,
+            encrypted_content="foreign-sig",
+        ),
         ReasoningItem(
             native_provider_name=own,
+            platform=own_platform,
             encrypted_content="own-sig",
             summary=[ReasoningSummary(text="own")],
         ),
@@ -364,11 +375,31 @@ class TestStamping:
 
         response = await llm.generate_response(_USER_MSG)
 
-        assert _first_reasoning(response.output).native_provider_name == "openai"
+        reasoning = _first_reasoning(response.output)
+        assert reasoning.native_provider_name == "openai"
+        assert reasoning.platform is None
         message_item = next(
             i for i in response.output if isinstance(i, OutputMessageItem)
         )
         assert message_item.text == "hi"
+
+    @pytest.mark.asyncio
+    async def test_platform_served_reasoning_records_the_platform(self) -> None:
+        raw = _openai_response(
+            [_openai_reasoning_item("enc-abc"), _openai_message_item("hi")]
+        )
+        llm = _StubOpenAIResponsesLLM(
+            model_name="openai.gpt-5.6-luna",
+            platform="bedrock_mantle",
+            platform_config=_MANTLE_CONFIG,
+            served=raw,
+        )
+
+        response = await llm.generate_response(_USER_MSG)
+
+        reasoning = _first_reasoning(response.output)
+        assert reasoning.native_provider_name == "openai"
+        assert reasoning.platform == "bedrock_mantle"
 
     @pytest.mark.asyncio
     async def test_streamed_item_stamped_as_it_is_emitted(self) -> None:
@@ -462,7 +493,9 @@ class TestDroppingForeignReasoning:
         ]
         assert [d["encrypted_content"] for d in reasoning_dicts] == ["own-sig"]
         assert not any(
-            "native_provider_name" in d for d in captured if isinstance(d, dict)
+            "native_provider_name" in d or "platform" in d
+            for d in captured
+            if isinstance(d, dict)
         )
         assert len(history) == before_len
 
@@ -474,7 +507,33 @@ class TestDroppingForeignReasoning:
             platform_config=_MANTLE_CONFIG,
             served=_openai_response([_openai_message_item("ok")]),
         )
-        history = _history_with_reasoning(foreign="openai", own="openai:bedrock_mantle")
+        history = _history_with_reasoning(
+            foreign="openai", own="openai", own_platform="bedrock_mantle"
+        )
+
+        await llm.generate_response(history)
+
+        reasoning_dicts = [
+            d
+            for d in llm.captured_api_input
+            if isinstance(d, dict) and d.get("type") == "reasoning"
+        ]
+        assert [d["encrypted_content"] for d in reasoning_dicts] == ["own-sig"]
+
+    @pytest.mark.asyncio
+    async def test_gpt_on_mantle_drops_claude_reasoning_from_mantle(self) -> None:
+        llm = _StubOpenAIResponsesLLM(
+            model_name="openai.gpt-5.6-luna",
+            platform="bedrock_mantle",
+            platform_config=_MANTLE_CONFIG,
+            served=_openai_response([_openai_message_item("ok")]),
+        )
+        history = _history_with_reasoning(
+            foreign="anthropic",
+            foreign_platform="bedrock_mantle",
+            own="openai",
+            own_platform="bedrock_mantle",
+        )
 
         await llm.generate_response(history)
 
@@ -669,8 +728,9 @@ class TestOriginResolution:
             platform_config=_MANTLE_CONFIG,
         )
 
-        assert responses.native_provider_name == "openai:bedrock_mantle"
-        assert completions.native_provider_name == "openai:bedrock_mantle"
+        for llm in (responses, completions):
+            assert llm.native_provider_name == "openai"
+            assert llm.platform == "bedrock_mantle"
 
     def test_one_platform_keeps_its_vendors_apart(self) -> None:
         gpt = OpenAIResponsesLLM(
@@ -684,6 +744,7 @@ class TestOriginResolution:
             platform_config={"aws_region": "us-east-1", "api_key": "key"},
         )
 
+        assert gpt.platform == claude.platform
         assert gpt.native_provider_name != claude.native_provider_name
 
     def test_origin_is_the_client_vendor_on_a_compatible_endpoint(self) -> None:
@@ -705,7 +766,7 @@ class TestOriginResolution:
 
         assert llm.native_provider_name == "openai"
 
-    def test_openai_on_azure_takes_the_platform(self) -> None:
+    def test_openai_on_azure_keeps_the_vendor(self) -> None:
         llm = OpenAIResponsesLLM(
             model_name="gpt-5.6-luna",
             platform="azure",
@@ -716,16 +777,16 @@ class TestOriginResolution:
             },
         )
 
-        assert llm.native_provider_name == "openai:azure"
+        assert llm.native_provider_name == "openai"
 
-    def test_claude_on_bedrock_takes_the_platform(self) -> None:
+    def test_claude_on_bedrock_keeps_the_vendor(self) -> None:
         llm = AnthropicLLM(
             model_name="global.anthropic.claude-opus-5",
             platform="bedrock",
             platform_config={"aws_region": "us-east-1", "api_key": "key"},
         )
 
-        assert llm.native_provider_name == "anthropic:bedrock"
+        assert llm.native_provider_name == "anthropic"
 
     def test_litellm_tags_with_the_provider_it_routes_to(self) -> None:
         expected = {
