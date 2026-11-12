@@ -276,7 +276,7 @@ def _untagged_with_signed_reasoning(
 ) -> list[OutputItem]:
     """A turn as stored without native provider names, reasoning signed."""
     untagged: list[OutputItem] = [
-        item.model_copy(update={"origin": None})
+        item.model_copy(update={"native_provider_name": None})
         if isinstance(item, (ReasoningItem, OutputMessageItem, FunctionToolCallItem))
         else item
         for item in output

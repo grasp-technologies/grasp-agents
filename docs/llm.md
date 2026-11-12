@@ -278,19 +278,18 @@ can be shared between LLM instances. For streaming it paces stream acquisition.
 
 ## Reasoning across providers
 
-Items a model produces are stamped with its `origin` when a backend verifies
-their payload (reasoning items; messages and tool calls carrying a thought
-signature). The origin is the vendor on its own API (`"openai"`,
-`"anthropic"`, `"gemini"`), and `"<vendor>:<platform>"` on a cloud platform
-(`"openai:bedrock"`, `"anthropic:bedrock_mantle"`, `"gemini:vertex"`): a
-platform encrypts reasoning with its own keys, and one platform serves several
-vendors. `native_provider_name` stays the vendor on any platform. The OpenAI
-Responses and Chat Completions classes on one platform share an origin. An
-`api_provider` endpoint has no platform, so reach a cloud platform through
-`platform=`.
+Items a model produces are stamped when a backend verifies their payload
+(reasoning items; messages and tool calls carrying a thought signature) with
+the model's `native_provider_name`, the vendor (`"openai"`, `"anthropic"`,
+`"gemini"`) whatever platform serves it, and its `platform` (`None` for the
+vendor's own API, else for example `"bedrock"`, `"bedrock_mantle"`,
+`"vertex"`). Both are compared: a platform encrypts reasoning with its own
+keys, and one platform serves several vendors. The OpenAI Responses and Chat
+Completions classes on one platform match. An `api_provider` endpoint has no
+platform, so reach a cloud platform through `platform=`.
 
-Before a request, `CloudLLM` drops reasoning items from another origin, and
-untagged reasoning items carrying an encrypted payload (stored before
+Before a request, `CloudLLM` drops reasoning items stamped by another vendor
+or platform, and untagged reasoning items carrying an encrypted payload (stored before
 stamping, so no backend is known to have signed them). It strips foreign
 thought signatures from messages and tool calls. The transcript is never
 modified, so switching models or endpoints mid-conversation, or a `FallbackLLM`

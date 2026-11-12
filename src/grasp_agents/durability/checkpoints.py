@@ -178,11 +178,11 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "folds pin nothing and still apply, and their usage is empty."
     ),
     18: (
-        "Reasoning, message and tool-call items renamed ``native_provider_name`` "
-        "to ``origin``, which also names the cloud platform that served a signed "
-        'payload (``"openai:bedrock"``); reasoning is replayed only to the same '
-        "origin. v13-v17 records load fine (the old name is still read): their "
-        "items read as served by the vendor's own API."
+        "Reasoning, message and tool-call items gained ``platform``, the cloud "
+        "platform that served a signed payload, beside its "
+        "``native_provider_name``. Reasoning is replayed only to the same vendor "
+        "on the same platform. v13-v17 records load fine: their items read as "
+        "served by the vendor's own API."
     ),
 }
 """

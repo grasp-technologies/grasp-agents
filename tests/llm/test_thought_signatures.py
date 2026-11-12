@@ -36,11 +36,11 @@ _SIG = "EogGCoUGAR+thought/signature=="
 _SIGNED_ID = f"call_1__thought__{_SIG}"
 
 
-def _reasoning(origin: str | None = None) -> ReasoningItem:
+def _reasoning(native_provider_name: str | None = None) -> ReasoningItem:
     return ReasoningItem(
         summary=[ReasoningSummary(text="thinking")],
         encrypted_content=_SIG,
-        origin=origin,
+        native_provider_name=native_provider_name,
     )
 
 
@@ -107,7 +107,7 @@ class TestNormalization:
             if isinstance(i, (ReasoningItem, OutputMessageItem, FunctionToolCallItem))
         ]
         assert turn
-        assert {i.origin for i in turn} == {"gemini"}
+        assert {i.native_provider_name for i in turn} == {"gemini"}
 
     def test_other_turns_and_tagged_items_are_left_alone(self) -> None:
         anthropic_turn: list[InputItem] = [

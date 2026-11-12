@@ -80,7 +80,7 @@ from tests.llm.test_resilience import (
 _ANTHROPIC_PROVIDER = APIProvider(name="anthropic", base_url=None, api_key="test-key")
 _OPENAI_PROVIDER = APIProvider(name="openai", base_url=None, api_key="test-key")
 _GEMINI_PROVIDER = APIProvider(name="gemini", base_url=None, api_key="test-key")
-_MANTLE_CONFIG = BedrockOpenAIClientConfig(aws_region="us-east-1", api_key="test-key")
+_BEDROCK_CONFIG = BedrockOpenAIClientConfig(aws_region="us-east-1", api_key="test-key")
 _OPENROUTER_PROVIDER = APIProvider(
     name="openrouter",
     base_url="https://openrouter.ai/api/v1",
@@ -167,26 +167,26 @@ def _first_reasoning(items: Iterable[Any]) -> ReasoningItem:
     return next(i for i in items if isinstance(i, ReasoningItem))
 
 
-def _signed_message(origin: str | None) -> OutputMessageItem:
+def _signed_message(native_provider_name: str | None) -> OutputMessageItem:
     return OutputMessageItem(
         status="completed",
-        origin=origin,
+        native_provider_name=native_provider_name,
         content=[OutputMessageText(text="calling add")],
         provider_specific_fields={"thought_signature": "msg-sig", "other": 1},
     )
 
 
-def _signed_tool_call(origin: str | None) -> FunctionToolCallItem:
+def _signed_tool_call(native_provider_name: str | None) -> FunctionToolCallItem:
     return FunctionToolCallItem(
         call_id="call_1",
         name="add",
         arguments='{"a": 1, "b": 2}',
-        origin=origin,
+        native_provider_name=native_provider_name,
         provider_specific_fields={"thought_signature": "fc-sig"},
     )
 
 
-def _signed_turn(origin: str | None) -> list[InputItem]:
+def _signed_turn(native_provider_name: str | None) -> list[InputItem]:
     """
     An assistant turn whose message and tool call carry a thought signature.
 
@@ -195,8 +195,8 @@ def _signed_turn(origin: str | None) -> list[InputItem]:
     """
     return [
         InputMessageItem.from_text("hi"),
-        _signed_message(origin),
-        _signed_tool_call(origin),
+        _signed_message(native_provider_name),
+        _signed_tool_call(native_provider_name),
         FunctionToolOutputItem(call_id="call_1", output="3"),
     ]
 
@@ -213,16 +213,20 @@ def _history_with_reasoning(
     *,
     foreign: str,
     own: str,
+    foreign_platform: str | None = None,
+    own_platform: str | None = None,
 ) -> list[InputItem]:
-    """A turn carrying foreign-, own- and un-tagged reasoning."""
+    """A turn carrying foreign, own-native_provider_name and untagged reasoning."""
     return [
         InputMessageItem.from_text("hi"),
         ReasoningItem(
-            origin=foreign,
+            native_provider_name=foreign,
+            platform=foreign_platform,
             encrypted_content="foreign-sig",
         ),
         ReasoningItem(
-            origin=own,
+            native_provider_name=own,
+            platform=own_platform,
             encrypted_content="own-sig",
             summary=[ReasoningSummary(text="own")],
         ),
@@ -352,7 +356,7 @@ class TestStamping:
 
         response = await llm.generate_response(_USER_MSG)
 
-        assert _first_reasoning(response.output).origin == "anthropic"
+        assert _first_reasoning(response.output).native_provider_name == "anthropic"
         message_item = next(
             i for i in response.output if isinstance(i, OutputMessageItem)
         )
@@ -372,30 +376,30 @@ class TestStamping:
         response = await llm.generate_response(_USER_MSG)
 
         reasoning = _first_reasoning(response.output)
-        assert reasoning.origin == "openai"
+        assert reasoning.native_provider_name == "openai"
+        assert reasoning.platform is None
         message_item = next(
             i for i in response.output if isinstance(i, OutputMessageItem)
         )
         assert message_item.text == "hi"
 
     @pytest.mark.asyncio
-    async def test_platform_served_reasoning_records_the_platform_in_its_origin(
-        self,
-    ) -> None:
+    async def test_platform_served_reasoning_records_the_platform(self) -> None:
         raw = _openai_response(
             [_openai_reasoning_item("enc-abc"), _openai_message_item("hi")]
         )
         llm = _StubOpenAIResponsesLLM(
             model_name="openai.gpt-5.6-luna",
             platform="bedrock_mantle",
-            platform_config=_MANTLE_CONFIG,
+            platform_config=_BEDROCK_CONFIG,
             served=raw,
         )
 
         response = await llm.generate_response(_USER_MSG)
 
         reasoning = _first_reasoning(response.output)
-        assert reasoning.origin == "openai:bedrock_mantle"
+        assert reasoning.native_provider_name == "openai"
+        assert reasoning.platform == "bedrock_mantle"
 
     @pytest.mark.asyncio
     async def test_streamed_item_stamped_as_it_is_emitted(self) -> None:
@@ -404,9 +408,11 @@ class TestStamping:
         events = [e async for e in llm.generate_response_stream(_USER_MSG)]
 
         streamed = next(e for e in events if isinstance(e, OutputItemDone))
-        assert _first_reasoning([streamed.item]).origin == "openai"
+        assert _first_reasoning([streamed.item]).native_provider_name == "openai"
         completed = next(e for e in events if isinstance(e, ResponseCompleted))
-        assert _first_reasoning(completed.response.output).origin == "openai"
+        assert (
+            _first_reasoning(completed.response.output).native_provider_name == "openai"
+        )
 
     @pytest.mark.asyncio
     async def test_incomplete_stream_is_finalized_like_a_completed_one(self) -> None:
@@ -417,9 +423,12 @@ class TestStamping:
         events = [e async for e in llm.generate_response_stream(_USER_MSG)]
 
         incomplete = next(e for e in events if isinstance(e, ResponseIncomplete))
-        assert _first_reasoning(incomplete.response.output).origin == "openai"
+        assert (
+            _first_reasoning(incomplete.response.output).native_provider_name
+            == "openai"
+        )
         streamed = next(e for e in events if isinstance(e, OutputItemDone))
-        assert _first_reasoning([streamed.item]).origin == "openai"
+        assert _first_reasoning([streamed.item]).native_provider_name == "openai"
 
     def test_pretagged_origin_never_overwritten(self) -> None:
         llm = AnthropicLLM(
@@ -429,16 +438,16 @@ class TestStamping:
             model="claude-sonnet-4-5",
             output=[
                 ReasoningItem(
-                    origin="gemini",
+                    native_provider_name="gemini",
                     summary=[ReasoningSummary(text="pre-tagged")],
                 ),
                 ReasoningItem(summary=[ReasoningSummary(text="untagged")]),
             ],
         )
 
-        llm._stamp_origin(response)
+        llm._stamp_native_provider_name(response)
 
-        assert [i.origin for i in response.output] == [
+        assert [i.native_provider_name for i in response.output] == [
             "gemini",
             "anthropic",
         ]
@@ -484,7 +493,7 @@ class TestDroppingForeignReasoning:
         ]
         assert [d["encrypted_content"] for d in reasoning_dicts] == ["own-sig"]
         assert not any(
-            "origin" in d or "native_provider_name" in d
+            "native_provider_name" in d or "platform" in d
             for d in captured
             if isinstance(d, dict)
         )
@@ -495,10 +504,12 @@ class TestDroppingForeignReasoning:
         llm = _StubOpenAIResponsesLLM(
             model_name="openai.gpt-5.6-luna",
             platform="bedrock_mantle",
-            platform_config=_MANTLE_CONFIG,
+            platform_config=_BEDROCK_CONFIG,
             served=_openai_response([_openai_message_item("ok")]),
         )
-        history = _history_with_reasoning(foreign="openai", own="openai:bedrock_mantle")
+        history = _history_with_reasoning(
+            foreign="openai", own="openai", own_platform="bedrock_mantle"
+        )
 
         await llm.generate_response(history)
 
@@ -514,11 +525,14 @@ class TestDroppingForeignReasoning:
         llm = _StubOpenAIResponsesLLM(
             model_name="openai.gpt-5.6-luna",
             platform="bedrock_mantle",
-            platform_config=_MANTLE_CONFIG,
+            platform_config=_BEDROCK_CONFIG,
             served=_openai_response([_openai_message_item("ok")]),
         )
         history = _history_with_reasoning(
-            foreign="anthropic:bedrock_mantle", own="openai:bedrock_mantle"
+            foreign="anthropic",
+            foreign_platform="bedrock_mantle",
+            own="openai",
+            own_platform="bedrock_mantle",
         )
 
         await llm.generate_response(history)
@@ -535,13 +549,14 @@ class TestDroppingForeignReasoning:
         llm = _StubOpenAIResponsesLLM(
             model_name="global.openai.gpt-6-luna",
             platform="bedrock",
-            platform_config=BedrockOpenAIClientConfig(
-                aws_region="us-east-1", api_key="test-key"
-            ),
+            platform_config=_BEDROCK_CONFIG,
             served=_openai_response([_openai_message_item("ok")]),
         )
         history = _history_with_reasoning(
-            foreign="openai:bedrock_mantle", own="openai:bedrock"
+            foreign="openai",
+            foreign_platform="bedrock_mantle",
+            own="openai",
+            own_platform="bedrock",
         )
 
         await llm.generate_response(history)
@@ -569,33 +584,33 @@ class TestDroppingForeignReasoning:
 class TestThoughtSignatures:
     def test_signed_message_and_tool_call_are_stamped(self) -> None:
         llm = GeminiLLM(model_name="gemini-3-pro", api_provider=_GEMINI_PROVIDER)
-        message = _signed_message(origin=None)
-        tool_call = _signed_tool_call(origin=None)
+        message = _signed_message(native_provider_name=None)
+        tool_call = _signed_tool_call(native_provider_name=None)
         unsigned = OutputMessageItem(
             status="completed", content=[OutputMessageText(text="plain")]
         )
 
-        llm._stamp_origin(
+        llm._stamp_native_provider_name(
             Response(model="gemini-3-pro", output=[message, tool_call, unsigned])
         )
 
-        assert message.origin == "gemini"
-        assert tool_call.origin == "gemini"
+        assert message.native_provider_name == "gemini"
+        assert tool_call.native_provider_name == "gemini"
         # An unsigned item has nothing a backend must verify, so it stays free
         # to replay anywhere.
-        assert unsigned.origin is None
+        assert unsigned.native_provider_name is None
 
     def test_signed_item_origin_never_overwritten(self) -> None:
         llm = OpenAILLM(model_name="gpt-5.1", api_provider=_OPENAI_PROVIDER)
-        message = _signed_message(origin="gemini")
+        message = _signed_message(native_provider_name="gemini")
 
-        llm._stamp_origin(Response(model="gpt-5.1", output=[message]))
+        llm._stamp_native_provider_name(Response(model="gpt-5.1", output=[message]))
 
-        assert message.origin == "gemini"
+        assert message.native_provider_name == "gemini"
 
     def test_foreign_signatures_stripped_without_touching_history(self) -> None:
         llm = OpenAILLM(model_name="gpt-5.1", api_provider=_OPENAI_PROVIDER)
-        history = _signed_turn(origin="gemini")
+        history = _signed_turn(native_provider_name="gemini")
 
         filtered = llm._drop_foreign_reasoning(history)
 
@@ -613,7 +628,7 @@ class TestThoughtSignatures:
 
     def test_own_origin_keeps_signatures(self) -> None:
         llm = GeminiLLM(model_name="gemini-3-pro", api_provider=_GEMINI_PROVIDER)
-        history = _signed_turn(origin="gemini")
+        history = _signed_turn(native_provider_name="gemini")
 
         filtered = llm._drop_foreign_reasoning(history)
 
@@ -622,7 +637,7 @@ class TestThoughtSignatures:
 
     def test_untagged_signatures_are_kept(self) -> None:
         llm = OpenAILLM(model_name="gpt-5.1", api_provider=_OPENAI_PROVIDER)
-        history = _signed_turn(origin=None)
+        history = _signed_turn(native_provider_name=None)
 
         filtered = llm._drop_foreign_reasoning(history)
 
@@ -636,7 +651,7 @@ class TestThoughtSignatures:
             api_provider=_OPENAI_PROVIDER,
             served=_chat_completion("ok"),
         )
-        history = _signed_turn(origin="gemini")
+        history = _signed_turn(native_provider_name="gemini")
 
         await llm.generate_response(history)
 
@@ -668,7 +683,7 @@ class TestFallbackRescue:
         llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
         history: list[InputItem] = [
             InputMessageItem.from_text("hi"),
-            ReasoningItem(origin="openai", encrypted_content="foreign"),
+            ReasoningItem(native_provider_name="openai", encrypted_content="foreign"),
         ]
 
         result = await llm.generate_response(history)
@@ -729,23 +744,23 @@ class TestOriginResolution:
         responses = OpenAIResponsesLLM(
             model_name="openai.gpt-5.6-luna",
             platform="bedrock_mantle",
-            platform_config=_MANTLE_CONFIG,
+            platform_config=_BEDROCK_CONFIG,
         )
         completions = OpenAILLM(
             model_name="openai.gpt-5.6-luna",
             platform="bedrock_mantle",
-            platform_config=_MANTLE_CONFIG,
+            platform_config=_BEDROCK_CONFIG,
         )
 
         for llm in (responses, completions):
             assert llm.native_provider_name == "openai"
-            assert llm.origin == "openai:bedrock_mantle"
+            assert llm.platform == "bedrock_mantle"
 
     def test_one_platform_keeps_its_vendors_apart(self) -> None:
         gpt = OpenAIResponsesLLM(
             model_name="openai.gpt-5.6-luna",
             platform="bedrock_mantle",
-            platform_config=_MANTLE_CONFIG,
+            platform_config=_BEDROCK_CONFIG,
         )
         claude = AnthropicLLM(
             model_name="anthropic.claude-opus-5",
@@ -753,8 +768,8 @@ class TestOriginResolution:
             platform_config={"aws_region": "us-east-1", "api_key": "key"},
         )
 
-        assert gpt.origin == "openai:bedrock_mantle"
-        assert claude.origin == "anthropic:bedrock_mantle"
+        assert gpt.platform == claude.platform
+        assert gpt.native_provider_name != claude.native_provider_name
 
     def test_origin_is_the_client_vendor_on_a_compatible_endpoint(self) -> None:
         llm = OpenAILLM(
@@ -787,7 +802,6 @@ class TestOriginResolution:
         )
 
         assert llm.native_provider_name == "openai"
-        assert llm.origin == "openai:azure"
 
     def test_claude_on_bedrock_keeps_the_vendor(self) -> None:
         llm = AnthropicLLM(
@@ -797,17 +811,6 @@ class TestOriginResolution:
         )
 
         assert llm.native_provider_name == "anthropic"
-        assert llm.origin == "anthropic:bedrock"
-
-    def test_item_stored_under_the_old_field_name_keeps_its_origin(self) -> None:
-        stored = {
-            "type": "reasoning",
-            "summary": [],
-            "encrypted_content": "sig",
-            "native_provider_name": "openai",
-        }
-
-        assert ReasoningItem.model_validate(stored).origin == "openai"
 
     def test_litellm_tags_with_the_provider_it_routes_to(self) -> None:
         expected = {
@@ -860,7 +863,9 @@ class TestOriginResolution:
     def test_llm_without_reasoning_origin_drops_nothing(self) -> None:
         llm = LazyStreamCloudLLM(model_name="mock")
         tagged = [
-            ReasoningItem(origin="anthropic", summary=[ReasoningSummary(text="x")])
+            ReasoningItem(
+                native_provider_name="anthropic", summary=[ReasoningSummary(text="x")]
+            )
         ]
 
         assert llm.native_provider_name is None
@@ -870,8 +875,12 @@ class TestOriginResolution:
 class TestLiteLLMDropsForeignReasoning:
     def test_reasoning_from_another_provider_is_dropped(self) -> None:
         llm = LiteLLM(model_name="gemini/gemini-2.5-pro")
-        own = ReasoningItem(origin="gemini", summary=[ReasoningSummary(text="own")])
-        foreign = ReasoningItem(origin="anthropic", encrypted_content="anthropic-sig")
+        own = ReasoningItem(
+            native_provider_name="gemini", summary=[ReasoningSummary(text="own")]
+        )
+        foreign = ReasoningItem(
+            native_provider_name="anthropic", encrypted_content="anthropic-sig"
+        )
         untagged = ReasoningItem(summary=[ReasoningSummary(text="untagged")])
 
         kept = llm._drop_foreign_reasoning([own, foreign, untagged])
@@ -890,7 +899,7 @@ class TestSameVendorAcrossClients:
         thinking = ReasoningItem(
             summary=[ReasoningSummary(text="plan")], encrypted_content="bedrock-sig"
         )
-        producer._stamp_item_origin(thinking)
+        producer._stamp_item_native_provider_name(thinking)
         consumer = _StubAnthropicLLM(
             model_name="claude-sonnet-4-5",
             api_provider=_ANTHROPIC_PROVIDER,
@@ -909,6 +918,8 @@ class TestSameVendorAcrossClients:
         consumer = LiteLLM(
             model_name="bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0"
         )
-        native = ReasoningItem(origin="anthropic", encrypted_content="api-sig")
+        native = ReasoningItem(
+            native_provider_name="anthropic", encrypted_content="api-sig"
+        )
 
         assert list(consumer._drop_foreign_reasoning([native])) == [native]
