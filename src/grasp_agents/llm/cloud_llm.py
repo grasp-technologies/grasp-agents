@@ -317,11 +317,11 @@ class CloudLLM(LLM):
     @property
     def native_provider_name(self) -> str | None:
         """
-        Vendor whose backend verifies this model's reasoning payloads
-        ("openai", "anthropic", "gemini"), whatever endpoint or platform serves
-        the model. Stamped on the items this model produces and used to keep
-        another vendor's signed reasoning out of its requests; ``None`` stamps
-        and drops nothing.
+        Vendor of this model ("openai", "anthropic", "gemini"), whatever
+        platform serves it. With ``platform`` it names the backend that
+        verifies the model's reasoning payloads: stamped on the items the
+        model produces, and used to keep reasoning another backend signed out
+        of its requests. ``None`` stamps and drops nothing.
         """
         return self._native_provider_name
 
@@ -329,7 +329,8 @@ class CloudLLM(LLM):
 
     def _stamp_item_native_provider_name(self, item: OutputItem) -> None:
         """
-        Stamp an untagged item with THIS model's native provider name.
+        Stamp an untagged item with THIS model's native provider name and
+        platform.
 
         Only items whose payload the producing company's backend verifies are
         stamped: reasoning items always, message and tool-call items when they
@@ -342,6 +343,7 @@ class CloudLLM(LLM):
             return
         if item.native_provider_name is None:
             item.native_provider_name = self.native_provider_name
+            item.platform = self.platform
 
     def _stamp_native_provider_name(self, response: Response) -> None:
         """Stamp untagged response items with THIS model's native provider name."""
@@ -362,28 +364,36 @@ class CloudLLM(LLM):
         Keep out of the request any reasoning payload only a foreign backend
         can verify.
 
-        A reasoning item tagged with a native provider name other than THIS model's is
+        An item is foreign when its native provider name or platform differs
+        from THIS model's: a platform encrypts reasoning with its own keys, and
+        one platform serves several vendors. A foreign reasoning item is
         dropped whole: providers verify reasoning payloads server-side, so a
         foreign one is rejected at the wire and nothing is left of the item
-        once its payload is gone. A foreign-tagged message or tool call is
+        once its payload is gone. An untagged reasoning item carrying an
+        encrypted payload is dropped too: no backend is known to have signed
+        it. A foreign-tagged message or tool call is
         instead forwarded as a copy without its thought signature — dropping it
         would break tool-call pairing and lose the text. The caller's items are
         never modified, so the signature is still there if a later turn goes
-        back to the model that produced it. Untagged items (name ``None``)
-        pass through as they are.
+        back to the model that produced it. Other untagged items (name
+        ``None``) pass through as they are.
         """
         native_provider_name = self.native_provider_name
         if native_provider_name is None:
             return input
+        own = (native_provider_name, self.platform)
 
         kept: list[InputItem] = []
         for item in input:
             if isinstance(item, ReasoningItem):
-                if item.native_provider_name in {None, native_provider_name}:
+                if (item.native_provider_name, item.platform) == own or (
+                    item.native_provider_name is None and not item.encrypted_content
+                ):
                     kept.append(item)
             elif (
                 isinstance(item, (OutputMessageItem, FunctionToolCallItem))
-                and item.native_provider_name not in {None, native_provider_name}
+                and item.native_provider_name is not None
+                and (item.native_provider_name, item.platform) != own
                 and has_thought_signature(item)
             ):
                 kept.append(without_thought_signature(item))

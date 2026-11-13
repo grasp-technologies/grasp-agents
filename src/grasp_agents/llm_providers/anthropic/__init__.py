@@ -91,10 +91,11 @@ from anthropic.types import (
     WebSearchToolResultBlock as AnthropicWebSearchToolResultBlock,
 )
 
+from grasp_agents.llm_providers.bedrock import BedrockClientConfig
+
 from .anthropic_llm import (
     AnthropicCloudPlatform,
     AnthropicLLM,
     AnthropicLLMSettings,
-    BedrockClientConfig,
     VertexClientConfig,
 )

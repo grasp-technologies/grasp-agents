@@ -1,19 +1,21 @@
 """
-Native provider name: stamp and drop provider-bound items by the vendor of the
-client that produced them.
+Native provider name and platform: stamp and drop provider-bound items by the
+backend that can verify them, the vendor plus the platform serving it.
 
 * stamping — an untagged reasoning item gets this client's native provider
   name on the non-stream and stream paths alike, as does a message or tool
   call carrying a thought signature; items without a signature and items
   already tagged are left untouched
 * dropping — a reasoning item tagged for a foreign provider never reaches the
-  wire; a foreign-tagged signed message or tool call is forwarded without its
-  signature; own and untagged items pass through verbatim, and neither the
-  caller's input list nor its items are ever mutated
+  wire, nor does an untagged one carrying an encrypted payload; a
+  foreign-tagged signed message or tool call is forwarded without its
+  signature; own items and untagged items without a payload pass through
+  verbatim, and neither the caller's input list nor its items are ever mutated
 * fallback rescue — a reasoning item tagged for the failed primary's provider
   does not poison the fallback member's request
-* resolution — the native provider name is the client class's vendor, whatever
-  model name, endpoint or platform is in play; LiteLLM takes the provider it
+* resolution — the native provider name is the vendor, whatever platform
+  serves it; the platform is recorded beside it, since a platform encrypts
+  with its own keys and serves several vendors; LiteLLM takes the provider it
   routes to, so its items stay with the backend that can verify them
 """
 
@@ -44,6 +46,7 @@ from openai.types.responses.response_reasoning_item import (
 from grasp_agents.llm.cloud_llm import APIProvider
 from grasp_agents.llm.fallback_llm import FallbackLLM
 from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+from grasp_agents.llm_providers.bedrock import BedrockClientConfig
 from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 from grasp_agents.llm_providers.litellm.lite_llm import LiteLLM
 from grasp_agents.llm_providers.openai_completions.completions_llm import (
@@ -77,6 +80,7 @@ from tests.llm.test_resilience import (
 _ANTHROPIC_PROVIDER = APIProvider(name="anthropic", base_url=None, api_key="test-key")
 _OPENAI_PROVIDER = APIProvider(name="openai", base_url=None, api_key="test-key")
 _GEMINI_PROVIDER = APIProvider(name="gemini", base_url=None, api_key="test-key")
+_BEDROCK_CONFIG = BedrockClientConfig(aws_region="us-east-1", api_key="test-key")
 _OPENROUTER_PROVIDER = APIProvider(
     name="openrouter",
     base_url="https://openrouter.ai/api/v1",
@@ -205,13 +209,24 @@ def _signatures(items: Iterable[Any]) -> list[Any]:
     ]
 
 
-def _history_with_reasoning(*, foreign: str, own: str) -> list[InputItem]:
+def _history_with_reasoning(
+    *,
+    foreign: str,
+    own: str,
+    foreign_platform: str | None = None,
+    own_platform: str | None = None,
+) -> list[InputItem]:
     """A turn carrying foreign, own-native_provider_name and untagged reasoning."""
     return [
         InputMessageItem.from_text("hi"),
-        ReasoningItem(native_provider_name=foreign, encrypted_content="foreign-sig"),
+        ReasoningItem(
+            native_provider_name=foreign,
+            platform=foreign_platform,
+            encrypted_content="foreign-sig",
+        ),
         ReasoningItem(
             native_provider_name=own,
+            platform=own_platform,
             encrypted_content="own-sig",
             summary=[ReasoningSummary(text="own")],
         ),
@@ -360,11 +375,31 @@ class TestStamping:
 
         response = await llm.generate_response(_USER_MSG)
 
-        assert _first_reasoning(response.output).native_provider_name == "openai"
+        reasoning = _first_reasoning(response.output)
+        assert reasoning.native_provider_name == "openai"
+        assert reasoning.platform is None
         message_item = next(
             i for i in response.output if isinstance(i, OutputMessageItem)
         )
         assert message_item.text == "hi"
+
+    @pytest.mark.asyncio
+    async def test_platform_served_reasoning_records_the_platform(self) -> None:
+        raw = _openai_response(
+            [_openai_reasoning_item("enc-abc"), _openai_message_item("hi")]
+        )
+        llm = _StubOpenAIResponsesLLM(
+            model_name="openai.gpt-5.6-luna",
+            platform="bedrock_mantle",
+            platform_config=_BEDROCK_CONFIG,
+            served=raw,
+        )
+
+        response = await llm.generate_response(_USER_MSG)
+
+        reasoning = _first_reasoning(response.output)
+        assert reasoning.native_provider_name == "openai"
+        assert reasoning.platform == "bedrock_mantle"
 
     @pytest.mark.asyncio
     async def test_streamed_item_stamped_as_it_is_emitted(self) -> None:
@@ -423,7 +458,7 @@ class TestStamping:
 
 class TestDroppingForeignReasoning:
     @pytest.mark.asyncio
-    async def test_anthropic_drops_foreign_keeps_own_and_untagged(self) -> None:
+    async def test_anthropic_keeps_only_its_own_signed_reasoning(self) -> None:
         llm = _StubAnthropicLLM(
             model_name="claude-sonnet-4-5",
             api_provider=_ANTHROPIC_PROVIDER,
@@ -437,11 +472,11 @@ class TestDroppingForeignReasoning:
         signatures = [
             b["signature"] for b in _anthropic_thinking_blocks(llm.captured_api_input)
         ]
-        assert signatures == ["own-sig", "untagged-sig"]
+        assert signatures == ["own-sig"]
         assert len(history) == before_len
 
     @pytest.mark.asyncio
-    async def test_openai_responses_drops_foreign_keeps_own_and_untagged(self) -> None:
+    async def test_openai_responses_keeps_only_its_own_signed_reasoning(self) -> None:
         llm = _StubOpenAIResponsesLLM(
             model_name="gpt-5.1",
             api_provider=_OPENAI_PROVIDER,
@@ -456,14 +491,91 @@ class TestDroppingForeignReasoning:
         reasoning_dicts = [
             d for d in captured if isinstance(d, dict) and d.get("type") == "reasoning"
         ]
-        assert [d["encrypted_content"] for d in reasoning_dicts] == [
-            "own-sig",
-            "untagged-sig",
-        ]
+        assert [d["encrypted_content"] for d in reasoning_dicts] == ["own-sig"]
         assert not any(
-            "native_provider_name" in d for d in captured if isinstance(d, dict)
+            "native_provider_name" in d or "platform" in d
+            for d in captured
+            if isinstance(d, dict)
         )
         assert len(history) == before_len
+
+    @pytest.mark.asyncio
+    async def test_mantle_drops_reasoning_encrypted_by_openai(self) -> None:
+        llm = _StubOpenAIResponsesLLM(
+            model_name="openai.gpt-5.6-luna",
+            platform="bedrock_mantle",
+            platform_config=_BEDROCK_CONFIG,
+            served=_openai_response([_openai_message_item("ok")]),
+        )
+        history = _history_with_reasoning(
+            foreign="openai", own="openai", own_platform="bedrock_mantle"
+        )
+
+        await llm.generate_response(history)
+
+        reasoning_dicts = [
+            d
+            for d in llm.captured_api_input
+            if isinstance(d, dict) and d.get("type") == "reasoning"
+        ]
+        assert [d["encrypted_content"] for d in reasoning_dicts] == ["own-sig"]
+
+    @pytest.mark.asyncio
+    async def test_gpt_on_mantle_drops_claude_reasoning_from_mantle(self) -> None:
+        llm = _StubOpenAIResponsesLLM(
+            model_name="openai.gpt-5.6-luna",
+            platform="bedrock_mantle",
+            platform_config=_BEDROCK_CONFIG,
+            served=_openai_response([_openai_message_item("ok")]),
+        )
+        history = _history_with_reasoning(
+            foreign="anthropic",
+            foreign_platform="bedrock_mantle",
+            own="openai",
+            own_platform="bedrock_mantle",
+        )
+
+        await llm.generate_response(history)
+
+        reasoning_dicts = [
+            d
+            for d in llm.captured_api_input
+            if isinstance(d, dict) and d.get("type") == "reasoning"
+        ]
+        assert [d["encrypted_content"] for d in reasoning_dicts] == ["own-sig"]
+
+    @pytest.mark.asyncio
+    async def test_gpt_on_bedrock_runtime_drops_reasoning_from_mantle(self) -> None:
+        llm = _StubOpenAIResponsesLLM(
+            model_name="global.openai.gpt-6-luna",
+            platform="bedrock",
+            platform_config=_BEDROCK_CONFIG,
+            served=_openai_response([_openai_message_item("ok")]),
+        )
+        history = _history_with_reasoning(
+            foreign="openai",
+            foreign_platform="bedrock_mantle",
+            own="openai",
+            own_platform="bedrock",
+        )
+
+        await llm.generate_response(history)
+
+        reasoning_dicts = [
+            d
+            for d in llm.captured_api_input
+            if isinstance(d, dict) and d.get("type") == "reasoning"
+        ]
+        assert [d["encrypted_content"] for d in reasoning_dicts] == ["own-sig"]
+
+    def test_untagged_reasoning_without_a_payload_passes_through(self) -> None:
+        llm = OpenAIResponsesLLM(
+            model_name="gpt-5.6-luna", api_provider=_OPENAI_PROVIDER
+        )
+        plain = ReasoningItem(summary=[ReasoningSummary(text="plain")])
+        signed = ReasoningItem(encrypted_content="untagged-sig")
+
+        assert list(llm._drop_foreign_reasoning([plain, signed])) == [plain]
 
 
 # ---------- 3. Thought signatures ----------
@@ -579,6 +691,39 @@ class TestFallbackRescue:
         assert result.output_text == "rescued"
         assert _anthropic_thinking_blocks(fallback.captured_api_input) == []
 
+    @pytest.mark.asyncio
+    async def test_fallback_drops_untagged_signed_reasoning(self) -> None:
+        primary = ErrorLLM(
+            model_name="primary",
+            retry_policy=None,
+            error_to_raise=LlmInternalServerError(
+                "down", response=_resp(503), body=None
+            ),
+        )
+        fallback = _StubAnthropicLLM(
+            model_name="claude-sonnet-4-5",
+            platform="bedrock",
+            platform_config={"aws_region": "us-east-1", "api_key": "test-key"},
+            served=_anthropic_message([TextBlock(type="text", text="rescued")]),
+        )
+        llm = FallbackLLM(primary=primary, fallbacks=(fallback,))
+        history: list[InputItem] = [
+            InputMessageItem.from_text("hi"),
+            ReasoningItem(
+                encrypted_content="gAAAA-openai-ciphertext",
+                summary=[ReasoningSummary(text="plan")],
+            ),
+            OutputMessageItem(
+                status="completed", content=[OutputMessageText(text="done")]
+            ),
+            InputMessageItem.from_text("more"),
+        ]
+
+        result = await llm.generate_response(history)
+
+        assert result.output_text == "rescued"
+        assert _anthropic_thinking_blocks(fallback.captured_api_input) == []
+
 
 # ---------- 5. Origin resolution ----------
 
@@ -595,7 +740,38 @@ class TestOriginResolution:
         assert responses.native_provider_name == "openai"
         assert completions.native_provider_name == "openai"
 
-    def test_origin_is_the_client_vendor_regardless_of_endpoint(self) -> None:
+    def test_openai_dialects_on_bedrock_mantle_share_one_origin(self) -> None:
+        responses = OpenAIResponsesLLM(
+            model_name="openai.gpt-5.6-luna",
+            platform="bedrock_mantle",
+            platform_config=_BEDROCK_CONFIG,
+        )
+        completions = OpenAILLM(
+            model_name="openai.gpt-5.6-luna",
+            platform="bedrock_mantle",
+            platform_config=_BEDROCK_CONFIG,
+        )
+
+        for llm in (responses, completions):
+            assert llm.native_provider_name == "openai"
+            assert llm.platform == "bedrock_mantle"
+
+    def test_one_platform_keeps_its_vendors_apart(self) -> None:
+        gpt = OpenAIResponsesLLM(
+            model_name="openai.gpt-5.6-luna",
+            platform="bedrock_mantle",
+            platform_config=_BEDROCK_CONFIG,
+        )
+        claude = AnthropicLLM(
+            model_name="anthropic.claude-opus-5",
+            platform="bedrock_mantle",
+            platform_config={"aws_region": "us-east-1", "api_key": "key"},
+        )
+
+        assert gpt.platform == claude.platform
+        assert gpt.native_provider_name != claude.native_provider_name
+
+    def test_origin_is_the_client_vendor_on_a_compatible_endpoint(self) -> None:
         llm = OpenAILLM(
             model_name="gpt-5.6-luna",
             api_provider=APIProvider(
@@ -613,6 +789,28 @@ class TestOriginResolution:
         )
 
         assert llm.native_provider_name == "openai"
+
+    def test_openai_on_azure_keeps_the_vendor(self) -> None:
+        llm = OpenAIResponsesLLM(
+            model_name="gpt-5.6-luna",
+            platform="azure",
+            platform_config={
+                "azure_endpoint": "https://example.openai.azure.com",
+                "api_key": "key",
+                "api_version": "2025-04-01-preview",
+            },
+        )
+
+        assert llm.native_provider_name == "openai"
+
+    def test_claude_on_bedrock_keeps_the_vendor(self) -> None:
+        llm = AnthropicLLM(
+            model_name="global.anthropic.claude-opus-5",
+            platform="bedrock",
+            platform_config={"aws_region": "us-east-1", "api_key": "key"},
+        )
+
+        assert llm.native_provider_name == "anthropic"
 
     def test_litellm_tags_with_the_provider_it_routes_to(self) -> None:
         expected = {

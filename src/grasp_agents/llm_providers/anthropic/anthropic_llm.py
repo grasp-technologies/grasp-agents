@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     )
     from pydantic import BaseModel
 
+    from grasp_agents.llm_providers.bedrock import BedrockClientConfig
     from grasp_agents.tools.base import BaseTool, ToolChoice
     from grasp_agents.types.items import InputItem
     from grasp_agents.types.llm_errors import LlmError
@@ -112,24 +113,6 @@ class AnthropicLLMSettings(CloudLLMSettings, total=False):
     inference_geo: str | None
 
 
-class BedrockClientConfig(TypedDict, total=False):
-    """
-    Client args for ``platform="bedrock"`` / ``platform="bedrock_mantle"``.
-
-    Unset values fall back to the standard AWS credential/region chain (env
-    vars, shared config/credentials files, SSO, IMDS). ``api_key`` is a Bedrock
-    bearer token, mutually exclusive with the ``aws_*`` credential fields.
-    """
-
-    aws_region: str
-    aws_profile: str
-    aws_access_key: str
-    aws_secret_key: str
-    aws_session_token: str
-    api_key: str
-    base_url: str
-
-
 class VertexClientConfig(TypedDict, total=False):
     """
     Client args for ``platform="vertex"``.
@@ -154,10 +137,7 @@ class AnthropicLLM(CloudLLM):
     _cloud_platforms: ClassVar[frozenset[str]] = frozenset(
         {"bedrock", "bedrock_mantle", "vertex"}
     )
-    _litellm_provider_aliases: ClassVar[Mapping[str, str]] = {
-        "bedrock_mantle": "bedrock",
-        "vertex": "vertex_ai",
-    }
+    _litellm_provider_aliases: ClassVar[Mapping[str, str]] = {"vertex": "vertex_ai"}
 
     llm_settings: AnthropicLLMSettings | None = None
 

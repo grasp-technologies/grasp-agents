@@ -5,7 +5,7 @@ description: How to change or add an LLM provider in grasp-agents — the CloudL
 
 # LLM providers
 
-Read `docs/llm.md` first. It describes the public behaviour that this skill
+Read `docs/llm.md` first. It describes the public behavior that this skill
 explains how to preserve.
 
 ## Layout of a provider
@@ -48,8 +48,8 @@ are optional extras in `pyproject.toml`.
    limiting, validation and the terminal event live in the base classes, so don't
    re-implement them per provider.
 4. **`platform=` vs `api_provider=`.**
-   - `platform=` is a cloud that needs a dedicated client (Bedrock, Vertex,
-     Azure).
+   - `platform=` is a cloud that needs a dedicated client or endpoint
+     (Bedrock, Bedrock Mantle, Vertex, Azure).
    - `api_provider=` points the vendor's own SDK at any endpoint speaking that API.
      Its `name` is the pricing and capability identity.
    - Model-name prefix routing does not exist. Don't add it back.
@@ -65,9 +65,11 @@ are optional extras in `pyproject.toml`.
 - **A cut-off stream must not be reported as `completed`.** It raises the typed
   stream-end error.
 - **Unknown vendor items** round-trip as `UnknownItem` rather than being dropped.
-- **Foreign reasoning.** Reasoning items are tagged with the producing
-  `native_provider_name`. A consumer drops reasoning from other vendors before
-  sending; only signatures from the same vendor are replayed.
+- **Foreign reasoning.** Reasoning items are tagged with the producing model's
+  `native_provider_name` (the vendor, on any platform) and `platform` (`None`
+  for the vendor's own API). A consumer drops reasoning tagged with another
+  vendor or platform, and untagged reasoning carrying an encrypted payload,
+  before sending.
 - **Thought signatures** (`llm/thought_signatures.py`):
   - Gemini signs function calls and the message, never the reasoning item.
   - LiteLLM encodes the signature into the tool-call id (`…__thought__<sig>`).
@@ -97,7 +99,10 @@ are optional extras in `pyproject.toml`.
 - After touching reasoning replay in any provider, run
   `tests/integration/test_foreign_reasoning_live.py -m integration`. It replays
   reasoning across every producer and consumer pair (about a minute on cheap
-  models).
+  models). After touching a Bedrock platform, also run
+  `tests/integration/test_bedrock_live.py -m integration`: GPT and Claude on the
+  runtime and Mantle, continued on the same model, the other platform and the
+  other vendor. It needs AWS_BEARER_TOKEN_BEDROCK or AWS credentials.
 
 ## Adding a provider
 

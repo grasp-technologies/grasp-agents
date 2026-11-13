@@ -11,7 +11,7 @@ from grasp_agents.types.items import InputItem
 from grasp_agents.types.packet import Packet
 from grasp_agents.types.response import ResponseUsage
 
-CURRENT_SCHEMA_VERSION: int = 17
+CURRENT_SCHEMA_VERSION: int = 18
 """
 Version of the persisted checkpoint / task-record schema.
 
@@ -176,6 +176,13 @@ SCHEMA_VERSION_SUMMARIES: dict[int, str] = {
         "AgentCheckpoint.usage now holds the latest response's usage, which "
         "anchors a resumed agent's context size. v13-v16 records load fine: their "
         "folds pin nothing and still apply, and their usage is empty."
+    ),
+    18: (
+        "Reasoning, message and tool-call items gained ``platform``, the cloud "
+        "platform that served a signed payload, beside its "
+        "``native_provider_name``. Reasoning is replayed only to the same vendor "
+        "on the same platform. v13-v17 records load fine: their items read as "
+        "served by the vendor's own API."
     ),
 }
 """

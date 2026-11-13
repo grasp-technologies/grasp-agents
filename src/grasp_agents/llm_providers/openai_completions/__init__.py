@@ -84,6 +84,8 @@ from openai.types.shared_params.function_definition import (
     FunctionDefinition as OpenAIFunctionDefinition,
 )
 
+from grasp_agents.llm_providers.bedrock import BedrockClientConfig
+
 from .completions_llm import (
     AzureClientConfig,
     OpenAICloudPlatform,
@@ -97,6 +99,7 @@ from .response_to_provider_inputs import (
 
 __all__ = [
     "AzureClientConfig",
+    "BedrockClientConfig",
     "OpenAICloudPlatform",
     "OpenAILLM",
     "OpenAILLMSettings",
