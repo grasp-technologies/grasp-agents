@@ -339,7 +339,7 @@ class TestBedrockOpenAIClient:
         monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
         config = BedrockClientConfig(
             aws_region="us-east-1",
-            aws_access_key="AKIAEXAMPLE",
+            aws_access_key="test-access-key",
             aws_secret_key="secret",
         )
 
@@ -350,7 +350,7 @@ class TestBedrockOpenAIClient:
         )
 
         state = llm.client._bedrock_state
-        assert state.aws_access_key_id == "AKIAEXAMPLE"
+        assert state.aws_access_key_id == "test-access-key"
         assert state.aws_secret_access_key == "secret"
 
     @pytest.mark.parametrize("platform", ["bedrock", "bedrock_mantle"])
