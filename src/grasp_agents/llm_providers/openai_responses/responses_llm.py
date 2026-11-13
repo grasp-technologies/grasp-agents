@@ -53,9 +53,9 @@ from grasp_agents.llm.cloud_llm import (
     CloudLLM,
     CloudLLMSettings,
 )
+from grasp_agents.llm_providers.bedrock import BedrockClientConfig
 from grasp_agents.llm_providers.openai_completions.completions_llm import (
     AzureClientConfig,
-    BedrockOpenAIClientConfig,
     OpenAICloudPlatform,
     make_bedrock_openai_client,
 )
@@ -174,9 +174,9 @@ class OpenAIResponsesLLM(CloudLLM):
     # OpenAI-compatible endpoint.
     platform: OpenAICloudPlatform | None = None
     # Azure client args (see AzureClientConfig; ``model_name`` is the Azure
-    # *deployment* name), or Bedrock's (see BedrockOpenAIClientConfig). May
+    # *deployment* name), or Bedrock's (see BedrockClientConfig). May
     # carry secrets — kept out of repr.
-    platform_config: AzureClientConfig | BedrockOpenAIClientConfig | None = field(
+    platform_config: AzureClientConfig | BedrockClientConfig | None = field(
         default=None, repr=False
     )
     openai_client_timeout: float = 120.0
@@ -217,7 +217,7 @@ class OpenAIResponsesLLM(CloudLLM):
         elif self.platform in {"bedrock", "bedrock_mantle"}:
             _client, _api_provider = make_bedrock_openai_client(
                 self.platform,
-                cast("BedrockOpenAIClientConfig", config),
+                cast("BedrockClientConfig", config),
                 {**common, **extra},
             )
         else:

@@ -11,6 +11,7 @@ from openai import AsyncBedrockOpenAI, OpenAIError
 
 from grasp_agents.llm.cloud_llm import APIProvider
 from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+from grasp_agents.llm_providers.bedrock import BedrockClientConfig
 from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 from grasp_agents.llm_providers.litellm.lite_llm import LiteLLM
 from grasp_agents.llm_providers.openai_completions.completions_llm import OpenAILLM
@@ -330,6 +331,27 @@ class TestBedrockOpenAIClient:
                 platform=platform,
                 platform_config={"api_key": "bedrock-key"},
             )
+
+    @pytest.mark.parametrize("platform", ["bedrock", "bedrock_mantle"])
+    def test_takes_the_same_static_credentials_as_anthropic(
+        self, platform: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+        config = BedrockClientConfig(
+            aws_region="us-east-1",
+            aws_access_key="AKIAEXAMPLE",
+            aws_secret_key="secret",
+        )
+
+        llm = OpenAILLM(
+            model_name="global.openai.gpt-6-luna",
+            platform=platform,
+            platform_config=config,
+        )
+
+        state = llm.client._bedrock_state
+        assert state.aws_access_key_id == "AKIAEXAMPLE"
+        assert state.aws_secret_access_key == "secret"
 
     @pytest.mark.parametrize("platform", ["bedrock", "bedrock_mantle"])
     def test_without_a_key_the_aws_credential_chain_signs(

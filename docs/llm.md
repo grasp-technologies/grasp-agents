@@ -72,7 +72,7 @@ Two separate axes on `CloudLLM`:
 
 | Provider | `platform` values | `platform_config` type | API-key env vars |
 |---|---|---|---|
-| `OpenAIResponsesLLM`, `OpenAILLM` | `"azure"`, `"bedrock"`, `"bedrock_mantle"` | `AzureClientConfig` / `BedrockOpenAIClientConfig` | `OPENAI_API_KEY` |
+| `OpenAIResponsesLLM`, `OpenAILLM` | `"azure"`, `"bedrock"`, `"bedrock_mantle"` | `AzureClientConfig` / `BedrockClientConfig` | `OPENAI_API_KEY` |
 | `AnthropicLLM` | `"bedrock"`, `"bedrock_mantle"`, `"vertex"` | `BedrockClientConfig` / `VertexClientConfig` | `ANTHROPIC_API_KEY` |
 | `GeminiLLM` | `"vertex"` | `GeminiVertexClientConfig` | `GOOGLE_API_KEY`, `GEMINI_API_KEY` |
 | `LiteLLM` | — (routes by model name) | — | litellm's own resolution |

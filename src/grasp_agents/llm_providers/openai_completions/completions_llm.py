@@ -24,6 +24,7 @@ from grasp_agents.llm.cloud_llm import (
     CloudLLM,
     CloudLLMSettings,
 )
+from grasp_agents.llm_providers.bedrock import BedrockClientConfig
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.items import InputItem
 from grasp_agents.types.llm_errors import LlmError
@@ -120,33 +121,17 @@ class AzureClientConfig(TypedDict, total=False):
     base_url: str
 
 
-class BedrockOpenAIClientConfig(TypedDict, total=False):
-    """
-    Client args for ``platform="bedrock"`` and ``platform="bedrock_mantle"``
-    (an ``AsyncBedrockOpenAI`` client): the OpenAI-compatible endpoints of the
-    Bedrock runtime and of Bedrock Mantle, both built from the region.
-
-    Unset values fall back to the SDK's AWS resolution: AWS_REGION /
-    AWS_DEFAULT_REGION for the region, AWS_BEARER_TOKEN_BEDROCK for a Bedrock
-    API key, else the AWS credential chain (SigV4). ``api_key`` and the
-    ``aws_*`` secrets are kept out of repr with the whole config.
-    ``model_name`` is the Bedrock model ID: an inference profile on the runtime
-    (``"global.openai.gpt-6-luna"``), the plain ID on Mantle
-    (``"openai.gpt-6-luna"``).
-    """
-
-    aws_region: str
-    api_key: str
-    aws_profile: str
-    aws_access_key_id: str
-    aws_secret_access_key: str
-    aws_session_token: str
-    base_url: str
+# Bedrock's static AWS credentials, as ``BedrockClientConfig`` names them, under
+# the names ``AsyncBedrockOpenAI`` takes.
+_OPENAI_SDK_AWS_ARGS = {
+    "aws_access_key": "aws_access_key_id",
+    "aws_secret_key": "aws_secret_access_key",
+}
 
 
 def make_bedrock_openai_client(
     platform: str,
-    config: BedrockOpenAIClientConfig,
+    config: BedrockClientConfig,
     client_args: Mapping[str, Any],
 ) -> tuple[AsyncBedrockOpenAI, APIProvider]:
     """
@@ -156,7 +141,9 @@ def make_bedrock_openai_client(
     here, since the SDK knows only Mantle's. ``client_args`` (timeouts,
     headers, extra client params) are applied last.
     """
-    args: dict[str, Any] = dict(config)
+    args: dict[str, Any] = {
+        _OPENAI_SDK_AWS_ARGS.get(key, key): value for key, value in config.items()
+    }
     if platform == "bedrock" and "base_url" not in args:
         region = (
             args.get("aws_region")
@@ -203,9 +190,9 @@ class OpenAILLM(CloudLLM):
     # OpenAI-compatible endpoint.
     platform: OpenAICloudPlatform | None = None
     # Azure client args (see AzureClientConfig; ``model_name`` is the Azure
-    # *deployment* name), or Bedrock's (see BedrockOpenAIClientConfig). May
+    # *deployment* name), or Bedrock's (see BedrockClientConfig). May
     # carry secrets — kept out of repr.
-    platform_config: AzureClientConfig | BedrockOpenAIClientConfig | None = field(
+    platform_config: AzureClientConfig | BedrockClientConfig | None = field(
         default=None, repr=False
     )
 
@@ -241,7 +228,7 @@ class OpenAILLM(CloudLLM):
         elif self.platform in {"bedrock", "bedrock_mantle"}:
             _client, _api_provider = make_bedrock_openai_client(
                 self.platform,
-                cast("BedrockOpenAIClientConfig", config),
+                cast("BedrockClientConfig", config),
                 {**common, **extra},
             )
         else:

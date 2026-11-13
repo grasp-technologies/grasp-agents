@@ -23,9 +23,9 @@ if TYPE_CHECKING:
         AnthropicCloudPlatform,
         AnthropicLLM,
         AnthropicLLMSettings,
-        BedrockClientConfig,
         VertexClientConfig,
     )
+    from .bedrock import BedrockClientConfig
     from .gemini import (
         GeminiCloudPlatform,
         GeminiLLM,
@@ -35,7 +35,6 @@ if TYPE_CHECKING:
     from .litellm import LiteLLM, LiteLLMSettings
     from .openai_completions import (
         AzureClientConfig,
-        BedrockOpenAIClientConfig,
         OpenAICloudPlatform,
         OpenAILLM,
         OpenAILLMSettings,
@@ -46,7 +45,7 @@ _SUBMODULE_BY_NAME: dict[str, str] = {
     "AnthropicLLM": "anthropic",
     "AnthropicLLMSettings": "anthropic",
     "AnthropicCloudPlatform": "anthropic",
-    "BedrockClientConfig": "anthropic",
+    "BedrockClientConfig": "bedrock",
     "VertexClientConfig": "anthropic",
     "GeminiLLM": "gemini",
     "GeminiLLMSettings": "gemini",
@@ -55,7 +54,6 @@ _SUBMODULE_BY_NAME: dict[str, str] = {
     "LiteLLM": "litellm",
     "LiteLLMSettings": "litellm",
     "AzureClientConfig": "openai_completions",
-    "BedrockOpenAIClientConfig": "openai_completions",
     "OpenAICloudPlatform": "openai_completions",
     "OpenAILLM": "openai_completions",
     "OpenAILLMSettings": "openai_completions",
@@ -96,7 +94,6 @@ __all__ = [
     "AnthropicLLMSettings",
     "AzureClientConfig",
     "BedrockClientConfig",
-    "BedrockOpenAIClientConfig",
     "GeminiCloudPlatform",
     "GeminiLLM",
     "GeminiLLMSettings",

@@ -46,10 +46,10 @@ from openai.types.responses.response_reasoning_item import (
 from grasp_agents.llm.cloud_llm import APIProvider
 from grasp_agents.llm.fallback_llm import FallbackLLM
 from grasp_agents.llm_providers.anthropic.anthropic_llm import AnthropicLLM
+from grasp_agents.llm_providers.bedrock import BedrockClientConfig
 from grasp_agents.llm_providers.gemini.gemini_llm import GeminiLLM
 from grasp_agents.llm_providers.litellm.lite_llm import LiteLLM
 from grasp_agents.llm_providers.openai_completions.completions_llm import (
-    BedrockOpenAIClientConfig,
     OpenAILLM,
 )
 from grasp_agents.llm_providers.openai_responses.responses_llm import OpenAIResponsesLLM
@@ -80,7 +80,7 @@ from tests.llm.test_resilience import (
 _ANTHROPIC_PROVIDER = APIProvider(name="anthropic", base_url=None, api_key="test-key")
 _OPENAI_PROVIDER = APIProvider(name="openai", base_url=None, api_key="test-key")
 _GEMINI_PROVIDER = APIProvider(name="gemini", base_url=None, api_key="test-key")
-_BEDROCK_CONFIG = BedrockOpenAIClientConfig(aws_region="us-east-1", api_key="test-key")
+_BEDROCK_CONFIG = BedrockClientConfig(aws_region="us-east-1", api_key="test-key")
 _OPENROUTER_PROVIDER = APIProvider(
     name="openrouter",
     base_url="https://openrouter.ai/api/v1",
