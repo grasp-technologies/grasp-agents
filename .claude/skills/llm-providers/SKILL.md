@@ -99,7 +99,10 @@ are optional extras in `pyproject.toml`.
 - After touching reasoning replay in any provider, run
   `tests/integration/test_foreign_reasoning_live.py -m integration`. It replays
   reasoning across every producer and consumer pair (about a minute on cheap
-  models).
+  models). After touching a Bedrock platform, also run
+  `tests/integration/test_bedrock_live.py -m integration`: GPT and Claude on the
+  runtime and Mantle, continued on the same model, the other platform and the
+  other vendor. It needs AWS_BEARER_TOKEN_BEDROCK or AWS credentials.
 
 ## Adding a provider
 
