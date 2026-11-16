@@ -24,7 +24,7 @@ end-to-end live runs go in `tests/integration/`.
 | Sample tools | `AddTool`, `MultiplyTool` (and the `tools` / `parallel_tools` fixtures) |
 | Retry paths | `FailFirstLLM` |
 | A bare `AgentContext` / `AgentLoop` | `_make_agent_ctx(...)`, `_make_agent_loop(...)` |
-| Snapshot-capable environment | `FakeSnapshotEnv(root)` |
+| Snapshot-capable environment | `FakeSnapshotEnv(root)`; `DeletingSnapshotEnv(root)` also deletes snapshots, recording each |
 | E2B sandbox doubles (files, commands, persistent shells, code contexts, a sandbox E2B paused or removed) | `tests/sandbox/_e2b_fakes.py` |
 | Sandbox capability probes | `process_is_sandboxed()`, `srt_can_run()`, `exec_confinement()` |
 | Team tests | `_agent(name, responses)`, `_send(to, message, call_id)`, `_until(pred)` |

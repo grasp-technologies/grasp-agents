@@ -9,6 +9,7 @@ Step rollback rewinds an agent's session to the start of an earlier step: the tr
 | `LLMAgent.rollback_to_step(step)` | `agent/llm_agent.py` | Rewind to the start of `step`. |
 | `LLMAgent.rollback_steps` | `agent/llm_agent.py` | Steps with a recorded boundary (valid targets). |
 | `LLMAgent.read_rollback_anchors()` | `agent/llm_agent.py` | Boundaries read from the persisted head, without rehydrating. |
+| `LLMAgent.drop_rollback_steps(before)` | `agent/llm_agent.py` | Forget the boundaries of earlier steps. |
 | `LLMAgent.parked_after_rollback` | `agent/llm_agent.py` | True from a rollback until the step is re-delivered. |
 | `StepWatermark` | `durability/checkpoints.py` | One rollback boundary. |
 | `SessionContext.session_writer`, `claim_session_writer` | `session_context.py` | The session-persistence owner. |
@@ -55,6 +56,8 @@ While parked, a run with no input is refused (`ProcInputValidationError`): the s
 **The step is a dedup key — re-deliver the input with it.** An orchestrator that, after a crash, redelivers `run(input, step=n)` with the step the persisted head holds gets idempotent behavior on the reloaded instance: a completed step replays its cached output, an interrupted one continues. A rolled-back head is the exception: `run(..., step=n)` there is a fresh delivery. Redelivering the same step to a live instance that never reloaded is not deduplicated.
 
 `await agent.read_rollback_anchors()` lists boundaries from the persisted head without loading the transcript, re-spawning tasks or touching mailbox leases — for a UI picking a rewind point from another process.
+
+Boundaries accumulate one per human turn, and under `fs_snapshot_policy="final"` each holds a snapshot. `await agent.drop_rollback_steps(before=n)` forgets the boundaries of the steps before `n`: they can no longer be rolled back to (`rollback_to_step` raises `KeyError`), and the snapshots only they held are deleted (see [Filesystem snapshots](#filesystem-snapshots)). It rewrites the persisted head with the remaining boundaries and leaves the transcript, the head's position and its cached answer alone. How many steps to keep is yours to decide; it runs between runs, on a live or loaded instance.
 
 ## The session writer
 
@@ -115,7 +118,7 @@ async with env:
 ## Limitations
 
 - Rollback is linear: there is no branching or forking of sessions, and no rollback of a whole team mid-run.
-- Rollback boundaries are never pruned; long-lived sessions accumulate one per human turn.
+- Rollback boundaries are kept until `drop_rollback_steps` drops them; a long-lived session that never calls it accumulates one per human turn, and one snapshot per turn under `"final"`.
 - Only `E2BEnvironment` is `SnapshotCapable`; local environments have no filesystem rewind.
 - A filesystem restore is a provider operation outside any store transaction; crash safety comes from the `ROLLING_BACK` mark and retrying the rollback.
 

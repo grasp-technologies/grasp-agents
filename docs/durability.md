@@ -190,7 +190,7 @@ async def save_draft(title: str, body: str, *, agent_ctx: AgentContext) -> str:
 ## Limitations
 
 - There are no branching or time-travel checkpoints; only linear [step rollback](rollback.md).
-- The store does no retention: rollback boundaries grow by one per human turn, and old task records stay until `prune_delivered`.
+- The store does no retention: rollback boundaries grow by one per human turn until `LLMAgent.drop_rollback_steps` drops them, and old task records stay until `prune_delivered`.
 - Pending tool approvals are not persisted (see [Agent loop](agent-loop.md)).
 - `prompt_cache_key` round-trips through checkpoints but nothing populates it.
 

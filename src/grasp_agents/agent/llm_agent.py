@@ -4,6 +4,7 @@ import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, nullcontext
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -1364,6 +1365,64 @@ class LLMAgent[InT, OutT, CtxT](
             boundary.message_count,
             boundary.turn,
         )
+
+    async def drop_rollback_steps(self, before: int) -> None:
+        """
+        Forget the rollback boundaries of the steps before ``before``: they can
+        no longer be rolled back to, and the filesystem snapshots only they
+        held are deleted (see ``SessionContext.release_fs_snapshots``). Rewrites
+        the persisted head with the remaining boundaries and leaves the
+        transcript, the head's position and its cached answer as they are.
+
+        Boundaries otherwise accumulate one per human turn, and under
+        ``fs_snapshot_policy="final"`` each holds a snapshot. How many steps to
+        keep is the caller's choice. Only valid between runs, on a live or
+        loaded instance (see :attr:`rollback_steps`).
+
+        Raises:
+            RuntimeError: mid-run.
+
+        """
+        if self._run_active:
+            raise RuntimeError(
+                f"Agent {self.name!r} is mid-run; drop_rollback_steps is only "
+                "valid between runs — cancel the run or let it finish first."
+            )
+        kept = [
+            wm
+            for wm in self._step_watermarks
+            if wm.step is not None and wm.step >= before
+        ]
+        if len(kept) == len(self._step_watermarks):
+            return
+        self._step_watermarks = kept
+
+        store = self._ctx.checkpoint_store
+        key = self._checkpoint_store_key(self._ctx)
+        if store is not None and key is not None:
+            head = await store.load_json(
+                key, AgentCheckpoint, subject=f"agent checkpoint at {key}"
+            )
+            if head is not None:
+                # Filter the stored boundaries rather than writing the live
+                # ones, so a boundary whose checkpoint never landed stays out.
+                head = head.model_copy(
+                    update={
+                        "step_watermarks": [
+                            wm
+                            for wm in head.step_watermarks
+                            if wm.step is not None and wm.step >= before
+                        ],
+                        "checkpoint_number": self._checkpoint_number + 1,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+                await store.save(
+                    key, head.model_dump_json(exclude={"messages"}).encode("utf-8")
+                )
+                self._checkpoint_number += 1
+
+        await self._release_fs_snapshots()
 
     async def _persist_rollback(self, boundary: StepWatermark, *, step: int) -> None:
         """

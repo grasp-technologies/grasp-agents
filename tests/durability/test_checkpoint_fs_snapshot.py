@@ -1400,3 +1400,103 @@ async def test_refs_live_only_in_the_taking_agents_records_and_the_session_recor
     assert record.fs_snapshot_ref in in_records
     assert in_records <= set(env.snapshots)
     assert not in_records & set(env.deleted)
+
+
+# ---------- Dropping old rollback steps ----------
+
+
+async def _four_final_steps(
+    tmp_path: Path, store: InMemoryCheckpointStore
+) -> tuple[LLMAgent[str, str, None], DeletingSnapshotEnv]:
+    env = DeletingSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_text_response(f"a{step}") for step in range(4)],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
+    )
+    for step in range(4):
+        await agent.run(f"q{step}", step=step)
+    return agent, env
+
+
+async def test_dropping_rollback_steps_forgets_them_and_deletes_their_snapshots(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryCheckpointStore()
+    agent, env = await _four_final_steps(tmp_path, store)
+    head = await _stored_checkpoint(store)
+    assert [wm.fs_snapshot_ref for wm in head.step_watermarks] == [
+        None,
+        "snap-1",
+        "snap-2",
+        "snap-3",
+    ]
+
+    await agent.drop_rollback_steps(before=2)
+
+    assert agent.rollback_steps == [2, 3]
+    assert env.deleted == ["snap-1"]
+    stored = await _stored_checkpoint(store)
+    assert [wm.step for wm in stored.step_watermarks] == [2, 3]
+    # The head's position and cached answer are untouched.
+    assert stored.current == head.current
+    assert (stored.output, stored.location) == (head.output, head.location)
+    with pytest.raises(KeyError):
+        await agent.rollback_to_step(1)
+
+
+async def test_a_reloaded_agent_drops_steps_and_deletes_their_snapshots(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryCheckpointStore()
+    _, env = await _four_final_steps(tmp_path, store)
+    reloaded, _ = _make_agent(
+        [], store=store, environment=env, fs_snapshot_policy="final"
+    )
+    await reloaded.load_checkpoint()
+
+    await reloaded.drop_rollback_steps(before=3)
+
+    assert reloaded.rollback_steps == [3]
+    assert env.deleted == ["snap-1", "snap-2"]
+
+
+async def test_dropping_rollback_steps_mid_run_is_refused(tmp_path: Path) -> None:
+    store = InMemoryCheckpointStore()
+    refused: list[BaseException] = []
+    agent: LLMAgent[str, str, None] | None = None
+
+    async def drop() -> None:
+        assert agent is not None
+        try:
+            await agent.drop_rollback_steps(before=1)
+        except RuntimeError as exc:
+            refused.append(exc)
+
+    class _DropTool(BaseTool[EchoInput, str, Any]):
+        def __init__(self) -> None:
+            super().__init__(name="echo", description="Drops rollback steps")
+
+        async def _run(
+            self,
+            inp: EchoInput,
+            *,
+            ctx: Any = None,
+            exec_id: str | None = None,
+            progress_callback: Any = None,
+            path: Any = None,
+            agent_ctx: Any = None,
+        ) -> str:
+            await drop()
+            return inp.text
+
+    agent, _ = _make_agent(
+        [_tool_call_response("echo", '{"text": "x"}', "c1"), _text_response("done")],
+        store=store,
+        tools=[_DropTool()],
+    )
+    await agent.run("go")
+
+    assert len(refused) == 1
+    assert "mid-run" in str(refused[0])
