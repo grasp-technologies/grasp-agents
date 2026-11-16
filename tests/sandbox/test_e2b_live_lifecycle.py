@@ -108,6 +108,39 @@ def live_id(env: E2BEnvironment) -> str:
     return str(sandbox.sandbox_id)
 
 
+# --- restore -----------------------------------------------------------------
+
+
+@_live
+async def test_cancelled_restore_leaves_no_sandbox_behind() -> None:
+    run = LiveRun()
+    try:
+        async with run.env(lazy=True) as env:
+            await env.exec_backend.execute("true")
+            snapshot = await env.snapshot()
+            run.snapshots.append(snapshot)
+
+            restoring = asyncio.create_task(env.restore(snapshot))
+            await asyncio.sleep(0.5)  # E2B has the create request by now
+            restoring.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await restoring
+            async with env._holder.lock:  # held until the create finishes
+                pass
+
+            # Whether the cancel landed during the create or after the swap,
+            # one sandbox is left: the one the environment holds.
+            held = live_id(env)
+
+            async def only_the_held_one() -> bool:
+                return await run.tagged() == {held}
+
+            await until(only_the_held_one)
+            assert (await env.exec_backend.execute("true")).returncode == 0
+    finally:
+        await run.cleanup()
+
+
 # --- resume ------------------------------------------------------------------
 
 

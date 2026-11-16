@@ -14,7 +14,7 @@ import logging
 import posixpath
 import shlex
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from e2b import TimeoutException
 
@@ -121,11 +121,13 @@ async def kill_quietly(sandbox: AsyncSandbox) -> None:
         )
 
 
-def _consume_outcome(start: asyncio.Task[AsyncSandbox]) -> None:
-    # Callers cancelled mid-start no longer await it: retrieve its failure here
-    # so asyncio does not report it as never retrieved.
-    if not start.cancelled():
-        start.exception()
+def consume_outcome(task: asyncio.Task[Any]) -> None:
+    """
+    Retrieve the failure of a task its cancelled callers no longer await, so
+    asyncio does not report it as never retrieved.
+    """
+    if not task.cancelled():
+        task.exception()
 
 
 class SandboxHandle:
@@ -215,7 +217,7 @@ class SandboxHandle:
         start = self._start_task
         if start is None or start.done():
             start = self._start_task = asyncio.create_task(self._start())
-            start.add_done_callback(_consume_outcome)
+            start.add_done_callback(consume_outcome)
         return await asyncio.shield(start)
 
     async def _start(self) -> AsyncSandbox:

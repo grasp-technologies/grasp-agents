@@ -77,19 +77,29 @@ class _Creator:
 
 class _SlowCreator(_Creator):
     """
-    Holds each create without a template (a lazy start) until ``gate`` opens.
-    The sandbox exists from the moment the create is sent, as on E2B, so a
-    caller cancelled mid-create leaves it running unless something kills it.
+    Holds each create from a ``gated`` template (by default, none: a lazy
+    start) and, with ``gate_connects``, each connect until ``gate`` opens. The
+    sandbox exists from the moment the request is sent, as on E2B, so a caller
+    cancelled midway leaves it running unless something kills it.
     """
 
     def __init__(self) -> None:
         super().__init__()
         self.gate = asyncio.Event()
         self.creating = asyncio.Event()
+        self.gated: set[str | None] = {None}
+        self.gate_connects = False
 
     async def create(self, **kwargs: Any) -> FakeSandbox:
         sandbox = await super().create(**kwargs)
-        if kwargs.get("template") is None:
+        if kwargs.get("template") in self.gated:
+            self.creating.set()
+            await self.gate.wait()
+        return sandbox
+
+    async def connect(self, sandbox_id: str, **opts: Any) -> FakeSandbox:
+        sandbox = await super().connect(sandbox_id, **opts)
+        if self.gate_connects:
             self.creating.set()
             await self.gate.wait()
         return sandbox
@@ -382,6 +392,74 @@ async def test_resume_waits_for_a_start_in_flight(
 
     (resumed,) = slow_creator.connected
     assert f"{WS}/b" in resumed.files.made_dirs
+
+
+async def test_cancelled_restore_kills_the_sandbox_it_was_creating(
+    slow_creator: _SlowCreator,
+) -> None:
+    slow_creator.gated = {"snap-1"}
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        await env.file_backend.mkdir(Path(f"{WS}/a"))
+        restoring = asyncio.create_task(env.restore("snap-1"))
+        await slow_creator.creating.wait()
+        restoring.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await restoring
+        slow_creator.gate.set()
+        async with env._holder.lock:  # held until the create finishes
+            pass
+
+        started, created = slow_creator.made
+        assert created.killed
+        assert not started.killed
+        await env.file_backend.mkdir(Path(f"{WS}/b"))
+        assert f"{WS}/b" in started.files.made_dirs
+
+
+async def test_cancelled_resume_lets_go_of_the_sandbox_it_was_connecting(
+    slow_creator: _SlowCreator,
+) -> None:
+    slow_creator.gate_connects = True
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        resuming = asyncio.create_task(env.resume("sbx_paused"))
+        await slow_creator.creating.wait()
+        resuming.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await resuming
+        slow_creator.gate.set()
+        async with env._holder.lock:  # held until the connect finishes
+            pass
+
+        (resumed,) = slow_creator.connected
+        assert resumed.killed
+        assert not env.started
+
+
+async def test_cancelled_resume_of_the_live_sandbox_keeps_it(
+    slow_creator: _SlowCreator,
+) -> None:
+    slow_creator.gated = set()
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        await env.file_backend.mkdir(Path(f"{WS}/a"))
+        (started,) = slow_creator.made
+        slow_creator.reconnects[started.sandbox_id] = FakeSandbox(
+            sandbox_id=started.sandbox_id, files=started.files
+        )
+        slow_creator.gate_connects = True
+        resuming = asyncio.create_task(env.resume())
+        await slow_creator.creating.wait()
+        resuming.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await resuming
+        slow_creator.gate.set()
+        async with env._holder.lock:
+            pass
+
+        (reconnected,) = slow_creator.connected
+        assert not reconnected.killed
+        assert not started.killed
+        await env.file_backend.mkdir(Path(f"{WS}/b"))
+        assert f"{WS}/b" in started.files.made_dirs
 
 
 async def test_resuming_another_sandbox_kills_the_one_it_replaces(

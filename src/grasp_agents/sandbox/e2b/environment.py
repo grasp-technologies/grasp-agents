@@ -6,10 +6,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Self, TypedDict
+from typing import TYPE_CHECKING, Any, Self, TypedDict
 
 from e2b import AsyncSandbox
 
@@ -20,6 +21,7 @@ from ._handle import (
     DEFAULT_EXEC_TIMEOUT,
     DEFAULT_WORKSPACE,
     SandboxHandle,
+    consume_outcome,
     kill_quietly,
     wire,
 )
@@ -27,7 +29,7 @@ from .exec import E2BExecBackend
 from .file_backend import E2BFileBackend
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Coroutine, Mapping, Sequence
 
     from e2b.connection_config import ApiParams
 
@@ -56,6 +58,28 @@ class E2BCreateParams(TypedDict, total=False):
     allow_internet_access: bool
     api_key: str
     domain: str
+
+
+async def _outlive_cancellation(
+    body: Callable[[asyncio.Event], Coroutine[Any, Any, None]],
+    pending: set[asyncio.Task[None]],
+) -> None:
+    """
+    Run ``body`` in a task of its own, so cancelling the caller does not stop
+    it midway, after E2B may already have created or resumed a sandbox.
+    ``body`` gets an event set once the caller was cancelled, and must then
+    let go of what it obtained instead of installing it.
+    """
+    abandoned = asyncio.Event()
+    task = asyncio.create_task(body(abandoned))
+    pending.add(task)
+    task.add_done_callback(pending.discard)
+    task.add_done_callback(consume_outcome)
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        abandoned.set()
+        raise
 
 
 def _sandbox_cls(code_interpreter: bool) -> type[AsyncSandbox]:
@@ -112,6 +136,8 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         self._pause_on_exit = pause_on_exit
         self._code_interpreter = code_interpreter
         self._entered = False
+        # Restores and resumes that outlive their cancelled caller.
+        self._pending: set[asyncio.Task[None]] = set()
 
     @property
     def policy(self) -> SandboxPolicy:
@@ -266,30 +292,41 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         existing sandbox (:meth:`from_sandbox`) has no create params, so it
         refuses this ref.
 
-        Raises ``RuntimeError`` outside ``async with env:``, where nothing
-        would kill the sandbox it creates.
+        Cancelling the call does not cancel a create E2B may already be
+        running: the sandbox it creates is killed instead of installed. Raises
+        ``RuntimeError`` outside ``async with env:``, where nothing would kill
+        the sandbox it creates.
         """
+        await _outlive_cancellation(
+            lambda abandoned: self._restore(ref, abandoned), self._pending
+        )
+
+    async def _restore(self, ref: str, abandoned: asyncio.Event) -> None:
         async with self._holder.lock:
+            if abandoned.is_set():
+                return
             self._require_entered("restore")
             previous = self._holder.sandbox
-            if ref == FRESH_SNAPSHOT_REF:
-                if self._holder.armed:
-                    self._holder.sandbox = None
-                    # Re-arming forgets a failed start: the next call retries.
-                    self._holder.arm(self._start)
-                else:
-                    self._holder.sandbox = await self._start()
+            if ref == FRESH_SNAPSHOT_REF and self._holder.armed:
+                self._holder.sandbox = None
+                # Re-arming forgets a failed start: the next call retries.
+                self._holder.arm(self._start)
             else:
-                # Create from the snapshot instead of the configured template.
-                params: E2BCreateParams = {
-                    **(self._create_params or {}),
-                    "template": ref,
-                }
-                sandbox_cls = _sandbox_cls(self._code_interpreter)
-                self._holder.sandbox = await sandbox_cls.create(**params)
+                restored = await self._create_from(ref)
+                if abandoned.is_set():
+                    await kill_quietly(restored)
+                    return
+                self._holder.sandbox = restored
             self._holder.drop_streams()
             if previous is not None and self._owns_sandbox:
                 await kill_quietly(previous)
+
+    async def _create_from(self, ref: str) -> AsyncSandbox:
+        if ref == FRESH_SNAPSHOT_REF:
+            return await self._start()
+        # Create from the snapshot instead of the configured template.
+        params: E2BCreateParams = {**(self._create_params or {}), "template": ref}
+        return await _sandbox_cls(self._code_interpreter).create(**params)
 
     async def pause(self) -> str:
         """
@@ -320,19 +357,29 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         go of the previous one as exit would: an owned one is killed, or
         paused with ``pause_on_exit``.
 
-        Raises ``RuntimeError`` outside ``async with env:``, where nothing
-        would kill or pause the sandbox it connects.
+        Cancelling the call does not cancel a connect E2B may already be
+        running: the environment lets go of the sandbox it resumed (unless it
+        is the one it already holds) instead of installing it. Raises
+        ``RuntimeError`` outside ``async with env:``, where nothing would kill
+        or pause the sandbox it connects.
         """
+        await _outlive_cancellation(
+            lambda abandoned: self._resume(sandbox_id, abandoned), self._pending
+        )
+
+    async def _resume(self, sandbox_id: str | None, abandoned: asyncio.Event) -> None:
         async with self._holder.lock:
+            if abandoned.is_set():
+                return
             self._require_entered("resume")
+            previous = self._holder.sandbox
             target = sandbox_id
             if target is None:
-                current = self._holder.sandbox
-                if current is None:
+                if previous is None:
                     raise RuntimeError(
                         "resume() needs a sandbox_id when no sandbox is bound."
                     )
-                target = str(current.sandbox_id)
+                target = str(previous.sandbox_id)
             params: E2BCreateParams = self._create_params or {}
             opts: ApiParams = {}
             if "api_key" in params:
@@ -340,13 +387,17 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
             if "domain" in params:
                 opts["domain"] = params["domain"]
             sandbox_cls = _sandbox_cls(self._code_interpreter)
-            previous = self._holder.sandbox
             resumed = await sandbox_cls.connect(
                 target, timeout=params.get("timeout"), **opts
             )
+            replaces = previous is None or previous.sandbox_id != resumed.sandbox_id
+            if abandoned.is_set():
+                if replaces:
+                    await self._let_go(resumed)
+                return
             self._holder.sandbox = resumed
             self._holder.drop_streams()
-            if previous is not None and previous.sandbox_id != resumed.sandbox_id:
+            if previous is not None and replaces:
                 await self._let_go(previous)
 
     async def _let_go(self, sandbox: AsyncSandbox) -> None:
