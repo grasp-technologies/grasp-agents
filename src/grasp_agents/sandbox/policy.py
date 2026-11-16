@@ -25,7 +25,7 @@ class NetworkPolicy(StrEnum):
 
     NONE = "none"  # no egress (default; right for code-illustration / notebooks)
     LOOPBACK = "loopback"  # only localhost — e.g. a host-side filtering proxy
-    ALLOWLIST = "allowlist"  # only SandboxPolicy.allowed_domains, via a proxy
+    ALLOWLIST = "allowlist"  # only SandboxPolicy.allowed_domains
     ALL = "all"  # unrestricted
 
 
@@ -104,8 +104,8 @@ class SandboxPolicy:
 
     - ``network`` + ``allowed_domains`` + ``denied_domains`` govern egress;
       ``denied_domains`` is checked first (**denied wins**). Per-domain rules
-      are enforced only by proxy-backed backends (``srt`` / hosted); Seatbelt
-      egress is all-or-nothing.
+      are enforced only by ``srt`` (its proxy) and E2B (its egress rules);
+      Seatbelt egress is all-or-nothing.
     - ``env`` is the base environment set for subprocesses; ``env_scrub`` is a
       list of ``fnmatch`` patterns (e.g. ``"*_API_KEY"``) removed from the
       *inherited* host environment so secrets do not leak into commands.

@@ -102,7 +102,7 @@ The framework has no session end: you delete a session's records when you are do
 ```python
 from e2b import AsyncSandbox, SandboxException
 
-from grasp_agents.durability import read_fs_snapshot_refs, session_prefix
+from grasp_agents.durability import CheckpointKind, make_store_key, read_fs_snapshot_refs
 from grasp_agents.sandbox import FRESH_SNAPSHOT_REF
 
 async def end_session(store, session_key):
@@ -113,8 +113,12 @@ async def end_session(store, session_key):
             await AsyncSandbox.delete_snapshot(ref)  # False: already gone
         except SandboxException:
             pass  # a sandbox still uses it: leave it to a sweep
-    for key in await store.list_keys(session_prefix(session_key)):
-        await store.delete(key)
+    # Per kind, so a session whose key extends this one ("org" and
+    # "org/user-7") keeps its records.
+    for kind in CheckpointKind:
+        key = make_store_key(session_key, kind)
+        for record in [key, *await store.list_keys(key + "/")]:
+            await store.delete(record)
 ```
 
 `read_fs_snapshot_refs(store)` without a session key returns the refs every session in the store holds: the keep set for a sweep of the account (see [Sandbox](sandbox.md)). It raises on a record it cannot read, so no held ref goes missing from that set.
