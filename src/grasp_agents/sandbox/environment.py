@@ -1,7 +1,8 @@
 """
 :class:`ExecutionEnvironment` — one boundary owning two co-located surfaces
 (filesystem + exec) and a shared :class:`~grasp_agents.sandbox.policy.SandboxPolicy`,
-plus the optional :class:`SnapshotCapable` durability capability.
+plus the optional :class:`SnapshotCapable` and :class:`SnapshotDeletable`
+durability capabilities.
 """
 
 from __future__ import annotations
@@ -37,6 +38,23 @@ class SnapshotCapable(Protocol):
     async def restore(self, ref: str) -> None: ...
 
 
+@runtime_checkable
+class SnapshotDeletable(Protocol):
+    """
+    Optional capability for a :class:`SnapshotCapable` environment that can
+    delete a snapshot it took. With it, the framework deletes the snapshots
+    no checkpoint record holds any more (see
+    ``SessionContext.release_fs_snapshots``); without it, every snapshot is
+    kept.
+
+    :meth:`delete_snapshot` returns True once the snapshot is gone, deleted
+    now or already, and False when the provider refuses for now (a sandbox
+    still uses it), so the caller can try again later.
+    """
+
+    async def delete_snapshot(self, ref: str) -> bool: ...
+
+
 class ExecutionEnvironment(ABC):
     """
     One boundary owning two co-located surfaces plus a shared policy.
@@ -68,4 +86,4 @@ class ExecutionEnvironment(ABC):
     async def __aexit__(self, *exc: object) -> None: ...
 
 
-__all__ = ["ExecutionEnvironment", "SnapshotCapable"]
+__all__ = ["ExecutionEnvironment", "SnapshotCapable", "SnapshotDeletable"]

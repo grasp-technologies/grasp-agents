@@ -2,8 +2,8 @@
 Sandbox / execution-environment abstractions: the shared
 :class:`~grasp_agents.sandbox.policy.SandboxPolicy`, the :class:`ExecBackend`
 exec surface, the :class:`ExecutionEnvironment` that co-locates it with a
-``FileBackend``, and the optional :class:`SnapshotCapable` durability
-capability.
+``FileBackend``, and the optional :class:`SnapshotCapable` and
+:class:`SnapshotDeletable` durability capabilities.
 
 The lightweight protocols + value types are imported eagerly (they are leaf
 modules — no cross-package imports). The concrete backends + factory
@@ -18,7 +18,7 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any
 
-from .environment import ExecutionEnvironment, SnapshotCapable
+from .environment import ExecutionEnvironment, SnapshotCapable, SnapshotDeletable
 from .exec_backend import ExecBackend, ExecChunk, ExecResult, TerminationReason
 from .policy import NetworkPolicy, SandboxPolicy
 
@@ -114,6 +114,7 @@ __all__ = [
     "SandboxPolicy",
     "SeatbeltExecBackend",
     "SnapshotCapable",
+    "SnapshotDeletable",
     "SrtExecBackend",
     "SupervisorLimits",
     "TerminationReason",

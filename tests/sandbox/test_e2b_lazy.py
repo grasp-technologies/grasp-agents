@@ -21,7 +21,9 @@ import pytest
 
 pytest.importorskip("e2b")
 
-from grasp_agents.sandbox import E2BSandboxExpiredError
+from e2b import SandboxException
+
+from grasp_agents.sandbox import E2BSandboxExpiredError, SnapshotDeletable
 from grasp_agents.sandbox.e2b import _handle as e2b_handle
 from grasp_agents.sandbox.e2b import environment as e2b_env
 from grasp_agents.sandbox.e2b.config import E2BEnvironmentConfig
@@ -63,6 +65,22 @@ class _Creator:
         self.made: list[FakeSandbox] = []
         self.connected: list[FakeSandbox] = []
         self.reconnects: dict[str, FakeSandbox] = {}
+        self.snapshots: set[str] = set()
+        # Snapshots a running or paused sandbox was created from.
+        self.in_use: set[str] = set()
+        self.deletes: list[tuple[str, dict[str, Any]]] = []
+
+    async def delete_snapshot(self, snapshot_id: str, **opts: Any) -> bool:
+        self.deletes.append((snapshot_id, opts))
+        if snapshot_id in self.in_use:
+            raise SandboxException(
+                f"400: cannot delete template '{snapshot_id}' because there are "
+                "running sandboxes using it"
+            )
+        if snapshot_id not in self.snapshots:
+            return False
+        self.snapshots.discard(snapshot_id)
+        return True
 
     async def create(self, **kwargs: Any) -> FakeSandbox:
         self.created.append(kwargs)
@@ -362,6 +380,42 @@ async def test_snapshots_get_unique_names_that_carry_the_label_and_time(
         assert found is not None, name
         taken = dt.datetime.strptime(f"{found.group(1)}+0000", "%Y%m%dt%H%M%S%z")
         assert abs(taken - before) < dt.timedelta(minutes=1)
+
+
+# --- deleting snapshots --------------------------------------------------------
+
+
+async def test_the_environment_can_delete_snapshots(creator: _Creator) -> None:
+    creator.snapshots.add("snap-1")
+    env = e2b_environment(allowed_roots=[WS], api_key="key-1", domain="e2b.example")
+
+    assert isinstance(env, SnapshotDeletable)
+    assert await env.delete_snapshot("snap-1")
+
+    assert creator.deletes == [
+        ("snap-1", {"api_key": "key-1", "domain": "e2b.example"})
+    ]
+
+
+async def test_deleting_a_snapshot_already_gone_is_done(creator: _Creator) -> None:
+    assert await e2b_environment(allowed_roots=[WS]).delete_snapshot("snap-gone")
+
+
+async def test_a_snapshot_a_sandbox_still_uses_is_kept_for_later(
+    creator: _Creator,
+) -> None:
+    creator.snapshots.add("snap-1")
+    creator.in_use.add("snap-1")
+
+    assert not await e2b_environment(allowed_roots=[WS]).delete_snapshot("snap-1")
+    assert creator.snapshots == {"snap-1"}
+
+
+async def test_the_fresh_ref_has_nothing_to_delete(creator: _Creator) -> None:
+    env = e2b_environment(allowed_roots=[WS], lazy=True)
+
+    assert await env.delete_snapshot(FRESH_SNAPSHOT_REF)
+    assert creator.deletes == []
 
 
 async def test_config_passes_the_timeout_lifecycle(creator: _Creator) -> None:

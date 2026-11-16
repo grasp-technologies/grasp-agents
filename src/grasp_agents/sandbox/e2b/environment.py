@@ -13,9 +13,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self, TypedDict
 
-from e2b import AsyncSandbox
+from e2b import AsyncSandbox, SandboxException
 
-from grasp_agents.sandbox.environment import ExecutionEnvironment, SnapshotCapable
+from grasp_agents.sandbox.environment import (
+    ExecutionEnvironment,
+    SnapshotCapable,
+    SnapshotDeletable,
+)
 from grasp_agents.sandbox.policy import NetworkPolicy, SandboxPolicy
 
 from ._handle import (
@@ -102,7 +106,7 @@ def _sandbox_cls(code_interpreter: bool) -> type[AsyncSandbox]:
     return CISandbox
 
 
-class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
+class E2BEnvironment(ExecutionEnvironment, SnapshotCapable, SnapshotDeletable):
     """
     An :class:`ExecutionEnvironment` over an E2B cloud sandbox, with
     :class:`SnapshotCapable` wired to E2B's native snapshots (``snapshot`` /
@@ -351,6 +355,33 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         self._holder.keep_alive_from(str(sandbox.sandbox_id), since)
         return sandbox
 
+    async def delete_snapshot(self, ref: str) -> bool:
+        """
+        Delete the E2B snapshot ``ref`` (a :meth:`snapshot` ref), with the
+        environment's API key and domain. Return True once it is gone, also
+        when it already was, and False while E2B refuses because a running
+        or paused sandbox was created from it. :data:`FRESH_SNAPSHOT_REF`
+        names no snapshot.
+        """
+        if ref == FRESH_SNAPSHOT_REF:
+            return True
+        try:
+            await AsyncSandbox.delete_snapshot(ref, **self._api_params())
+        except SandboxException as exc:
+            if "sandboxes using it" in str(exc):
+                return False
+            raise
+        return True
+
+    def _api_params(self) -> ApiParams:
+        params: E2BCreateParams = self._create_params or {}
+        opts: ApiParams = {}
+        if "api_key" in params:
+            opts["api_key"] = params["api_key"]
+        if "domain" in params:
+            opts["domain"] = params["domain"]
+        return opts
+
     async def pause(self) -> str:
         """
         Suspend the sandbox (filesystem + memory preserved) and return its id.
@@ -407,15 +438,10 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
                     )
                 target = str(previous.sandbox_id)
             params: E2BCreateParams = self._create_params or {}
-            opts: ApiParams = {}
-            if "api_key" in params:
-                opts["api_key"] = params["api_key"]
-            if "domain" in params:
-                opts["domain"] = params["domain"]
             sandbox_cls = _sandbox_cls(self._code_interpreter)
             since = time.monotonic()
             resumed = await sandbox_cls.connect(
-                target, timeout=params.get("timeout"), **opts
+                target, timeout=params.get("timeout"), **self._api_params()
             )
             replaces = previous is None or previous.sandbox_id != resumed.sandbox_id
             if abandoned.is_set():
