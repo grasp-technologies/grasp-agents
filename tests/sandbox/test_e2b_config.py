@@ -18,7 +18,7 @@ pytest.importorskip("e2b")
 
 import json
 
-from e2b import BuildException
+from e2b import BuildException, Template
 from pydantic import ValidationError
 
 from grasp_agents.sandbox.e2b.config import (
@@ -75,6 +75,8 @@ def test_raw_dockerfile_base_is_escape_hatch() -> None:
 def test_base_rejects_two_images() -> None:
     with pytest.raises(ValidationError):
         TemplateBase(python="3.11", ubuntu="22.04")
+    with pytest.raises(ValidationError):
+        TemplateBase(template="code-interpreter-v1", python="3.11")
 
 
 def test_start_cmd_requires_ready_cmd() -> None:
@@ -225,3 +227,20 @@ async def test_build_needs_an_alias() -> None:
     with pytest.raises(ValueError, match="alias"):
         await E2BTemplateConfig().build(templates=templates)
     assert templates.builds == []
+
+
+@pytest.mark.asyncio
+async def test_template_base_builds_on_an_existing_e2b_template() -> None:
+    config = E2BTemplateConfig(
+        base=TemplateBase(template="code-interpreter-v1"),
+        steps=[PipInstall(op="pip_install", packages=["six==1.16.0"])],
+        alias="demo",
+    )
+    templates = FakeTemplateAPI(None)
+    await config.build(templates=templates)
+    [build] = templates.builds
+    built = json.loads(Template.to_json(build["template"]))
+    assert built["fromTemplate"] == "code-interpreter-v1"
+    assert "pip install six==1.16.0" in json.dumps(built["steps"])
+    with pytest.raises(ValueError, match="another template"):
+        config.to_dockerfile()

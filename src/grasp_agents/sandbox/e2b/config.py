@@ -6,12 +6,12 @@ a bare ``template="name"`` string around.
 Two pieces:
 
 * :class:`E2BTemplateConfig` maps to E2B's programmatic template builder
-  (``e2b.Template``): a base (python / image / dockerfile / …) plus an ordered
-  list of build :data:`Step` s (pip / apt / run / copy / …). :meth:`build`
-  returns its ``alias`` once a ready build of it exists: it reuses a ready
-  build, waits for one under way, and builds when the latest build failed or
-  there is none. :meth:`to_dockerfile` renders the definition without building
-  (handy for review + tests).
+  (``e2b.Template``): a base (an existing E2B template / python / image /
+  dockerfile / …) plus an ordered list of build :data:`Step` s (pip / apt /
+  run / copy / …). :meth:`build` returns its ``alias`` once a ready build of
+  it exists: it reuses a ready build, waits for one under way, and builds when
+  the latest build failed or there is none. :meth:`to_dockerfile` renders the
+  definition without building (handy for review + tests).
 * :class:`E2BEnvironmentConfig` is the whole environment: either a prebuilt
   ``template`` ref **or** an inline ``template_build`` (built on demand), plus
   the create-time options (roots, network, timeout, metadata, …). :meth:`build`
@@ -194,13 +194,16 @@ def _apply_step(builder: TemplateBuilder, step: Step) -> TemplateBuilder:
 
 class TemplateBase(BaseModel):
     """
-    The template's starting image — set exactly one of these (default: E2B's
-    ``from_base_image``). ``dockerfile`` is the full escape hatch: any Docker
+    The template's starting point — set at most one of these (default: E2B's
+    ``from_base_image``). ``template`` starts from an existing E2B template, by
+    name or id, and reuses its cached layers, so a few steps on top of a large
+    template build fast. ``dockerfile`` is the full escape hatch: any Docker
     capability not modeled as a step can be expressed there.
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    template: str | None = None
     python: str | None = None
     image: str | None = None
     image_username: str | None = None
@@ -214,17 +217,27 @@ class TemplateBase(BaseModel):
     def _exactly_one(self) -> TemplateBase:
         chosen = [
             n
-            for n in ("python", "image", "debian", "ubuntu", "node", "dockerfile")
+            for n in (
+                "template",
+                "python",
+                "image",
+                "debian",
+                "ubuntu",
+                "node",
+                "dockerfile",
+            )
             if getattr(self, n) is not None
         ]
         if len(chosen) > 1:
-            raise ValueError(f"TemplateBase: set at most one base image, got {chosen}.")
+            raise ValueError(f"TemplateBase: set at most one base, got {chosen}.")
         return self
 
     def start(self) -> TemplateBuilder:
         from e2b import Template  # ruff: ignore[import-outside-top-level]
 
         t = Template()
+        if self.template is not None:
+            return t.from_template(self.template)
         if self.python is not None:
             return t.from_python_image(self.python)
         if self.image is not None:
@@ -292,7 +305,10 @@ class E2BTemplateConfig(BaseModel):
         return builder
 
     def to_dockerfile(self) -> str:
-        """Render the template as a Dockerfile (no build, no network)."""
+        """
+        Render the template as a Dockerfile (no build, no network). E2B cannot
+        render a ``template`` base, so that raises ``ValueError``.
+        """
         from e2b import Template  # ruff: ignore[import-outside-top-level]
 
         return Template.to_dockerfile(self._builder())
