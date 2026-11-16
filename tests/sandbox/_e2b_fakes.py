@@ -282,6 +282,7 @@ class FakeSandbox:
         self.state = "running"
         self.info_calls = 0
         self.snapshot_names: list[str | None] = []
+        self.network_updates: list[dict[str, Any]] = []
         self.end_at = dt.datetime.now(dt.UTC) + dt.timedelta(hours=1)
         # The keep-alive timeout of each connect that resumed it in place.
         self.resumes: list[int | None] = []
@@ -333,6 +334,11 @@ class FakeSandbox:
     async def kill(self) -> Any:
         self.killed = True
         return True
+
+    async def update_network(self, network: dict[str, Any]) -> None:
+        if self.gone or self.state == "paused":
+            raise SandboxNotFoundException(f"Sandbox {self.sandbox_id} not found")
+        self.network_updates.append(network)
 
     async def create_snapshot(self, name: str | None = None) -> Any:
         self.snapshot_names.append(name)

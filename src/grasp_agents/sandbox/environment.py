@@ -2,7 +2,7 @@
 :class:`ExecutionEnvironment` — one boundary owning two co-located surfaces
 (filesystem + exec) and a shared :class:`~grasp_agents.sandbox.policy.SandboxPolicy`,
 plus the optional :class:`SnapshotCapable` and :class:`SnapshotDeletable`
-durability capabilities.
+durability capabilities and :class:`NetworkUpdatable`.
 """
 
 from __future__ import annotations
@@ -11,10 +11,12 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Protocol, Self, runtime_checkable
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from grasp_agents.file_backend.base import FileBackend
 
     from .exec_backend import ExecBackend
-    from .policy import SandboxPolicy
+    from .policy import NetworkPolicy, SandboxPolicy
 
 
 @runtime_checkable
@@ -55,6 +57,28 @@ class SnapshotDeletable(Protocol):
     async def delete_snapshot(self, ref: str) -> bool: ...
 
 
+@runtime_checkable
+class NetworkUpdatable(Protocol):
+    """
+    Optional capability for an environment whose egress can change while it
+    runs (e.g. :class:`~grasp_agents.sandbox.E2BEnvironment`).
+
+    :meth:`update_network` applies a new ``network`` policy, with its domain
+    lists, to the live sandbox and to every sandbox the environment creates
+    after it, and the environment's and exec backend's ``policy`` report it
+    from then on. Local environments fix their egress when they are built:
+    build a new one to change it.
+    """
+
+    async def update_network(
+        self,
+        network: NetworkPolicy,
+        *,
+        allowed_domains: Sequence[str] = (),
+        denied_domains: Sequence[str] = (),
+    ) -> None: ...
+
+
 class ExecutionEnvironment(ABC):
     """
     One boundary owning two co-located surfaces plus a shared policy.
@@ -86,4 +110,9 @@ class ExecutionEnvironment(ABC):
     async def __aexit__(self, *exc: object) -> None: ...
 
 
-__all__ = ["ExecutionEnvironment", "SnapshotCapable", "SnapshotDeletable"]
+__all__ = [
+    "ExecutionEnvironment",
+    "NetworkUpdatable",
+    "SnapshotCapable",
+    "SnapshotDeletable",
+]
