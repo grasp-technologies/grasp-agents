@@ -104,12 +104,13 @@ Subclass `FileBackend` and implement every abstract method: `allowed_roots`, `ad
 
 1. Validate before any I/O: every tool resolves its path through `validate_path(path, access=...)` first, and backend I/O methods receive only validated paths (`FileBackend`).
 2. `write_bytes` is atomic and creates missing parent directories; it returns the post-write mtime (`FileBackend.write_bytes`).
-3. Backends are pure I/O. The read/mtime ledger lives in the agent's `FileEditSessionState`, never in the backend.
-4. A backend that cannot search raises `NotImplementedError` from `find_files` / `grep`, so tools can report a clear error.
-5. `add_allowed_root(root)` is idempotent; `SessionContext` uses it to admit the memory directory automatically (`SessionContext._validate_memory_under_backend_roots`).
-6. `Write` and `Edit` refuse `.ipynb` and point the model at `NotebookEdit`.
-7. Read-before-write and staleness checks apply to every mutating file tool inside an agent loop.
-8. Skills are read from the host filesystem (`pathlib`), not through `ctx.file_backend` (see [Skills](skills.md)).
+3. A read takes the mtime before the content, so a write landing in between makes the next conditional write refuse rather than overwrite it (`FileBackend.read_text`, `read_bytes`).
+4. Backends are pure I/O. The read/mtime ledger lives in the agent's `FileEditSessionState`, never in the backend.
+5. A backend that cannot search raises `NotImplementedError` from `find_files` / `grep`, so tools can report a clear error.
+6. `add_allowed_root(root)` is idempotent; `SessionContext` uses it to admit the memory directory automatically (`SessionContext._validate_memory_under_backend_roots`).
+7. `Write` and `Edit` refuse `.ipynb` and point the model at `NotebookEdit`.
+8. Read-before-write and staleness checks apply to every mutating file tool inside an agent loop.
+9. Skills are read from the host filesystem (`pathlib`), not through `ctx.file_backend` (see [Skills](skills.md)).
 
 ## Limitations
 
@@ -117,6 +118,7 @@ Subclass `FileBackend` and implement every abstract method: `allowed_roots`, `ad
 - `Delete` removes files only; deleting directories is left to the user.
 - The ledger holds at most 1,000 read records per agent (oldest evicted), after which an old read must be repeated before writing.
 - `MCPFileBackend` cannot grep, and mode bits may be ignored by the server.
+- `MCPFileBackend` takes a read's mtime after the content, so a write landing in between can pass the next staleness check and be overwritten.
 
 ## See also
 

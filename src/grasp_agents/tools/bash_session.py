@@ -51,9 +51,11 @@ class BashSessionHolder:
     Held on the agent's :class:`AgentContext`, from which the stateless
     ``BashSession`` tool resolves it per call, so sub-agents and parallel
     replicas each get their own stateful shell. The session is opened on first
-    use and reopened if a command closed it (e.g. one that ignored the interrupt
-    and forced a session-level kill, or any timeout on E2B). A reopen loses
-    shell state, so it is flagged for the ``BashSession`` tool to surface to the
+    use and reopened if it was closed: a command that ignored the interrupt
+    and forced a session-level kill, a timeout on E2B, or a swap of the E2B
+    sandbox it ran in. An E2B session that lost its output stream and could
+    not reattach replaces its shell itself. Either way the shell state is
+    lost, so it is flagged for the ``BashSession`` tool to surface to the
     model (see :meth:`take_reset`).
     """
 
