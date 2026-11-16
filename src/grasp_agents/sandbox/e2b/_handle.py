@@ -148,7 +148,6 @@ class SandboxHandle:
         "_failure",
         "_lock",
         "_start_task",
-        "_waiting",
         "sandbox",
         "stream_epoch",
     )
@@ -162,7 +161,6 @@ class SandboxHandle:
         self._failure: Exception | None = None
         self._lock = asyncio.Lock()
         self._start_task: asyncio.Task[AsyncSandbox] | None = None
-        self._waiting = 0
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -195,9 +193,12 @@ class SandboxHandle:
 
         Concurrent first calls share one start, which runs in a task of its
         own, so cancelling a caller does not cancel it. The start keeps its
-        sandbox only if a caller still awaits it and the handle is still armed
-        and empty; otherwise it kills the sandbox and raises, so a sandbox it
-        created is never left running unowned.
+        sandbox whenever the handle is still armed with the same factory and
+        holds no other sandbox, even if every caller was cancelled: the next
+        call uses it, and the environment's exit kills it. Otherwise (the
+        environment exited, or another sandbox was installed) it kills the
+        sandbox and raises, so a sandbox it created is never left running
+        unowned.
 
         A failed start is not retried until the handle is re-armed: later calls
         raise at once instead of creating, and billing, a sandbox each.
@@ -215,11 +216,7 @@ class SandboxHandle:
         if start is None or start.done():
             start = self._start_task = asyncio.create_task(self._start())
             start.add_done_callback(_consume_outcome)
-        self._waiting += 1
-        try:
-            return await asyncio.shield(start)
-        finally:
-            self._waiting -= 1
+        return await asyncio.shield(start)
 
     async def _start(self) -> AsyncSandbox:
         async with self._lock:
@@ -233,14 +230,13 @@ class SandboxHandle:
             except Exception as exc:
                 self._failure = exc
                 raise
-            if self._waiting and self._factory is factory and self.sandbox is None:
+            if self._factory is factory and self.sandbox is None:
                 self.sandbox = sandbox
                 return sandbox
             await kill_quietly(sandbox)
             raise RuntimeError(
                 "Killed a new E2B sandbox: the environment exited or changed its "
-                "sandbox, or every call waiting for it was cancelled, while it "
-                "was starting."
+                "sandbox while it was starting."
             )
 
     def drop_streams(self) -> None:

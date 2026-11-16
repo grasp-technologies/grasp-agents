@@ -362,23 +362,30 @@ async def test_start_finding_the_handle_filled_kills_its_sandbox(
     assert started.killed
 
 
-async def test_cancelled_first_call_kills_the_sandbox_it_started(
+async def test_a_start_outlives_its_cancelled_callers(
     slow_creator: _SlowCreator,
 ) -> None:
     async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
-        first_use = asyncio.create_task(env.file_backend.mkdir(Path(f"{WS}/a")))
+        first = asyncio.create_task(env.file_backend.mkdir(Path(f"{WS}/a")))
         await slow_creator.creating.wait()
-        first_use.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await first_use
+        first.cancel()
+        second = asyncio.create_task(env.file_backend.mkdir(Path(f"{WS}/b")))
+        await asyncio.sleep(0)  # it joins the start in flight
+        second.cancel()
+        for call in (first, second):
+            with pytest.raises(asyncio.CancelledError):
+                await call
         slow_creator.gate.set()
-        # pause() waits for the start, which no caller awaits any more.
-        with pytest.raises(RuntimeError, match="never started"):
-            await env.pause()
+        async with env._holder.lock:  # held until the start finishes
+            pass
 
-        (started,) = slow_creator.made
-        assert started.killed
-        assert not env.started
+        # Kept for the next call, not killed for want of a caller.
+        assert env.started
+        await env.file_backend.mkdir(Path(f"{WS}/c"))
+
+    (started,) = slow_creator.made
+    assert f"{WS}/c" in started.files.made_dirs
+    assert started.killed  # by the exit
 
 
 async def test_cancelling_one_first_call_leaves_the_others_their_sandbox(
