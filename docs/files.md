@@ -92,7 +92,7 @@ A per-session opt-in bypasses the dotfile list for one path: `agent.agent_ctx.fi
 |---|---|
 | `LocalFileBackend(allowed_roots=, readonly_roots=, include_dotfiles=, deny_read=, allow_read=, deny_write=)` | Host filesystem. Atomic writes (temp file + `fsync` + `os.replace`); true appends; `Grep` via `rg`. Defaults to `[Path.cwd()]`. |
 | `MCPFileBackend(client=, allowed_roots=)` | Reads through MCP resources; writes and deletes through server tools (`write_file`, `delete_file`). The server owns containment; the backend checks only `allowed_roots`. No grep (`NotImplementedError`); use `Glob` + `Read`. |
-| `E2BFileBackend` | Built by `e2b_environment` (see [Sandbox](sandbox.md)). Paths are inside the sandbox; grep runs remotely; multiline grep is unsupported. A grep `type` selects the same globs as ripgrep for common types and raises on others. `stat` reports file-type bits from the entry type. |
+| `E2BFileBackend` | Built by `e2b_environment` (see [Sandbox](sandbox.md)). Paths are inside the sandbox; grep runs remotely; multiline grep is unsupported. A grep `type` selects the same files as ripgrep 14 for 32 common types (`py`, `js`, `ts`, `md`, `sh`, …) and raises on any other type; filter with `glob` there. `stat` reports file-type bits from the entry type. |
 
 Non-local stores are best exposed as an MCP server through `MCPFileBackend`; the framework does not project application state as files.
 

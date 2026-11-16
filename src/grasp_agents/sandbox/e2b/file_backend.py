@@ -43,13 +43,27 @@ if TYPE_CHECKING:
     from grasp_agents.sandbox.policy import SandboxPolicy
 
 
-# The globs behind grep's ``type`` filter: a subset of ``rg --type-list``, so a
-# type selects the same files here as on the local ripgrep backend.
-# cspell:ignore jspx sarif jpynb mdwn tcsh
+# The globs behind grep's ``type`` filter: these types as ``rg --type-list``
+# (ripgrep 14) defines them, so a type selects the same files here as on the
+# local ripgrep backend.
+# cspell:ignore jspx sarif jpynb mdwn mkdn pht tcsh tcshrc cshrc kshrc zlogin
+# cspell:ignore zlogout zprofile zshenv dtx rng sch xjb irbrc
 _FILE_TYPE_GLOBS: dict[str, tuple[str, ...]] = {
     "c": ("*.[chH]", "*.[chH].in", "*.cats"),
     "config": ("*.cfg", "*.conf", "*.config", "*.ini"),
-    "cpp": ("*.[ChH]", "*.[ch]pp", "*.[ch]xx", "*.cc", "*.hh", "*.inl"),
+    "cpp": (
+        "*.[ChH]",
+        "*.[ChH].in",
+        "*.[ch]pp",
+        "*.[ch]pp.in",
+        "*.[ch]xx",
+        "*.[ch]xx.in",
+        "*.cc",
+        "*.cc.in",
+        "*.hh",
+        "*.hh.in",
+        "*.inl",
+    ),
     "css": ("*.css", "*.scss"),
     "csv": ("*.csv",),
     "go": ("*.go",),
@@ -61,23 +75,86 @@ _FILE_TYPE_GLOBS: dict[str, tuple[str, ...]] = {
     "jupyter": ("*.ipynb", "*.jpynb"),
     "kotlin": ("*.kt", "*.kts"),
     "lua": ("*.lua",),
-    "markdown": ("*.markdown", "*.md", "*.mdown", "*.mdwn", "*.mdx", "*.mkd"),
-    "md": ("*.markdown", "*.md", "*.mdown", "*.mdwn", "*.mdx", "*.mkd"),
-    "php": ("*.php", "*.phtml"),
+    "markdown": ("*.markdown", "*.md", "*.mdown", "*.mdwn", "*.mdx", "*.mkd", "*.mkdn"),
+    "md": ("*.markdown", "*.md", "*.mdown", "*.mdwn", "*.mdx", "*.mkd", "*.mkdn"),
+    "php": (
+        "*.php",
+        "*.php3",
+        "*.php4",
+        "*.php5",
+        "*.php7",
+        "*.php8",
+        "*.pht",
+        "*.phtml",
+    ),
     "py": ("*.py", "*.pyi"),
     "r": ("*.R", "*.Rmd", "*.Rnw", "*.r"),
     "rst": ("*.rst",),
-    "ruby": ("*.gemspec", "*.rb", "*.rbw", "Gemfile", "Rakefile"),
+    "ruby": (
+        "*.gemspec",
+        "*.rb",
+        "*.rbw",
+        ".irbrc",
+        "Gemfile",
+        "Rakefile",
+        "config.ru",
+    ),
     "rust": ("*.rs",),
     "scala": ("*.sbt", "*.scala"),
-    "sh": ("*.bash", "*.csh", "*.ksh", "*.sh", "*.tcsh", "*.zsh"),
+    "sh": (
+        "*.bash",
+        "*.bashrc",
+        "*.csh",
+        "*.cshrc",
+        "*.ksh",
+        "*.kshrc",
+        "*.sh",
+        "*.tcsh",
+        "*.zsh",
+        ".bash_login",
+        ".bash_logout",
+        ".bash_profile",
+        ".bashrc",
+        ".cshrc",
+        ".kshrc",
+        ".login",
+        ".logout",
+        ".profile",
+        ".tcshrc",
+        ".zlogin",
+        ".zlogout",
+        ".zprofile",
+        ".zshenv",
+        ".zshrc",
+        "bash_login",
+        "bash_logout",
+        "bash_profile",
+        "bashrc",
+        "profile",
+        "zlogin",
+        "zlogout",
+        "zprofile",
+        "zshenv",
+        "zshrc",
+    ),
     "sql": ("*.psql", "*.sql"),
     "swift": ("*.swift",),
-    "tex": ("*.bib", "*.cls", "*.ltx", "*.sty", "*.tex"),
+    "tex": ("*.bib", "*.cls", "*.dtx", "*.ins", "*.ltx", "*.sty", "*.tex"),
     "toml": ("*.toml", "Cargo.lock"),
     "ts": ("*.cts", "*.mts", "*.ts", "*.tsx"),
     "txt": ("*.txt",),
-    "xml": ("*.xml", "*.xsd", "*.xsl", "*.xslt", "*.xhtml"),
+    "xml": (
+        "*.dtd",
+        "*.rng",
+        "*.sch",
+        "*.xhtml",
+        "*.xjb",
+        "*.xml",
+        "*.xml.dist",
+        "*.xsd",
+        "*.xsl",
+        "*.xslt",
+    ),
     "yaml": ("*.yaml", "*.yml"),
 }
 
@@ -274,7 +351,10 @@ class E2BFileBackend(FileBackend):
         if file_type is not None:
             type_globs = _FILE_TYPE_GLOBS.get(file_type)
             if type_globs is None:
-                raise ValueError(f"unrecognized file type: {file_type}")
+                raise ValueError(
+                    f"file type {file_type!r} is not supported on E2B; filter "
+                    "with glob instead"
+                )
         # grep ORs its --include filters, so with a glob the type is applied
         # to the results instead.
         cmd = _build_grep_cmd(

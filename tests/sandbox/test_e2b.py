@@ -17,11 +17,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import functools
 import importlib.util
 import os
 import re
 import shlex
+import shutil
 import stat
+import subprocess
 from pathlib import Path
 from typing import Any, cast
 
@@ -41,6 +44,7 @@ from grasp_agents.sandbox import (
 )
 from grasp_agents.sandbox.e2b import _handle as e2b_handle
 from grasp_agents.sandbox.e2b import environment as e2b_env
+from grasp_agents.sandbox.e2b import file_backend as e2b_file_backend
 from grasp_agents.sandbox.exec_backend import ExecChunk, ExecResult, TerminationReason
 from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.file_edit import DeleteInput, DeleteTool
@@ -291,9 +295,47 @@ async def test_grep_maps_file_types_to_globs(file_type: str, include: str) -> No
     assert f"--include={include}" in shlex.split(cmds.calls[0]["cmd"])
 
 
-async def test_grep_rejects_unknown_file_type() -> None:
+_RG = shutil.which("rg")
+
+
+def _ripgrep(*args: str) -> str:
+    assert _RG is not None
+    return subprocess.run(
+        [_RG, *args], capture_output=True, text=True, check=True
+    ).stdout
+
+
+@functools.cache
+def _ripgrep_type_globs() -> dict[str, set[str]]:
+    return {
+        name: {glob.strip() for glob in globs.split(",")}
+        for name, _, globs in (
+            line.partition(":") for line in _ripgrep("--type-list").splitlines()
+        )
+    }
+
+
+@pytest.mark.skipif(
+    _RG is None or not _ripgrep("--version").startswith("ripgrep 14."),
+    reason="the type globs are copied from ripgrep 14, which must be on PATH",
+)
+@pytest.mark.parametrize("file_type", sorted(e2b_file_backend._FILE_TYPE_GLOBS))
+async def test_grep_type_selects_ripgreps_globs(file_type: str) -> None:
     backend, cmds = _grep_backend("")
-    with pytest.raises(ValueError, match="unrecognized file type"):
+    await backend.grep(Path(WS), "x", file_type=file_type)
+    includes = {
+        arg.removeprefix("--include=")
+        for arg in shlex.split(cmds.calls[0]["cmd"])
+        if arg.startswith("--include=")
+    }
+    assert includes == _ripgrep_type_globs()[file_type]
+
+
+async def test_grep_rejects_a_type_it_does_not_map() -> None:
+    backend, cmds = _grep_backend("")
+    with pytest.raises(
+        ValueError, match="'nope' is not supported on E2B; filter with glob"
+    ):
         await backend.grep(Path(WS), "x", file_type="nope")
     assert cmds.calls == []
 
