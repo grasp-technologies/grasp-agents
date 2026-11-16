@@ -25,6 +25,7 @@ end-to-end live runs go in `tests/integration/`.
 | Retry paths | `FailFirstLLM` |
 | A bare `AgentContext` / `AgentLoop` | `_make_agent_ctx(...)`, `_make_agent_loop(...)` |
 | Snapshot-capable environment | `FakeSnapshotEnv(root)` |
+| E2B sandbox doubles (files, commands, persistent shells, code contexts, a sandbox E2B removed) | `tests/sandbox/_e2b_fakes.py` |
 | Sandbox capability probes | `process_is_sandboxed()`, `srt_can_run()`, `exec_confinement()` |
 | Team tests | `_agent(name, responses)`, `_send(to, message, call_id)`, `_until(pred)` |
 
@@ -82,7 +83,7 @@ The tool-call name must match the tool's registered `name` (here `"add"`).
   (`anthropic_api_key`, `openai_api_key`, `google_api_key`) skip the test when the
   key is missing, and they must go through `_require_env_key` so a failing test
   never prints a key.
-- **Use the cheapest tier** that exhibits the behaviour under test, because wire
+- **Use the cheapest tier** that exhibits the behavior under test, because wire
   formats are the same across tiers of a family. Current picks and their quirks:
 
 | Provider | Model | Quirks |
@@ -91,6 +92,11 @@ The tool-call name must match the tool's registered `name` (here `"add"`).
 | Anthropic | `claude-haiku-5-5` | Rejects `thinking.type="enabled"`. Use `{"thinking": {"type": "adaptive"}, "output_config": {"effort": "medium"}}` |
 | Gemini | `gemini-3.5-flash-lite` | Low thinking effort yields no reasoning on simple prompts, so use `medium` |
 
+- **E2B live tests** create sandboxes through `LiveRun`
+  (`tests/sandbox/test_e2b_live_lifecycle.py`). It tags each sandbox with a
+  metadata value of its own and a short keep-alive, and its `cleanup()`, called
+  in a `finally`, kills every tagged sandbox and deletes the snapshots the test
+  recorded.
 - Some tests pin a specific model on purpose (feature-support pairs, a nonexistent
   model for error paths). Keep those pins.
 - **Diagnosing failures.** HTTP 429 with `insufficient_quota` is an account
@@ -98,7 +104,7 @@ The tool-call name must match the tool's registered `name` (here `"add"`).
   sandboxed or proxied environment, `Operation not permitted`,
   `CONNECT tunnel failed, response 403` and `invalid peer certificate` are
   environment artifacts.
-- Model behaviour is flaky in known ways. For example, a coordinator may re-call a
+- Model behavior is flaky in known ways. For example, a coordinator may re-call a
   running background tool. Assert on framework guarantees, not on a model choosing
   well.
 - After a live run, read what the agent actually did (tool-call arguments, final

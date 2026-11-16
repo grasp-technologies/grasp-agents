@@ -15,7 +15,7 @@ An agent gets no shell, kernel or filesystem access unless you wire it. Command 
 | `SessionCapable`, `KernelCapable`, `SnapshotCapable` | `sandbox/exec_backend.py`, `sandbox/kernel.py`, `sandbox/environment.py` | Optional capabilities: runtime-checkable `Protocol`s, detected with `isinstance`. |
 | `local_environment`, `LocalEnvironment` | `sandbox/local/environment.py` | Host filesystem + host subprocesses. |
 | `LocalExecBackend`, `SeatbeltExecBackend`, `SrtExecBackend` | `sandbox/local/` | Exec backends per confinement. |
-| `e2b_environment`, `E2BEnvironment`, `E2BExecBackend`, `E2BFileBackend` | `sandbox/e2b/` | E2B cloud sandbox (`grasp-agents[e2b]`). |
+| `e2b_environment`, `E2BEnvironment`, `E2BExecBackend`, `E2BFileBackend`, `E2BSandboxExpiredError` | `sandbox/e2b/` | E2B cloud sandbox (`grasp-agents[e2b]`). |
 | `EnvironmentConfig`, `load_environment_config`; `E2BEnvironmentConfig`, `E2BTemplateConfig` | `sandbox/config.py`, `sandbox/e2b/config.py` | JSON configs. |
 | `Bash`, `BashSession`, `bash_tools` | `tools/bash.py`, `tools/bash_session.py` | Shell tools. |
 
@@ -109,11 +109,17 @@ async with env:                       # creates the sandbox; kills it on exit
     ...
 ```
 
-- The sandbox is created on `async with` and killed on exit (`pause_on_exit=True` pauses instead). `E2BEnvironment.from_sandbox(...)` wraps an existing sandbox.
-- `allowed_roots` are paths inside the sandbox (default `/home/user/workspace`), created on entry. `deny_read` / `allow_read` / `deny_write` apply on the tool plane; the VM is the OS boundary.
-- Commands: non-zero exits are returned as `ExecResult.returncode`, never raised. A call with no timeout gets `default_timeout` (600 s).
-- Persistent shells (`BashSession`) are supported. Kernels (`RunPython`, `RunCell`) need `code_interpreter=True`.
-- **Snapshots vs pause.** `snapshot()` creates a persistent E2B snapshot and returns its id; `restore(ref)` spawns a fresh sandbox from it — a true rewind, used by `fs_snapshot_policy` ([Rollback](rollback.md)). `pause()` / `resume()` suspend and reconnect the *same* sandbox; no rewind.
+- The sandbox is created on `async with` and killed on exit (`pause_on_exit=True` pauses instead). `E2BEnvironment.from_sandbox(...)` wraps an existing sandbox. `env.started` says whether a sandbox is live.
+- **Lazy start.** With `lazy=True` (also an `E2BEnvironmentConfig` field), entry creates nothing: the first file or exec call starts the sandbox, once, even when calls race, so a session that never touches it never pays for one. A failed start fails like a failed entry: later calls raise at once, without creating another sandbox, until the environment is re-entered. Exit, `restore()`, `pause()` and `resume()` wait for a start in flight. A start keeps its sandbox while the environment is still entered and holding no other sandbox, even when every call waiting for it was cancelled (a per-call timeout shorter than the start, say): the next call uses it, and exit kills it. A start that finishes after the environment exited or swapped its sandbox kills the sandbox it created. `pause()` before the start raises.
+- `allowed_roots` are paths inside the sandbox (default `/home/user/workspace`), created when the sandbox starts. `deny_read` / `allow_read` / `deny_write` apply on the tool plane; the VM is the OS boundary.
+- Commands: non-zero exits are returned as `ExecResult.returncode`, never raised. A call with no timeout gets `default_timeout` (600 s). The backend enforces the deadline on the command's output stream: a command that runs past it returns `OVERALL_TIMEOUT` with the output it produced, and the task awaiting it is not cancelled. The kill then reaches the shell E2B runs the command in (`/bin/bash -l -c`), not the processes that shell started (see Limitations).
+- Persistent shells (`BashSession`) are supported. A shell runs until it is closed, a command in it times out (which kills it), or its sandbox is replaced; it has no lifetime cap of its own. Kernels (`RunPython`, `RunCell`) need `code_interpreter=True`.
+- **Snapshots vs pause.** `snapshot()` creates a persistent E2B snapshot and returns its id; `restore(ref)` spawns a fresh sandbox from it — a true rewind, used by `fs_snapshot_policy` ([Rollback](rollback.md)). `pause()` / `resume()` suspend and reconnect the *same* sandbox; no rewind. `resume()` reconnects with the class the environment creates sandboxes with (the code-interpreter one with `code_interpreter=True`) and its configured API key, domain and keep-alive timeout; it does not create the allowed roots, so a sandbox started elsewhere must have them.
+- **Swapping sandboxes.** `restore()` kills the previous sandbox when the environment owns it. `resume()` of another sandbox lets go of the previous one as exit would: it kills an owned one, or pauses it with `pause_on_exit`, and the shells and kernels bound to it close. A kill or pause that fails there is logged, not raised. Cancelling `restore()` or `resume()` does not cancel a create or connect E2B may already be running: the sandbox a cancelled restore creates is killed, and one a cancelled resume connects is let go as exit would, unless it is the one the environment holds. Both raise `RuntimeError` outside `async with env:`, where nothing would kill the sandbox they start.
+- **Fresh ref.** Before a lazy start, `snapshot()` returns `FRESH_SNAPSHOT_REF` without starting anything. Restoring that ref drops a lazy environment's sandbox until the next call (and forgets a failed start), starts a new sandbox from the configured template on an eager one, and raises on a `from_sandbox` environment, which has nothing to create one from.
+- **Shells and kernels follow their sandbox.** A shell or kernel is bound to the sandbox it was opened on. Once `restore()` or exit replaces that sandbox, it reports `closed` and never addresses the new one, where its pid could belong to another process. The next `BashSession`, `RunPython` or `RunCell` call opens a new one on the live sandbox, starting a lazy one, and tells the model its state was lost. After a rollback that restored a snapshot, a kernel re-attaches to the code context the snapshot kept, with no reset notice; a kernel whose seeded context the live sandbox does not have opens a fresh one and reports the reset.
+- **Streams across a pause.** `pause()`, `snapshot()` (E2B pauses the sandbox while it takes one) and `resume()` drop the sandbox's open connections, command streams included; its processes survive. A shell reattaches to its output before its next command and keeps its state; if it cannot, it kills the old shell, starts a new one and the result tells the model its shell state was lost. Kernels need nothing: each call is a request of its own, so `resume()` to the same sandbox keeps them.
+- **A sandbox E2B removes.** When E2B no longer has the live sandbox (it reached its keep-alive `sandbox_timeout` or the plan's lifetime cap, or was killed from elsewhere), the call that finds out fails with `E2BSandboxExpiredError`, saying the sandbox's files, shells and kernels are gone; the call is not retried. E2B reports such calls like timeouts, so a failure that could mean either is checked against the sandbox's info first. The environment drops the dead sandbox, and the next call starts a new one from the create params, lazy or eager; shells and kernels bound to the dead one reopen with their reset notices. Nothing is restored from a snapshot. An environment from `from_sandbox` has nothing to create one from, so its calls keep raising the error.
 - Python packages are baked into a template; the framework never installs into a sandbox. `E2BTemplateConfig` describes a template (base image + build steps) and builds it idempotently by alias; `E2BEnvironmentConfig` / `load_e2b_config` describe the whole environment.
 
 ## Shell tools
@@ -133,7 +139,7 @@ async with env:                       # creates the sandbox; kills it on exit
 
 - Needs a `SessionCapable` backend (local, Seatbelt, `srt` and E2B all are).
 - Serial and foreground-only: no backgrounding. A timeout closes the whole session; there is no per-command interrupt.
-- When the shell has to be reopened (it died or hit the provider's lifetime cap), the next result tells the model its shell state was lost.
+- When the shell has to be reopened (it died, a timeout killed it, the E2B sandbox it ran in was replaced, or its output could not be reattached after an E2B pause or snapshot), the next result tells the model its shell state was lost.
 - Outside an agent loop each call opens a throwaway session.
 
 ## Contracts
@@ -144,6 +150,12 @@ async with env:                       # creates the sandbox; kills it on exit
 4. Unenforceable network policies fail at construction under `seatbelt`, `srt` and E2B (`_build_exec_backend`, `build_srt_settings`, `e2b_environment`).
 5. Primary interfaces are ABCs (`ExecutionEnvironment`, `ExecBackend`, `ExecSession`, `KernelSession`, `FileBackend`). Optional capabilities are `Protocol`s checked with `isinstance`; implement only what your backend supports.
 6. One-shot resource limits never apply to persistent shells or kernels (`SupervisorLimits`).
+7. An E2B command timeout ends the wait for the command, not the task awaiting it: the backend passes E2B no command deadline, enforces its own on the output stream, and kills the shell running the command (`E2BExecBackend.stream`).
+8. An E2B shell or kernel addresses only the sandbox it was opened on, compared by sandbox id; once another sandbox or none is live, it reports `closed` (`SandboxHandle.live`, `E2BExecSession`, `E2BKernel`).
+9. E2B's `pause`, `snapshot`, `resume` and `restore` mark every open command stream as dropped; a shell on the same sandbox reattaches to its output before its next command, or replaces itself and reports the reset through `ExecSession.take_reset` (`SandboxHandle.drop_streams`, `E2BExecSession`).
+10. A lazy E2B environment runs one start at a time, and exit, `restore`, `pause` and `resume` hold the same lock as the start. A start keeps its sandbox whenever the environment is still entered and holding no other sandbox, whether or not a caller still awaits it; otherwise it kills the sandbox and raises (`SandboxHandle.ensure`).
+11. An E2B environment never leaves an owned sandbox it stops holding, or one it obtained for a cancelled call, running unheld: `restore` kills the previous one, `resume` of another sandbox lets go of the previous one as exit would, and a cancelled `restore` or `resume` finishes in a task of its own and releases what it obtained (`E2BEnvironment.restore`, `resume`).
+12. A call that fails because E2B no longer has the sandbox raises `E2BSandboxExpiredError` and drops that sandbox from the environment, which starts a new one on the next call when it has create params; a failure the sandbox survived surfaces unchanged (`SandboxHandle.raise_if_expired`).
 
 ## Limitations
 
@@ -151,6 +163,10 @@ async with env:                       # creates the sandbox; kills it on exit
 - `NetworkPolicy.LOOPBACK` is accepted only by `none`, which does not enforce it.
 - Seatbelt cannot express per-domain egress; use `srt`.
 - Only E2B offers filesystem snapshots; there is no local snapshot backend.
+- An E2B `restore()` loses persistent shell state; kernel state survives only when a rollback re-attaches the context its snapshot kept.
+- On E2B, a command timeout or a `KillTask` kills the shell running the command, and processes it started may keep running in the sandbox. The local backend kills the command's whole process group.
+- On E2B, a one-shot command still running when `pause()` or `snapshot()` drops the sandbox's connections loses the rest of its output: its call fails or times out, while the command itself may keep running. Only persistent shells reattach.
+- When E2B removes a sandbox, only the call that finds out hears that its files are gone. Other agents sharing the environment find out through their shell and kernel reset notices, or not at all if they only use files.
 - No Docker or SSH exec backend ships; implement `ExecutionEnvironment` / `ExecBackend` for other targets.
 
 ## See also

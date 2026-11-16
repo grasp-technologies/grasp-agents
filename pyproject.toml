@@ -1,6 +1,6 @@
 [project]
 name = "grasp_agents"
-version = "1.2.0"
+version = "1.2.1"
 description = "Grasp Agents Library"
 readme = "README.md"
 requires-python = ">=3.12,<4"
