@@ -631,6 +631,50 @@ async def test_restore_spawns_fresh_sandbox_from_snapshot(
     assert new_sb.killed is True
 
 
+async def test_restores_of_a_wrapped_sandbox_carry_its_network_and_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = _created_by(monkeypatch)
+    wrapped = FakeSandbox(sandbox_id="sbx_old")
+    env = E2BEnvironment.from_sandbox(
+        cast("AsyncSandbox", wrapped),
+        policy=SandboxPolicy(
+            allowed_roots=(Path(WS),),
+            network=NetworkPolicy.ALLOWLIST,
+            allowed_domains=("pypi.org",),
+        ),
+        owns_sandbox=True,
+        label="prod",
+    )
+
+    async with env:
+        await env.restore("snap-1")
+        await env.update_network(NetworkPolicy.NONE)
+        await env.restore("snap-2")
+
+    allowlisted, cut = created
+    for kwargs in (allowlisted, cut):
+        assert kwargs["metadata"] == {"grasp-agents": "prod"}
+    assert allowlisted["template"] == "snap-1"
+    assert allowlisted["allow_internet_access"] is True
+    assert allowlisted["network"] == {
+        "deny_out": ["0.0.0.0/0"],
+        "allow_out": ["pypi.org"],
+    }
+    assert cut["allow_internet_access"] is False
+    assert "network" not in cut
+
+
+async def test_a_wrapped_sandbox_with_a_policy_e2b_cannot_enforce_is_refused() -> None:
+    with pytest.raises(NotImplementedError):
+        E2BEnvironment.from_sandbox(
+            cast("AsyncSandbox", FakeSandbox()),
+            policy=SandboxPolicy(
+                allowed_roots=(Path(WS),), network=NetworkPolicy.LOOPBACK
+            ),
+        )
+
+
 async def test_resume_reconnects_to_sandbox(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -725,15 +769,165 @@ async def test_enter_creates_sandbox_with_mapped_params(
     assert WS in fake_sb.files.made_dirs
 
 
+@pytest.mark.parametrize(
+    ("label", "marker"), [(None, "default"), ("prod-eu", "prod-eu")]
+)
+async def test_every_create_tags_the_sandbox_as_grasp_agents(
+    monkeypatch: pytest.MonkeyPatch, label: str | None, marker: str
+) -> None:
+    created: list[dict[str, Any]] = []
+
+    class _FakeAsyncSandbox:
+        @staticmethod
+        async def create(**kwargs: Any) -> FakeSandbox:
+            created.append(kwargs)
+            return FakeSandbox(sandbox_id=f"sbx_{len(created)}")
+
+    monkeypatch.setattr(e2b_env, "AsyncSandbox", _FakeAsyncSandbox)
+
+    metadata = {"app": "chat", "grasp-agents": "theirs"}
+    async with e2b_environment(
+        allowed_roots=[WS], metadata=metadata, label=label
+    ) as env:
+        await env.restore("snap-1")
+
+    expected = {"app": "chat", "grasp-agents": marker}
+    assert [kwargs["metadata"] for kwargs in created] == [expected, expected]
+
+
+@pytest.mark.parametrize("label", ["Prod", "a.b", "a_b", "", "x" * 33])
+async def test_label_is_lowercase_letters_digits_and_dashes(label: str) -> None:
+    with pytest.raises(ValueError, match="label"):
+        e2b_environment(allowed_roots=[WS], label=label)
+
+
 async def test_factory_network_none_is_default() -> None:
     env = e2b_environment(allowed_roots=[WS], network=NetworkPolicy.NONE)
     assert env.policy.network is NetworkPolicy.NONE
 
 
-@pytest.mark.parametrize("net", [NetworkPolicy.ALLOWLIST, NetworkPolicy.LOOPBACK])
-async def test_factory_rejects_unsupported_network(net: NetworkPolicy) -> None:
+async def test_factory_rejects_loopback_network() -> None:
     with pytest.raises(NotImplementedError):
-        e2b_environment(allowed_roots=[WS], network=net)
+        e2b_environment(allowed_roots=[WS], network=NetworkPolicy.LOOPBACK)
+
+
+def _created_by(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[dict[str, Any]]:
+    created: list[dict[str, Any]] = []
+
+    class _FakeAsyncSandbox:
+        @staticmethod
+        async def create(**kwargs: Any) -> FakeSandbox:
+            created.append(kwargs)
+            return FakeSandbox(sandbox_id=f"sbx_{len(created)}")
+
+    monkeypatch.setattr(e2b_env, "AsyncSandbox", _FakeAsyncSandbox)
+    return created
+
+
+@pytest.mark.parametrize(
+    ("allowed", "denied", "allow_out"),
+    [
+        (
+            ["pypi.org", "files.pythonhosted.org"],
+            [],
+            ["pypi.org", "files.pythonhosted.org"],
+        ),
+        # Denied wins: E2B denies only addresses, so a denied host leaves the list.
+        (["pypi.org", "Example.com"], ["example.com"], ["pypi.org"]),
+        (["pypi.org", "a.example.com"], ["*.example.com"], ["pypi.org"]),
+        ([], [], []),
+    ],
+)
+async def test_an_allowlist_lets_only_its_hosts_out(
+    monkeypatch: pytest.MonkeyPatch,
+    allowed: list[str],
+    denied: list[str],
+    allow_out: list[str],
+) -> None:
+    created = _created_by(monkeypatch)
+
+    async with e2b_environment(
+        allowed_roots=[WS],
+        network=NetworkPolicy.ALLOWLIST,
+        allowed_domains=allowed,
+        denied_domains=denied,
+    ) as env:
+        assert env.policy.network is NetworkPolicy.ALLOWLIST
+        assert env.policy.allowed_domains == tuple(allowed)
+        assert env.policy.denied_domains == tuple(denied)
+        await env.restore("snap-1")
+
+    # E2B takes an allowlist only next to a deny of all other traffic.
+    network: dict[str, list[str]] = {"deny_out": ["0.0.0.0/0"]}
+    if allow_out:
+        network["allow_out"] = allow_out
+    for kwargs in created:
+        assert kwargs["allow_internet_access"] is True
+        assert kwargs["network"] == network
+    assert len(created) == 2
+
+
+@pytest.mark.parametrize(
+    ("net", "internet"), [(NetworkPolicy.NONE, False), (NetworkPolicy.ALL, True)]
+)
+async def test_none_and_all_need_no_network_rules(
+    monkeypatch: pytest.MonkeyPatch, net: NetworkPolicy, internet: bool
+) -> None:
+    created = _created_by(monkeypatch)
+
+    async with e2b_environment(allowed_roots=[WS], network=net):
+        pass
+
+    assert created[0]["allow_internet_access"] is internet
+    assert "network" not in created[0]
+
+
+@pytest.mark.parametrize(
+    ("value", "internet", "has_rules"),
+    [("all", True, False), ("none", False, False), ("allowlist", True, True)],
+)
+async def test_a_network_given_as_a_string_is_read_as_the_policy(
+    monkeypatch: pytest.MonkeyPatch, value: str, internet: bool, has_rules: bool
+) -> None:
+    created = _created_by(monkeypatch)
+
+    async with e2b_environment(
+        allowed_roots=[WS], network=cast("NetworkPolicy", value)
+    ) as env:
+        assert env.policy.network is NetworkPolicy(value)
+        await env.update_network(cast("NetworkPolicy", "none"))
+        assert env.policy.network is NetworkPolicy.NONE
+
+    assert created[0]["allow_internet_access"] is internet
+    assert ("network" in created[0]) is has_rules
+
+
+async def test_an_unknown_network_is_refused() -> None:
+    with pytest.raises(ValueError, match="bogus"):
+        e2b_environment(allowed_roots=[WS], network=cast("NetworkPolicy", "bogus"))
+
+
+async def test_denied_hosts_with_all_traffic_allowed_are_refused() -> None:
+    with pytest.raises(NotImplementedError, match="denied_domains"):
+        e2b_environment(
+            allowed_roots=[WS], network=NetworkPolicy.ALL, denied_domains=["evil.org"]
+        )
+    env = e2b_environment(allowed_roots=[WS])
+    with pytest.raises(NotImplementedError, match="denied_domains"):
+        await env.update_network(NetworkPolicy.ALL, denied_domains=["evil.org"])
+    assert env.policy.network is NetworkPolicy.NONE
+
+
+async def test_a_denied_host_an_allowed_wildcard_covers_is_refused() -> None:
+    with pytest.raises(NotImplementedError, match=r"evil\.example\.com"):
+        e2b_environment(
+            allowed_roots=[WS],
+            network=NetworkPolicy.ALLOWLIST,
+            allowed_domains=["*.example.com"],
+            denied_domains=["evil.example.com"],
+        )
 
 
 # --- live integration --------------------------------------------------------

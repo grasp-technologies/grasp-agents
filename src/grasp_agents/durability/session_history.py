@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .checkpoints import AgentCheckpoint, CheckpointKind
+from .checkpoints import AgentCheckpoint, CheckpointKind, SessionCheckpoint
 from .message_record import MessageRecord, MessageStatus
 from .store_keys import make_store_key, task_prefix
 from .task_record import TaskRecord
@@ -67,6 +67,52 @@ async def read_agent_histories(
             )
         )
     return histories
+
+
+async def read_fs_snapshot_refs(
+    store: CheckpointStore, session_key: str | None = None
+) -> set[str]:
+    """
+    Every filesystem snapshot ref the persisted records hold, for
+    ``session_key`` or, when ``None``, for every session in ``store``: the
+    session record's ref and each agent head's current position and
+    rollback boundaries. These are the snapshots a resume or a rollback may
+    still restore, so keep them when deleting snapshots any other way.
+
+    A missing record is skipped, but an unreadable one raises (a
+    ``ValidationError``, or ``CheckpointSchemaError`` for a newer schema):
+    its refs would otherwise be missing from what you keep. The store-wide
+    scan finds sessions by their session record, which every session that
+    took a snapshot has.
+    """
+    if session_key is None:
+        suffix = f"/{CheckpointKind.SESSION}"
+        session_keys = {
+            key.removesuffix(suffix)
+            for key in await store.list_keys("")
+            if key.endswith(suffix)
+        }
+        refs: set[str] = set()
+        for key in sorted(session_keys):
+            refs |= await read_fs_snapshot_refs(store, key)
+        return refs
+
+    refs = set[str]()
+    raw = await store.load(make_store_key(session_key, CheckpointKind.SESSION))
+    if raw is not None:
+        record = SessionCheckpoint.model_validate_json(raw)
+        if record.fs_snapshot_ref is not None:
+            refs.add(record.fs_snapshot_ref)
+    prefix = make_store_key(session_key, CheckpointKind.AGENT) + "/"
+    for key in await store.list_keys(prefix):
+        raw = await store.load(key)
+        if raw is None:
+            continue
+        head = AgentCheckpoint.model_validate_json(raw)
+        for mark in (head.current, *head.step_watermarks):
+            if mark.fs_snapshot_ref is not None:
+                refs.add(mark.fs_snapshot_ref)
+    return refs
 
 
 async def read_task_records(

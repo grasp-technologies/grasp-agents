@@ -276,6 +276,8 @@ class FakeSandbox:
         self.killed = False
         self.snapshotted = False
         self.gone = False
+        self.snapshot_names: list[str | None] = []
+        self.network_updates: list[dict[str, Any]] = []
 
     def expire(self) -> None:
         """E2B removes the sandbox (its timeout, or a kill from elsewhere)."""
@@ -296,7 +298,13 @@ class FakeSandbox:
         self.killed = True
         return True
 
-    async def create_snapshot(self) -> Any:
+    async def update_network(self, network: dict[str, Any]) -> None:
+        if self.gone or self.paused:
+            raise SandboxNotFoundException(f"Sandbox {self.sandbox_id} not found")
+        self.network_updates.append(network)
+
+    async def create_snapshot(self, name: str | None = None) -> Any:
+        self.snapshot_names.append(name)
         # E2B pauses the sandbox while it takes the snapshot.
         self.snapshotted = True
         self.commands.drop_streams()

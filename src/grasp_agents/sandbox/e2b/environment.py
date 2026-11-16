@@ -9,28 +9,38 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, TypedDict
 
 from e2b import AsyncSandbox
 
-from grasp_agents.sandbox.environment import ExecutionEnvironment, SnapshotCapable
+from grasp_agents.sandbox.environment import (
+    ExecutionEnvironment,
+    NetworkUpdatable,
+    SnapshotCapable,
+)
 from grasp_agents.sandbox.policy import NetworkPolicy, SandboxPolicy
 
 from ._handle import (
     DEFAULT_EXEC_TIMEOUT,
     DEFAULT_WORKSPACE,
+    E2BSandboxExpiredError,
     SandboxHandle,
     consume_outcome,
     kill_quietly,
     wire,
 )
+from ._names import METADATA_KEY, check_label, snapshot_name
+from ._network import e2b_egress
 from .exec import E2BExecBackend
 from .file_backend import E2BFileBackend
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Mapping, Sequence
 
+    from e2b import SandboxNetworkOpts, SandboxNetworkUpdate
     from e2b.connection_config import ApiParams
 
 logger = logging.getLogger(__name__)
@@ -56,6 +66,7 @@ class E2BCreateParams(TypedDict, total=False):
     envs: dict[str, str] | None
     secure: bool
     allow_internet_access: bool
+    network: SandboxNetworkOpts
     api_key: str
     domain: str
 
@@ -98,7 +109,7 @@ def _sandbox_cls(code_interpreter: bool) -> type[AsyncSandbox]:
     return CISandbox
 
 
-class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
+class E2BEnvironment(ExecutionEnvironment, SnapshotCapable, NetworkUpdatable):
     """
     An :class:`ExecutionEnvironment` over an E2B cloud sandbox, with
     :class:`SnapshotCapable` wired to E2B's native snapshots (``snapshot`` /
@@ -125,8 +136,10 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         pause_on_exit: bool = False,
         code_interpreter: bool = False,
         lazy: bool = False,
+        label: str | None = None,
     ) -> None:
         self._lazy = lazy
+        self._label = check_label(label)
         self._policy = policy
         self._holder = holder
         self._file_backend = file_backend
@@ -159,15 +172,21 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         policy: SandboxPolicy,
         owns_sandbox: bool = False,
         pause_on_exit: bool = False,
+        label: str | None = None,
     ) -> Self:
         """
         Wrap an already-created e2b ``AsyncSandbox`` (or a test double).
 
         The ``policy`` is the single source of ``allowed_roots`` + carve-outs
-        for both surfaces. ``owns_sandbox=False`` by default: the caller created
-        it, so teardown is the caller's responsibility. Used for connecting to a
-        pre-existing sandbox and for tests.
+        for both surfaces, and of the network a :meth:`restore` creates its
+        sandbox with; ``label`` tags those sandboxes and names snapshots, as
+        :func:`e2b_environment`'s does. ``owns_sandbox=False`` by default: the
+        caller created it, so teardown is the caller's responsibility. Used for
+        connecting to a pre-existing sandbox and for tests.
+
+        Raises ``NotImplementedError`` for a network policy E2B cannot enforce.
         """
+        e2b_egress(policy)
         holder = SandboxHandle(sandbox)
         return cls(
             policy=policy,
@@ -177,6 +196,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
             create_params=None,
             owns_sandbox=owns_sandbox,
             pause_on_exit=pause_on_exit,
+            label=label,
         )
 
     @property
@@ -279,7 +299,8 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
             return FRESH_SNAPSHOT_REF
         sandbox = self._holder.require()
         try:
-            snap = await sandbox.create_snapshot()
+            name = snapshot_name(self._label, datetime.now(UTC))
+            snap = await sandbox.create_snapshot(name=name)
         except Exception as exc:
             await self._holder.raise_if_expired(sandbox, exc)
             raise
@@ -333,8 +354,98 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         if ref == FRESH_SNAPSHOT_REF:
             return await self._start()
         # Create from the snapshot instead of the configured template.
-        params: E2BCreateParams = {**(self._create_params or {}), "template": ref}
+        params: E2BCreateParams = {
+            **(self._create_params or self._wrapped_create_params()),
+            "template": ref,
+        }
         return await _sandbox_cls(self._code_interpreter).create(**params)
+
+    async def update_network(
+        self,
+        network: NetworkPolicy,
+        *,
+        allowed_domains: Sequence[str] = (),
+        denied_domains: Sequence[str] = (),
+    ) -> None:
+        """
+        Change the sandbox's egress to ``network`` (with ``allowed_domains``
+        and ``denied_domains``, as :func:`e2b_environment` takes them), and
+        record it: :attr:`policy` and the exec backend's report it, and every
+        sandbox the environment creates afterwards (a lazy start, a restore,
+        the replacement of one E2B removed) starts with it. Before a lazy
+        start it only records.
+
+        When E2B no longer has the sandbox, the change is still recorded for
+        its replacement and :class:`E2BSandboxExpiredError` is raised. A
+        sandbox :meth:`pause` paused refuses the change; :meth:`resume` it
+        first. ``resume()`` of another sandbox keeps that sandbox's own
+        network.
+
+        Raises ``NotImplementedError``, changing nothing, for a policy E2B
+        cannot enforce (``LOOPBACK``; ``denied_domains`` with ``ALL``; a denied
+        host an allowed wildcard covers), and ``ValueError`` for an unknown
+        ``network``.
+        """
+        policy = replace(
+            self._policy,
+            network=NetworkPolicy(network),
+            allowed_domains=tuple(allowed_domains),
+            denied_domains=tuple(denied_domains),
+        )
+        internet, options = e2b_egress(policy)
+        update: SandboxNetworkUpdate = {"allow_internet_access": internet}
+        if options is not None and "deny_out" in options:
+            update["deny_out"] = options["deny_out"]
+        if options is not None and "allow_out" in options:
+            update["allow_out"] = options["allow_out"]
+        async with self._holder.lock:
+            sandbox = self._holder.sandbox
+            try:
+                if sandbox is not None:
+                    await self._apply_network(sandbox, update)
+            except E2BSandboxExpiredError:
+                self._adopt_network(policy, internet, options)
+                raise
+            self._adopt_network(policy, internet, options)
+
+    async def _apply_network(
+        self, sandbox: AsyncSandbox, update: SandboxNetworkUpdate
+    ) -> None:
+        try:
+            await sandbox.update_network(update)
+        except Exception as exc:
+            await self._holder.raise_if_expired(sandbox, exc)
+            raise
+
+    def _adopt_network(
+        self,
+        policy: SandboxPolicy,
+        internet: bool,
+        options: SandboxNetworkOpts | None,
+    ) -> None:
+        self._policy = policy
+        self._exec_backend.adopt_network(policy)
+        if self._create_params is None:
+            return
+        self._create_params["allow_internet_access"] = internet
+        if options is None:
+            self._create_params.pop("network", None)
+        else:
+            self._create_params["network"] = options
+
+    def _wrapped_create_params(self) -> E2BCreateParams:
+        """
+        What a :meth:`from_sandbox` environment's restores create with: its
+        policy's network and its tag.
+        """
+        internet, network = e2b_egress(self._policy)
+        params: E2BCreateParams = {
+            "allow_internet_access": internet,
+            "metadata": {METADATA_KEY: self._label},
+        }
+        if network is not None:
+            params["network"] = network
+        return params
 
     async def pause(self) -> str:
         """
@@ -439,6 +550,8 @@ def e2b_environment(
     template: str | None = None,
     sandbox_timeout: int | None = None,
     network: NetworkPolicy = NetworkPolicy.NONE,
+    allowed_domains: Sequence[str] = (),
+    denied_domains: Sequence[str] = (),
     env: Mapping[str, str] | None = None,
     metadata: Mapping[str, str] | None = None,
     api_key: str | None = None,
@@ -448,6 +561,7 @@ def e2b_environment(
     code_interpreter: bool = False,
     default_timeout: float = DEFAULT_EXEC_TIMEOUT,
     lazy: bool = False,
+    label: str | None = None,
 ) -> E2BEnvironment:
     """
     Build a deferred-create E2B environment; the sandbox is created on
@@ -466,11 +580,19 @@ def e2b_environment(
             in) and pass its name/ID here. The framework does not pip-install into
             E2B sandboxes; bake requirements into the template.
         sandbox_timeout: Sandbox keep-alive in seconds (E2B default 300).
-        network: ``NONE`` (no internet) or ``ALL`` (internet on). ``ALLOWLIST``
-            / ``LOOPBACK`` raise ``NotImplementedError`` (per-domain egress needs
-            E2B network rules — future work).
+        network: ``NONE`` (no internet), ``ALL`` (internet on) or
+            ``ALLOWLIST`` (only ``allowed_domains``). ``LOOPBACK`` raises
+            ``NotImplementedError``.
+        allowed_domains: With ``ALLOWLIST``, the hosts the sandbox may reach:
+            exact names, or ``*.``-wildcards for their subdomains. All other
+            egress is blocked, raw IP addresses included.
+        denied_domains: With ``ALLOWLIST``, hosts never reachable, checked
+            first. E2B denies only addresses, so a denied host is left out of
+            the allowlist, and one an allowed wildcard covers raises
+            ``NotImplementedError``, as does any with ``ALL``.
         env: Base environment variables for the sandbox + every command.
-        metadata: Custom sandbox metadata.
+        metadata: Custom sandbox metadata. The environment adds its own
+            ``"grasp-agents"`` key, set to ``label``.
         api_key: E2B API key (defaults to the ``E2B_API_KEY`` env var).
         domain: E2B domain (defaults to the ``E2B_DOMAIN`` env var).
         secure: Token-secure the sandbox (E2B default ``True``).
@@ -491,17 +613,18 @@ def e2b_environment(
             start fails like a failed entry: later calls raise without
             creating another sandbox until the environment is re-entered (or
             restored to :data:`FRESH_SNAPSHOT_REF`).
+        label: Up to 32 lowercase letters, digits or dashes marking what this
+            environment creates: the sandbox metadata's ``"grasp-agents"``
+            value and part of every snapshot's name (``"default"`` when
+            ``None``). Deployments that share an E2B team give each its own,
+            so a sweep (:func:`~grasp_agents.sandbox.sweep_e2b`) of one never
+            touches another's.
 
     Returns:
         An :class:`E2BEnvironment` to use as ``async with``.
 
     """
-    if network in {NetworkPolicy.ALLOWLIST, NetworkPolicy.LOOPBACK}:
-        raise NotImplementedError(
-            f"E2B example backend does not implement network={network.value!r} "
-            "(per-domain / loopback egress needs E2B network rules). Use "
-            "NetworkPolicy.NONE or NetworkPolicy.ALL."
-        )
+    label = check_label(label)
 
     roots = tuple(Path(r) for r in allowed_roots)
     policy = SandboxPolicy(
@@ -509,18 +632,23 @@ def e2b_environment(
         deny_read=tuple(Path(p) for p in deny_read),
         allow_read=tuple(Path(p) for p in allow_read),
         deny_write=tuple(Path(p) for p in deny_write),
-        network=network,
+        network=NetworkPolicy(network),
+        allowed_domains=tuple(allowed_domains),
+        denied_domains=tuple(denied_domains),
         env=dict(env) if env else {},
     )
+    internet, network_options = e2b_egress(policy)
 
     create_params: E2BCreateParams = {
         "template": template,
         "timeout": sandbox_timeout,
-        "metadata": dict(metadata) if metadata else None,
+        "metadata": {**(metadata or {}), METADATA_KEY: label},
         "envs": dict(env) if env else None,
         "secure": secure,
-        "allow_internet_access": network == NetworkPolicy.ALL,
+        "allow_internet_access": internet,
     }
+    if network_options is not None:
+        create_params["network"] = network_options
     if api_key is not None:
         create_params["api_key"] = api_key
     if domain is not None:
@@ -539,4 +667,5 @@ def e2b_environment(
         pause_on_exit=pause_on_exit,
         code_interpreter=code_interpreter,
         lazy=lazy,
+        label=label,
     )

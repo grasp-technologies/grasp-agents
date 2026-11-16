@@ -18,7 +18,7 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any
 
-from .environment import ExecutionEnvironment, SnapshotCapable
+from .environment import ExecutionEnvironment, NetworkUpdatable, SnapshotCapable
 from .exec_backend import ExecBackend, ExecChunk, ExecResult, TerminationReason
 from .policy import NetworkPolicy, SandboxPolicy
 
@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         load_environment_config,
     )
     from .e2b._handle import E2BSandboxExpiredError
+    from .e2b.cleanup import E2BSweepReport, sweep_e2b
     from .e2b.config import (
         E2BEnvironmentConfig,
         E2BTemplateConfig,
@@ -59,6 +60,8 @@ _LAZY: dict[str, str] = {
     "E2BEnvironment": "e2b.environment",
     "FRESH_SNAPSHOT_REF": "e2b.environment",
     "E2BSandboxExpiredError": "e2b._handle",
+    "E2BSweepReport": "e2b.cleanup",
+    "sweep_e2b": "e2b.cleanup",
     "E2BEnvironmentConfig": "e2b.config",
     "E2BTemplateConfig": "e2b.config",
     "load_e2b_config": "e2b.config",
@@ -97,6 +100,7 @@ __all__ = [
     "E2BExecBackend",
     "E2BFileBackend",
     "E2BSandboxExpiredError",
+    "E2BSweepReport",
     "E2BTemplateConfig",
     "EnvironmentConfig",
     "ExecBackend",
@@ -110,6 +114,7 @@ __all__ = [
     "LocalExecBackend",
     "NetworkConfig",
     "NetworkPolicy",
+    "NetworkUpdatable",
     "ProcessSupervisor",
     "SandboxPolicy",
     "SeatbeltExecBackend",
@@ -125,4 +130,5 @@ __all__ = [
     "local_environment",
     "seatbelt_argv",
     "srt_argv",
+    "sweep_e2b",
 ]

@@ -22,6 +22,7 @@ from .resume import InterruptionType, ResumeState, prepare_messages_for_resume
 from .session_history import (
     AgentHistory,
     read_agent_histories,
+    read_fs_snapshot_refs,
     read_pending_messages,
     read_task_records,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "make_tool_call_path",
     "prepare_messages_for_resume",
     "read_agent_histories",
+    "read_fs_snapshot_refs",
     "read_pending_messages",
     "read_task_records",
     "rehydrate_context",
