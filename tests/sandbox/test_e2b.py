@@ -725,6 +725,38 @@ async def test_enter_creates_sandbox_with_mapped_params(
     assert WS in fake_sb.files.made_dirs
 
 
+@pytest.mark.parametrize(
+    ("label", "marker"), [(None, "default"), ("prod-eu", "prod-eu")]
+)
+async def test_every_create_tags_the_sandbox_as_grasp_agents(
+    monkeypatch: pytest.MonkeyPatch, label: str | None, marker: str
+) -> None:
+    created: list[dict[str, Any]] = []
+
+    class _FakeAsyncSandbox:
+        @staticmethod
+        async def create(**kwargs: Any) -> FakeSandbox:
+            created.append(kwargs)
+            return FakeSandbox(sandbox_id=f"sbx_{len(created)}")
+
+    monkeypatch.setattr(e2b_env, "AsyncSandbox", _FakeAsyncSandbox)
+
+    metadata = {"app": "chat", "grasp-agents": "theirs"}
+    async with e2b_environment(
+        allowed_roots=[WS], metadata=metadata, label=label
+    ) as env:
+        await env.restore("snap-1")
+
+    expected = {"app": "chat", "grasp-agents": marker}
+    assert [kwargs["metadata"] for kwargs in created] == [expected, expected]
+
+
+@pytest.mark.parametrize("label", ["Prod", "a.b", "a_b", "", "x" * 33])
+async def test_label_is_lowercase_letters_digits_and_dashes(label: str) -> None:
+    with pytest.raises(ValueError, match="label"):
+        e2b_environment(allowed_roots=[WS], label=label)
+
+
 async def test_factory_network_none_is_default() -> None:
     env = e2b_environment(allowed_roots=[WS], network=NetworkPolicy.NONE)
     assert env.policy.network is NetworkPolicy.NONE

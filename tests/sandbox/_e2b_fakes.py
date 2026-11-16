@@ -276,6 +276,7 @@ class FakeSandbox:
         self.killed = False
         self.snapshotted = False
         self.gone = False
+        self.snapshot_names: list[str | None] = []
 
     def expire(self) -> None:
         """E2B removes the sandbox (its timeout, or a kill from elsewhere)."""
@@ -296,7 +297,8 @@ class FakeSandbox:
         self.killed = True
         return True
 
-    async def create_snapshot(self) -> Any:
+    async def create_snapshot(self, name: str | None = None) -> Any:
+        self.snapshot_names.append(name)
         # E2B pauses the sandbox while it takes the snapshot.
         self.snapshotted = True
         self.commands.drop_streams()

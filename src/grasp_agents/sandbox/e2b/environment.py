@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, TypedDict
 
@@ -25,6 +26,7 @@ from ._handle import (
     kill_quietly,
     wire,
 )
+from ._names import METADATA_KEY, check_label, snapshot_name
 from .exec import E2BExecBackend
 from .file_backend import E2BFileBackend
 
@@ -125,8 +127,10 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         pause_on_exit: bool = False,
         code_interpreter: bool = False,
         lazy: bool = False,
+        label: str | None = None,
     ) -> None:
         self._lazy = lazy
+        self._label = check_label(label)
         self._policy = policy
         self._holder = holder
         self._file_backend = file_backend
@@ -279,7 +283,8 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
             return FRESH_SNAPSHOT_REF
         sandbox = self._holder.require()
         try:
-            snap = await sandbox.create_snapshot()
+            name = snapshot_name(self._label, datetime.now(UTC))
+            snap = await sandbox.create_snapshot(name=name)
         except Exception as exc:
             await self._holder.raise_if_expired(sandbox, exc)
             raise
@@ -448,6 +453,7 @@ def e2b_environment(
     code_interpreter: bool = False,
     default_timeout: float = DEFAULT_EXEC_TIMEOUT,
     lazy: bool = False,
+    label: str | None = None,
 ) -> E2BEnvironment:
     """
     Build a deferred-create E2B environment; the sandbox is created on
@@ -470,7 +476,8 @@ def e2b_environment(
             / ``LOOPBACK`` raise ``NotImplementedError`` (per-domain egress needs
             E2B network rules — future work).
         env: Base environment variables for the sandbox + every command.
-        metadata: Custom sandbox metadata.
+        metadata: Custom sandbox metadata. The environment adds its own
+            ``"grasp-agents"`` key, set to ``label``.
         api_key: E2B API key (defaults to the ``E2B_API_KEY`` env var).
         domain: E2B domain (defaults to the ``E2B_DOMAIN`` env var).
         secure: Token-secure the sandbox (E2B default ``True``).
@@ -491,6 +498,11 @@ def e2b_environment(
             start fails like a failed entry: later calls raise without
             creating another sandbox until the environment is re-entered (or
             restored to :data:`FRESH_SNAPSHOT_REF`).
+        label: Up to 32 lowercase letters, digits or dashes marking what this
+            environment creates: the sandbox metadata's ``"grasp-agents"``
+            value and part of every snapshot's name (``"default"`` when
+            ``None``). Deployments that share an E2B team give each its own,
+            so cleaning up after one never touches another's.
 
     Returns:
         An :class:`E2BEnvironment` to use as ``async with``.
@@ -502,6 +514,7 @@ def e2b_environment(
             "(per-domain / loopback egress needs E2B network rules). Use "
             "NetworkPolicy.NONE or NetworkPolicy.ALL."
         )
+    label = check_label(label)
 
     roots = tuple(Path(r) for r in allowed_roots)
     policy = SandboxPolicy(
@@ -516,7 +529,7 @@ def e2b_environment(
     create_params: E2BCreateParams = {
         "template": template,
         "timeout": sandbox_timeout,
-        "metadata": dict(metadata) if metadata else None,
+        "metadata": {**(metadata or {}), METADATA_KEY: label},
         "envs": dict(env) if env else None,
         "secure": secure,
         "allow_internet_access": network == NetworkPolicy.ALL,
@@ -539,4 +552,5 @@ def e2b_environment(
         pause_on_exit=pause_on_exit,
         code_interpreter=code_interpreter,
         lazy=lazy,
+        label=label,
     )
