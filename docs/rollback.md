@@ -95,6 +95,30 @@ async with env:
 - Kernel context ids are kept only alongside a snapshot and re-attached only when the session actually restored one. A rollback points each kernel at the context its boundary recorded. When the boundary predates the kernel, the kernel the restore closed is dropped with its id: checkpoints record no id for it, and the next call opens a fresh kernel in the restored sandbox without a reset notice, since the rolled-back transcript never used that kernel.
 - Multi-agent hosts register `ctx.add_environment_restored_callback(cb)`; teams use it to post an `<environment_rewind>` notice to the other members after the lead restores a snapshot. Remove it with `remove_environment_restored_callback` when the host is torn down.
 
+### Ending a session
+
+The framework has no session end: you delete a session's records when you are done with it. Delete its snapshots first, once its environment has exited (E2B refuses to delete the snapshot a live or paused sandbox was created from). The environment has no delete of its own: delete through the `e2b` SDK with the API key and domain the environment uses (by default `E2B_API_KEY` and `E2B_DOMAIN`):
+
+```python
+from e2b import AsyncSandbox, SandboxException
+
+from grasp_agents.durability import read_fs_snapshot_refs, session_prefix
+from grasp_agents.sandbox import FRESH_SNAPSHOT_REF
+
+async def end_session(store, session_key):
+    for ref in await read_fs_snapshot_refs(store, session_key):
+        if ref == FRESH_SNAPSHOT_REF:  # a sandbox that never started: no snapshot
+            continue
+        try:
+            await AsyncSandbox.delete_snapshot(ref)  # False: already gone
+        except SandboxException:
+            pass  # a sandbox still uses it: leave it to a sweep
+    for key in await store.list_keys(session_prefix(session_key)):
+        await store.delete(key)
+```
+
+`read_fs_snapshot_refs(store)` without a session key returns the refs every session in the store holds: the keep set for a sweep of the account (see [Sandbox](sandbox.md)).
+
 ## What rollback never undoes
 
 - External side effects: network calls, writes to systems outside the snapshot, and [deferred effects](durability.md#deferred-effects) that already ran. Compensate in your application.

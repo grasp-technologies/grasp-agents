@@ -1,22 +1,28 @@
 """Side-effect-free readers over a persisted session (``session_history``)."""
 
+from pathlib import Path
+
 import pytest
 
 from grasp_agents.durability import (
     AgentCheckpoint,
+    CheckpointStore,
+    FileCheckpointStore,
     InMemoryCheckpointStore,
     MessageRecord,
     MessageStatus,
+    SessionCheckpoint,
     StepWatermark,
     TaskRecord,
     read_agent_histories,
+    read_fs_snapshot_refs,
     read_pending_messages,
     read_task_records,
 )
 from grasp_agents.types.items import InputItem, InputMessageItem
 from grasp_agents.types.message import CONTROL_PRIORITY, TeamMessage
 
-_SK = "sess"
+_SK = "s1"
 
 
 def _head(name: str, count: int) -> bytes:
@@ -120,3 +126,55 @@ async def test_pending_messages_in_drain_order_scoped_to_a_recipient() -> None:
 
     lead_only = await read_pending_messages(store, _SK, recipient="lead")
     assert [m.text for m in lead_only] == ["hello", "draft"]
+
+
+def _refs_head(
+    session_key: str, name: str, current: str | None, *bounds: str | None
+) -> bytes:
+    checkpoint = AgentCheckpoint(
+        session_key=session_key,
+        processor_name=name,
+        current=StepWatermark(fs_snapshot_ref=current),
+        step_watermarks=[
+            StepWatermark(step=step, fs_snapshot_ref=ref)
+            for step, ref in enumerate(bounds)
+        ],
+    )
+    return checkpoint.model_dump_json(exclude={"messages"}).encode()
+
+
+def _session(session_key: str, ref: str | None) -> bytes:
+    return (
+        SessionCheckpoint(session_key=session_key, fs_snapshot_ref=ref)
+        .model_dump_json()
+        .encode()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["memory", "file"])
+async def test_fs_snapshot_refs_of_one_session_or_every_session(
+    kind: str, tmp_path: Path
+) -> None:
+    store: CheckpointStore = (
+        InMemoryCheckpointStore() if kind == "memory" else FileCheckpointStore(tmp_path)
+    )
+    await store.save(f"{_SK}/session", _session(_SK, "snap-3"))
+    await store.save(
+        f"{_SK}/agent/lead",
+        _refs_head(_SK, "lead", "snap-3", None, "snap-1", "snap-2"),
+    )
+    await store.save(f"{_SK}/agent/lead/tc_c1", _refs_head(_SK, "tc_c1", None))
+    # A session key may hold slashes; its records are found all the same.
+    await store.save("org/user-7/session", _session("org/user-7", "snap-9"))
+    await store.save("org/user-7/agent/a", _refs_head("org/user-7", "a", "snap-8"))
+    await store.save(f"{_SK}/agent/broken", b"{not json")
+
+    assert await read_fs_snapshot_refs(store, _SK) == {"snap-1", "snap-2", "snap-3"}
+    assert await read_fs_snapshot_refs(store) == {
+        "snap-1",
+        "snap-2",
+        "snap-3",
+        "snap-8",
+        "snap-9",
+    }

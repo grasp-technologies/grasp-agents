@@ -16,7 +16,7 @@ Every guarantee here holds on the file and in-memory stores. A transactional sto
 | `TaskRecord` | `durability/task_record.py` | A background task (see [Background tasks](background-tasks.md)). |
 | `make_store_key`, `make_tool_call_path`, `session_prefix`, `task_prefix` | `durability/store_keys.py` | Key construction. |
 | `prepare_messages_for_resume`, `InterruptionType` | `durability/resume.py` | Dangling-round repair. |
-| `read_agent_histories`, `read_task_records`, `read_pending_messages` | `durability/session_history.py` | Side-effect-free readers over a persisted session. |
+| `read_agent_histories`, `read_task_records`, `read_pending_messages`, `read_fs_snapshot_refs` | `durability/session_history.py` | Side-effect-free readers over a persisted session (or, for snapshot refs, a whole store). |
 | `DeferredEffects`, `AgentContext.defer_effect` | `agent/deferred_effects.py`, `agent/agent_context.py` | The effects outbox. |
 
 ## Quick start
