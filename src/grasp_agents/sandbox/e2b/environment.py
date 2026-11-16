@@ -154,6 +154,11 @@ class E2BEnvironment(
         self._pause_on_exit = pause_on_exit
         self._code_interpreter = code_interpreter
         self._entered = False
+        # The live sandbox's id and the snapshot it was restored from, which
+        # E2B refuses to delete while that sandbox lives.
+        self._base: tuple[str, str] | None = None
+        # Snapshots to delete once the sandbox created from them is gone.
+        self._deferred_deletes: set[str] = set()
         # Restores and resumes that outlive their cancelled caller.
         self._pending: set[asyncio.Task[None]] = set()
 
@@ -288,6 +293,8 @@ class E2BEnvironment(
                     await sandbox.kill()
             finally:
                 self._holder.sandbox = None
+            if not self._pause_on_exit:
+                await self._delete_deferred()
 
     async def snapshot(self) -> str:
         """
@@ -366,9 +373,12 @@ class E2BEnvironment(
                     await kill_quietly(restored)
                     return
                 self._holder.sandbox = restored
+                if ref != FRESH_SNAPSHOT_REF:
+                    self._base = (str(restored.sandbox_id), ref)
             self._holder.drop_streams()
             if previous is not None and self._owns_sandbox:
                 await kill_quietly(previous)
+                await self._delete_deferred()
 
     async def _create_from(self, ref: str) -> AsyncSandbox:
         if ref == FRESH_SNAPSHOT_REF:
@@ -388,11 +398,25 @@ class E2BEnvironment(
         Delete the E2B snapshot ``ref`` (a :meth:`snapshot` ref), with the
         environment's API key and domain. Return True once it is gone, also
         when it already was, and False while E2B refuses because a running
-        or paused sandbox was created from it. :data:`FRESH_SNAPSHOT_REF`
-        names no snapshot.
+        or paused sandbox was created from it. The snapshot the live sandbox
+        was restored from is deleted once the environment lets go of that
+        sandbox (a restore, a resume of another sandbox, or exit, unless it
+        pauses the sandbox); it returns True for that one at once.
+        :data:`FRESH_SNAPSHOT_REF` names no snapshot.
         """
         if ref == FRESH_SNAPSHOT_REF:
             return True
+        base = self._base
+        if (
+            base is not None
+            and base[1] == ref
+            and self._holder.live(base[0]) is not None
+        ):
+            self._deferred_deletes.add(ref)
+            return True
+        return await self._delete_now(ref)
+
+    async def _delete_now(self, ref: str) -> bool:
         try:
             await AsyncSandbox.delete_snapshot(ref, **self._api_params())
         except SandboxException as exc:
@@ -400,6 +424,17 @@ class E2BEnvironment(
                 return False
             raise
         return True
+
+    async def _delete_deferred(self) -> None:
+        """Delete the snapshots kept for a sandbox the environment let go of."""
+        for ref in sorted(self._deferred_deletes):
+            try:
+                gone = await self._delete_now(ref)
+            except Exception:
+                logger.warning("Failed to delete E2B snapshot %s", ref, exc_info=True)
+                continue
+            if gone:
+                self._deferred_deletes.discard(ref)
 
     async def update_network(
         self,
@@ -567,6 +602,8 @@ class E2BEnvironment(
             self._holder.drop_streams()
             if previous is not None and replaces:
                 await self._let_go(previous)
+                if self._owns_sandbox and not self._pause_on_exit:
+                    await self._delete_deferred()
 
     async def _let_go(self, sandbox: AsyncSandbox) -> None:
         """

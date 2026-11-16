@@ -50,7 +50,9 @@ class SnapshotDeletable(Protocol):
     kept.
 
     :meth:`delete_snapshot` returns True once the snapshot is gone, deleted
-    now or already, and False when the provider refuses for now (a sandbox
+    now or already, or once the environment has taken its deletion over
+    (E2B deletes the snapshot its live sandbox came from when it lets go of
+    that sandbox); and False when the provider refuses for now (a sandbox
     still uses it), so the caller can try again later.
     """
 

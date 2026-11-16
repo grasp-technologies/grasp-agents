@@ -77,7 +77,12 @@ class _Creator:
 
     async def delete_snapshot(self, snapshot_id: str, **opts: Any) -> bool:
         self.deletes.append((snapshot_id, opts))
-        if snapshot_id in self.in_use:
+        bases = {
+            kwargs.get("template")
+            for kwargs, sandbox in zip(self.created, self.made, strict=True)
+            if not sandbox.killed
+        }
+        if snapshot_id in self.in_use | bases:
             raise SandboxException(
                 f"400: cannot delete template '{snapshot_id}' because there are "
                 "running sandboxes using it"
@@ -555,6 +560,33 @@ async def test_a_snapshot_a_sandbox_still_uses_is_kept_for_later(
 
     assert not await e2b_environment(allowed_roots=[WS]).delete_snapshot("snap-1")
     assert creator.snapshots == {"snap-1"}
+
+
+async def test_the_snapshot_the_live_sandbox_came_from_goes_once_let_go(
+    creator: _Creator,
+) -> None:
+    creator.snapshots.add("snap-1")
+
+    async with e2b_environment(allowed_roots=[WS]) as env:
+        await env.restore("snap-1")
+        # The environment takes the delete over instead of asking E2B again.
+        assert await env.delete_snapshot("snap-1")
+        assert await env.delete_snapshot("snap-1")
+        assert creator.deletes == []
+
+    assert [ref for ref, _ in creator.deletes] == ["snap-1"]
+    assert creator.snapshots == set()
+
+
+async def test_a_restore_deletes_the_snapshot_it_moves_off(creator: _Creator) -> None:
+    creator.snapshots.update({"snap-1", "snap-2"})
+
+    async with e2b_environment(allowed_roots=[WS]) as env:
+        await env.restore("snap-1")
+        assert await env.delete_snapshot("snap-1")
+        await env.restore("snap-2")
+
+        assert creator.snapshots == {"snap-2"}
 
 
 async def test_the_fresh_ref_has_nothing_to_delete(creator: _Creator) -> None:
