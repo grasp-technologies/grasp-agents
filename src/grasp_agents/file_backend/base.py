@@ -166,10 +166,6 @@ class FileBackend(ABC):
         """
         Return ``(content, mtime)``. ``errors='replace'`` for utf-8.
 
-        Take the mtime before the content: a write landing in between then
-        makes the next conditional write refuse, instead of an mtime newer
-        than the content letting it overwrite that write.
-
         Read-before-write bookkeeping happens in the caller — the file tools
         record the read in the agent's ``FileEditSessionState``
         (``agent_ctx.file_edit_state``).
@@ -178,10 +174,7 @@ class FileBackend(ABC):
 
     @abstractmethod
     async def read_bytes(self, path: Path) -> tuple[bytes, float]:
-        """
-        Return ``(data, mtime)``, the mtime taken before the data (see
-        :meth:`read_text`). Used by :class:`EditTool`.
-        """
+        """Return ``(data, mtime)``. Used by :class:`EditTool`."""
         ...
 
     @abstractmethod
