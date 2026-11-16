@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import time
 from pathlib import Path
@@ -112,6 +111,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         self._owns_sandbox = owns_sandbox
         self._pause_on_exit = pause_on_exit
         self._code_interpreter = code_interpreter
+        self._entered = False
 
     @property
     def policy(self) -> SandboxPolicy:
@@ -166,6 +166,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
     async def __aenter__(self) -> Self:
         if self._holder.sandbox is not None:
             await self._prepare(self._holder.sandbox, created_here=False)
+            self._entered = True
             return self
         if self._create_params is None:
             raise RuntimeError(
@@ -174,9 +175,18 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
             )
         if self._lazy:
             self._holder.arm(self._start)
-            return self
-        self._holder.sandbox = await self._start()
+        else:
+            self._holder.sandbox = await self._start()
+        self._entered = True
         return self
+
+    def _require_entered(self, operation: str) -> None:
+        if not self._entered:
+            raise RuntimeError(
+                f"E2B environment is not entered: {operation}() needs "
+                "`async with env:`; after exit, nothing would kill the sandbox "
+                "it starts."
+            )
 
     async def _start(self) -> AsyncSandbox:
         """Create a sandbox from the create params and prepare its roots."""
@@ -207,6 +217,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
     async def __aexit__(self, *exc: object) -> None:
         # Disarm before waiting for the lock: a start in flight then kills its
         # sandbox when it finishes, and no new start begins.
+        self._entered = False
         self._holder.disarm()
         async with self._holder.lock:
             sandbox = self._holder.sandbox
@@ -254,8 +265,12 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         params (its configured template) now. An environment that wraps an
         existing sandbox (:meth:`from_sandbox`) has no create params, so it
         refuses this ref.
+
+        Raises ``RuntimeError`` outside ``async with env:``, where nothing
+        would kill the sandbox it creates.
         """
         async with self._holder.lock:
+            self._require_entered("restore")
             previous = self._holder.sandbox
             if ref == FRESH_SNAPSHOT_REF:
                 if self._holder.armed:
@@ -274,8 +289,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
                 self._holder.sandbox = await sandbox_cls.create(**params)
             self._holder.drop_streams()
             if previous is not None and self._owns_sandbox:
-                with contextlib.suppress(Exception):
-                    await previous.kill()
+                await kill_quietly(previous)
 
     async def pause(self) -> str:
         """
@@ -303,8 +317,12 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         Reconnects with the sandbox class the environment creates (the code
         interpreter one with ``code_interpreter=True``) and its configured
         API key, domain and keep-alive timeout.
+
+        Raises ``RuntimeError`` outside ``async with env:``, where nothing
+        would kill or pause the sandbox it connects.
         """
         async with self._holder.lock:
+            self._require_entered("resume")
             target = sandbox_id
             if target is None:
                 current = self._holder.sandbox

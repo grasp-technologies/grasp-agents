@@ -579,12 +579,14 @@ async def test_restore_spawns_fresh_sandbox_from_snapshot(
         policy=SandboxPolicy(allowed_roots=(Path(WS),)),
         owns_sandbox=True,
     )
-    await env.restore("snap-xyz")
-    assert created["template"] == "snap-xyz"  # spawned from the snapshot
-    assert old.killed is True  # previous sandbox killed
-    # the holder swapped under the backends: I/O now hits the new sandbox
-    await env.file_backend.mkdir(Path(f"{WS}/probe"))
-    assert f"{WS}/probe" in new_sb.files.made_dirs
+    async with env:
+        await env.restore("snap-xyz")
+        assert created["template"] == "snap-xyz"  # spawned from the snapshot
+        assert old.killed is True  # previous sandbox killed
+        # the holder swapped under the backends: I/O now hits the new sandbox
+        await env.file_backend.mkdir(Path(f"{WS}/probe"))
+        assert f"{WS}/probe" in new_sb.files.made_dirs
+    assert new_sb.killed is True
 
 
 async def test_resume_reconnects_to_sandbox(
@@ -605,7 +607,8 @@ async def test_resume_reconnects_to_sandbox(
         cast("AsyncSandbox", FakeSandbox(sandbox_id="sbx_orig")),
         policy=SandboxPolicy(allowed_roots=(Path(WS),)),
     )
-    await env.resume()  # defaults to the currently-bound id
+    async with env:
+        await env.resume()  # defaults to the currently-bound id
     # No create params: the SDK defaults apply.
     assert connected == {"id": "sbx_orig", "timeout": None}
 
@@ -633,8 +636,11 @@ async def test_resume_keeps_sandbox_class_and_api_params(
         api_key="key-123",
         domain="sandbox.example.com",
         sandbox_timeout=900,
+        lazy=True,
     )
-    await env.resume("sbx_paused")
+    async with env:
+        await env.resume("sbx_paused")
+        await env.file_backend.mkdir(Path(f"{WS}/probe"))
 
     assert connected == {
         "sandbox_id": "sbx_paused",
@@ -642,7 +648,6 @@ async def test_resume_keeps_sandbox_class_and_api_params(
         "domain": "sandbox.example.com",
         "timeout": 900,
     }
-    await env.file_backend.mkdir(Path(f"{WS}/probe"))
     assert f"{WS}/probe" in resumed.files.made_dirs
 
 

@@ -8,6 +8,7 @@ in the environment module the same way ``test_e2b.py`` does.
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -15,6 +16,7 @@ import pytest
 
 pytest.importorskip("e2b")
 
+from grasp_agents.sandbox.e2b import _handle as e2b_handle
 from grasp_agents.sandbox.e2b import environment as e2b_env
 from grasp_agents.sandbox.e2b.config import E2BEnvironmentConfig
 from grasp_agents.sandbox.e2b.environment import (
@@ -247,6 +249,40 @@ async def test_restoring_fresh_retries_a_failed_start(creator: _Creator) -> None
         assert env.started
 
     assert len(creator.created) == 2
+
+
+async def test_restore_and_resume_after_exit_are_refused(creator: _Creator) -> None:
+    env = e2b_environment(allowed_roots=[WS])
+    async with env:
+        pass
+
+    # Nothing would kill a sandbox they created or connected after the exit.
+    with pytest.raises(RuntimeError, match="not entered"):
+        await env.restore("snap-1")
+    with pytest.raises(RuntimeError, match="not entered"):
+        await env.restore(FRESH_SNAPSHOT_REF)
+    with pytest.raises(RuntimeError, match="not entered"):
+        await env.resume("sbx_paused")
+    assert len(creator.created) == 1
+    assert creator.connected == []
+
+
+class _KillFailsSandbox(FakeSandbox):
+    async def kill(self) -> Any:
+        raise RuntimeError("kill failed")
+
+
+async def test_restore_logs_a_failed_kill_of_the_previous_sandbox(
+    creator: _Creator, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger=e2b_handle.__name__)
+    creator._queue.append(_KillFailsSandbox(sandbox_id="first"))
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        await env.file_backend.mkdir(Path(f"{WS}/x"))
+        await env.restore("snap-1")
+
+    assert [r.args for r in caplog.records] == [("first",)]
 
 
 async def test_restoring_fresh_over_a_wrapped_sandbox_is_refused(
