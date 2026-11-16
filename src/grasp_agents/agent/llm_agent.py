@@ -643,8 +643,10 @@ class LLMAgent[InT, OutT, CtxT](
         Start a fresh conversation: clear the log together with the view state
         derived from it (summary folds, token-budget anchor) and the pending
         effects of its tool calls. Rollback boundaries of earlier steps index
-        the old log, so they are dropped; the next run does not reload the
-        persisted conversation, and the next checkpoint rewrites the log.
+        the old log, so they are dropped, and the filesystem snapshots only
+        they held are deleted after the next checkpoint (see
+        ``SessionContext.release_fs_snapshots``); the next run does not reload
+        the persisted conversation, and the next checkpoint rewrites the log.
         """
         self.replace_transcript([])
 
@@ -655,7 +657,8 @@ class LLMAgent[InT, OutT, CtxT](
         the view state derived from it (summary folds dropped, token-budget
         anchor reset) and the pending effects of tool calls no longer in it.
         Rollback boundaries of earlier steps index the old log, so they are
-        dropped. The next checkpoint persists the new log in full.
+        dropped, and the filesystem snapshots only they held are deleted after
+        the next checkpoint. The next checkpoint persists the new log in full.
         """
         self._agent_ctx.cw.replace_transcript(messages)
         self._agent_ctx.drop_orphaned_effects()

@@ -93,10 +93,12 @@ The tool-call name must match the tool's registered `name` (here `"add"`).
 | Gemini | `gemini-3.5-flash-lite` | Low thinking effort yields no reasoning on simple prompts, so use `medium` |
 
 - **E2B live tests** create sandboxes through `LiveRun`
-  (`tests/sandbox/test_e2b_live_lifecycle.py`). It tags each sandbox with a
-  metadata value of its own and a short keep-alive, and its `cleanup()`, called
-  in a `finally`, kills every tagged sandbox and deletes the snapshots the test
-  recorded.
+  (`tests/sandbox/test_e2b_live_lifecycle.py`). Each run tags its sandboxes with a
+  metadata value of its own, gives them a short keep-alive, and builds its
+  environments with a `label` of its own, which names their snapshots. Its
+  `cleanup()`, called in a `finally`, kills every tagged sandbox and deletes every
+  snapshot named with that label or recorded by the test. Find leftovers by that
+  metadata key and by snapshot names starting `grasp-agents-t`.
 - Some tests pin a specific model on purpose (feature-support pairs, a nonexistent
   model for error paths). Keep those pins.
 - **Diagnosing failures.** HTTP 429 with `insufficient_quota` is an account

@@ -97,7 +97,7 @@ async with env:
 - On a cold resume of a mid-run head over an older restored snapshot, the agent receives a `<system-reminder subject="filesystem restored">` telling it to re-verify files its recent turns claim to have written.
 - A session record carrying a ref resumed without a `SnapshotCapable` environment fails (`RuntimeError`) rather than resuming over divergent files.
 - Kernel context ids are kept only alongside a snapshot and re-attached only when the session actually restored one. A rollback points each kernel at the context its boundary recorded. When the boundary predates the kernel, the kernel the restore closed is dropped with its id: checkpoints record no id for it, and the next call opens a fresh kernel in the restored sandbox without a reset notice, since the rolled-back transcript never used that kernel.
-- **Snapshots no record holds are deleted.** A snapshot ref is recorded only by the agent that took it (its head and its boundaries) and in the session record. Once a checkpoint or a rollback of that agent has landed, it deletes the snapshots it took that neither its head, its boundaries nor the session record still hold: under `"turn"`, each tool round's snapshot once the next checkpoint supersedes it; after a rollback, the discarded steps' snapshots; a snapshot whose checkpoint never landed. Under `"final"` every completed step's snapshot is a later step's boundary and stays. Deleting only after the landing means a crash can leave a snapshot behind but never a record pointing at a deleted one. This needs a `SnapshotDeletable` environment (E2B is); a snapshot it refuses for now or fails to delete is retried at the agent's next checkpoint (E2B takes over the one its live sandbox was restored from, and deletes it when it lets go of that sandbox), and so is the whole release when the session record cannot be read. `SessionContext(release_fs_snapshots=False)` keeps every snapshot, and nothing is released while `fs_snapshot_policy` is `"off"`. A copy of an agent (`copy()`, and the copies an eval trial, a tool call or a parallel replica makes) holds none of its source's snapshots: it never deletes or restores them, and its first boundary records none.
+- **Snapshots no record holds are deleted.** A snapshot ref is recorded only by the agent that took it (its head and its boundaries) and in the session record. Once a checkpoint or a rollback of that agent has landed, it deletes the snapshots it took that neither its head, its boundaries nor the session record still hold: under `"turn"`, each tool round's snapshot once the next checkpoint supersedes it; after a rollback, `drop_rollback_steps`, `reset_transcript()` or `replace_transcript()`, the snapshots only the dropped boundaries held; a snapshot whose checkpoint never landed. Under `"final"`, a stepped agent's (a chat's) every completed step's snapshot is a later step's boundary and stays; an unstepped one (typed-args runs) keeps only the latest, which the session record holds. Deleting only after the landing means a crash can leave a snapshot behind but never a record pointing at a deleted one. This needs a `SnapshotDeletable` environment (E2B is); a snapshot it refuses for now or fails to delete is retried at the agent's next checkpoint (E2B takes over the one its live sandbox was restored from, and deletes it when it lets go of that sandbox), and so is the whole release when the session record cannot be read. `SessionContext(release_fs_snapshots=False)` keeps every snapshot, and nothing is released while `fs_snapshot_policy` is `"off"`. A copy of an agent (`copy()`, and the copies an eval trial, a tool call or a parallel replica makes) holds none of its source's snapshots: it never deletes or restores them, and its first boundary records none.
 - Multi-agent hosts register `ctx.add_environment_restored_callback(cb)`; teams use it to post an `<environment_rewind>` notice to the other members after the lead restores a snapshot. Remove it with `remove_environment_restored_callback` when the host is torn down.
 
 ### Ending a session
@@ -105,13 +105,17 @@ async with env:
 The framework has no session end: you delete a session's records when you are done with it. Delete its snapshots first, once its environment has exited: exit deletes the snapshots it took over, and E2B refuses to delete the one a live or paused sandbox was created from (with `pause_on_exit`, the paused sandbox keeps its own until something kills it):
 
 ```python
-from grasp_agents.durability import read_fs_snapshot_refs, session_prefix
+from grasp_agents.durability import CheckpointKind, make_store_key, read_fs_snapshot_refs
 
 async def end_session(store, session_key, env):
     for ref in await read_fs_snapshot_refs(store, session_key):
         await env.delete_snapshot(ref)  # False: still in use; leave it to a sweep
-    for key in await store.list_keys(session_prefix(session_key)):
-        await store.delete(key)
+    # Per kind, so a session whose key extends this one ("org" and
+    # "org/user-7") keeps its records.
+    for kind in CheckpointKind:
+        key = make_store_key(session_key, kind)
+        for record in [key, *await store.list_keys(key + "/")]:
+            await store.delete(record)
 ```
 
 `read_fs_snapshot_refs(store)` without a session key returns the refs every session in the store holds: the keep set for a sweep of the account (see [Sandbox](sandbox.md)). It raises on a record it cannot read, so no held ref goes missing from that set.

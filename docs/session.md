@@ -21,6 +21,7 @@ A `SessionContext` is the session-scoped container every processor in one sessio
 | `session_key` | Session identifier; namespaces checkpoint keys and the `SESSION` approval allowlist. Default `"default"`. |
 | `checkpoint_store` | Where checkpoints go (`None`: in-memory heads only). See [Durability](durability.md). |
 | `serialize_state`, `session_metadata`, `fs_snapshot_policy`, `session_writer` | Session-record features. See [Durability](durability.md) and [Rollback](rollback.md). |
+| `release_fs_snapshots` | Delete the filesystem snapshots no checkpoint record holds any more (default `True`; [Rollback](rollback.md#filesystem-snapshots)). `await ctx.load_fs_snapshot_ref()` reads the ref the persisted session record holds, the one a cold resume restores. |
 | `environment` | An `ExecutionEnvironment` — the only way to grant command execution. See [Sandbox](sandbox.md). |
 | `file_backend` | File I/O for file tools and memory. Taken from `environment` when one is set. See [Files](files.md). |
 | `approval_store` | Enables `build_store_approval` gates. See [Agent loop](agent-loop.md). |

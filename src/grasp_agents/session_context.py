@@ -89,10 +89,11 @@ class SessionContext[CtxT](BaseModel):
     )
 
     # Delete the filesystem snapshots no checkpoint record holds any more
-    # (superseded by a later checkpoint, discarded by a rollback or a
-    # ``drop_rollback_steps``, or taken for a checkpoint that never landed),
-    # when the environment is ``SnapshotDeletable``. ``False`` keeps every
-    # snapshot.
+    # (superseded by a later checkpoint; discarded by a rollback, a
+    # ``drop_rollback_steps`` or a transcript reset or replacement; or taken
+    # for a checkpoint that never landed), when the environment is
+    # ``SnapshotDeletable`` and ``fs_snapshot_policy`` is not ``"off"``.
+    # ``False`` keeps every snapshot.
     release_fs_snapshots: bool = Field(default=True, exclude=True)
 
     # The processor owning session-scoped persistence: only it writes the
