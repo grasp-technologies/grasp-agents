@@ -106,7 +106,7 @@ class LiveRun:
 
 
 async def until(check: Callable[[], Awaitable[bool]], *, timeout: float = 30.0) -> None:
-    """Poll ``check`` until it holds: E2B's listing lags behind its kills."""
+    """Poll ``check`` until it holds: E2B's listing lags behind creates and kills."""
     deadline = time.monotonic() + timeout
     while not await check():
         if time.monotonic() > deadline:
@@ -157,7 +157,11 @@ async def test_a_lazy_start_creates_one_sandbox_and_exit_kills_it() -> None:
                 env.exec_backend.execute("true"),
             )
             assert env.started
-            assert await run.tagged() == {live_id(env)}
+
+            async def only_the_live_one() -> bool:
+                return await run.tagged() == {live_id(env)}
+
+            await until(only_the_live_one)
 
         async def none_left() -> bool:
             return await run.tagged() == set()
