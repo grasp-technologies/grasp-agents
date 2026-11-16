@@ -1058,7 +1058,18 @@ class LLMAgent[InT, OutT, CtxT](
         released = self._fs_snapshot_refs - self._held_fs_snapshot_refs()
         if not released:
             return
-        released.discard(await self._ctx.load_fs_snapshot_ref())
+        try:
+            held_by_session = await self._ctx.load_fs_snapshot_ref()
+        except Exception:
+            # The checkpoint landed already; releasing can wait for the next.
+            logger.warning(
+                "agent '%s' could not read the session record; filesystem "
+                "snapshots are released at the next checkpoint",
+                self.name,
+                exc_info=True,
+            )
+            return
+        released.discard(held_by_session)
         for ref in sorted(released):
             try:
                 gone = await environment.delete_snapshot(ref)
@@ -1390,16 +1401,24 @@ class LLMAgent[InT, OutT, CtxT](
         Boundaries otherwise accumulate one per human turn, and under
         ``fs_snapshot_policy="final"`` each holds a snapshot. How many steps to
         keep is the caller's choice. Only valid between runs, on a live or
-        loaded instance (see :attr:`rollback_steps`).
+        loaded instance (see :attr:`rollback_steps`) that is the session's only
+        live one: another live instance would write the dropped boundaries
+        back with its next checkpoint, pointing at deleted snapshots.
 
         Raises:
-            RuntimeError: mid-run.
+            RuntimeError: mid-run, or on an instance that neither ran nor
+                loaded the session (call :meth:`load_checkpoint` first).
 
         """
         if self._run_active:
             raise RuntimeError(
                 f"Agent {self.name!r} is mid-run; drop_rollback_steps is only "
                 "valid between runs — cancel the run or let it finish first."
+            )
+        if self._committed is None and self.transcript.is_empty:
+            raise RuntimeError(
+                f"Agent {self.name!r} holds no session: call load_checkpoint() "
+                "before drop_rollback_steps."
             )
         kept = [
             wm

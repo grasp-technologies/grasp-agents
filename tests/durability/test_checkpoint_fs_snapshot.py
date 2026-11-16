@@ -1611,3 +1611,113 @@ async def test_a_cold_chat_after_dropping_every_step_is_answered(
 
     assert out.payloads == ["a2"]
     assert cold.step == 2
+
+
+class _FlakySessionReadStore(InMemoryCheckpointStore):
+    """Fails the session record's next ``fail_reads`` loads."""
+
+    fail_reads = 0
+
+    async def load(self, key: str) -> bytes | None:
+        if key == "s1/session" and self.fail_reads:
+            self.fail_reads -= 1
+            raise ConnectionError("transient read failure")
+        return await super().load(key)
+
+
+async def test_a_failed_release_read_leaves_the_landed_checkpoint_alone(
+    tmp_path: Path,
+) -> None:
+    store = _FlakySessionReadStore()
+    env = DeletingSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_text_response("a1"), _text_response("a2"), _text_response("a3")],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="turn",
+    )
+    await agent.run("q1")
+    store.fail_reads = 1
+
+    out = await agent.run("q2")
+
+    assert out.payloads == ["a2"]
+    await agent.run("q3")
+    assert "snap-1" in env.deleted
+
+
+class _FailingDeleteEnv(DeletingSnapshotEnv):
+    """Raises on the first delete of each ref in ``fail_once``."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.fail_once: set[str] = set()
+
+    async def delete_snapshot(self, ref: str) -> bool:
+        if ref in self.fail_once:
+            self.fail_once.discard(ref)
+            raise RuntimeError("provider unavailable")
+        return await super().delete_snapshot(ref)
+
+
+async def test_a_delete_that_raises_is_retried_at_the_next_checkpoint(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryCheckpointStore()
+    env = _FailingDeleteEnv(tmp_path)
+    env.fail_once.add("snap-1")
+    agent, _ = _make_agent(
+        [_tool_call_response("echo", '{"text": "x"}', "c1"), _text_response("done")],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="turn",
+        tools=[EchoTool()],
+    )
+
+    await agent.run("q1")
+
+    # snap-1 failed at the tool round's release and went at the answer's.
+    assert env.deleted == ["snap-1", "snap-2"]
+
+
+async def test_dropping_steps_keeps_a_boundary_that_never_landed_out_of_the_head(
+    tmp_path: Path,
+) -> None:
+    store = _HeadFailingStore()
+    env = DeletingSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_text_response(f"a{step}") for step in range(4)],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
+    )
+    for step in range(3):
+        await agent.run(f"q{step}", step=step)
+    store.fail_head = True
+    with pytest.raises(ProcRunError):
+        await agent.run("q3", step=3)
+    assert 3 in agent.rollback_steps  # archived live, never persisted
+
+    await agent.drop_rollback_steps(before=2)
+
+    stored = await _stored_checkpoint(store)
+    assert [wm.step for wm in stored.step_watermarks] == [2]
+
+
+async def test_dropping_steps_on_an_instance_that_never_loaded_is_refused(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryCheckpointStore()
+    env = DeletingSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_text_response(f"a{step}") for step in range(3)],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
+    )
+    for step in range(3):
+        await agent.run(f"q{step}", step=step)
+    cold, _ = _make_agent([], store=store, environment=env, fs_snapshot_policy="final")
+
+    with pytest.raises(RuntimeError, match="load_checkpoint"):
+        await cold.drop_rollback_steps(before=2)
