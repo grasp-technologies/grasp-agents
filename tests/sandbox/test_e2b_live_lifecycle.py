@@ -558,6 +558,47 @@ async def test_sandboxes_are_tagged_and_snapshots_named_and_deletable() -> None:
 
 
 @_live
+async def test_a_snapshot_outlives_the_one_its_sandbox_was_restored_from() -> None:
+    # Release deletes a snapshot once no record holds it, even when a held
+    # one was taken in a sandbox restored from it.
+    from e2b import AsyncSandbox
+
+    run = LiveRun()
+    try:
+        async with run.env() as env:
+            base = Path(f"{WS}/base.txt")
+            await env.file_backend.write_bytes(base, b"from r1", mode=0o644)
+            first = await env.snapshot()
+            run.snapshots.append(first)
+            await env.restore(first)
+            await env.file_backend.write_bytes(Path(f"{WS}/top.txt"), b"r2", mode=0o644)
+            second = await env.snapshot()
+            run.snapshots.append(second)
+            # A fresh sandbox, so none is left using the first snapshot.
+            await env.restore(FRESH_SNAPSHOT_REF)
+
+            async def first_is_free() -> bool:
+                return await env.delete_snapshot(first)
+
+            await until(first_is_free)
+            assert await run.named() == {second}
+
+            await env.restore(second)
+            assert (await env.file_backend.read_text(base))[0] == "from r1"
+            assert (await env.file_backend.read_text(Path(f"{WS}/top.txt")))[0] == "r2"
+            assert first not in {s.snapshot_id async for s in _snapshots(AsyncSandbox)}
+    finally:
+        await run.cleanup()
+
+
+async def _snapshots(sandbox_cls: Any) -> Any:
+    pages = sandbox_cls.list_snapshots()
+    while pages.has_next:
+        for snapshot in await pages.next_items():
+            yield snapshot
+
+
+@_live
 async def test_a_turn_policy_session_keeps_only_the_snapshots_its_records_hold() -> (
     None
 ):
