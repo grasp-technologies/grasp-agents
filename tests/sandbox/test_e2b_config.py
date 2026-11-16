@@ -89,6 +89,11 @@ def test_env_config_auto_resume_needs_pause_on_timeout() -> None:
         E2BEnvironmentConfig(auto_resume=True)
 
 
+def test_env_config_rejects_a_label_e2b_cannot_name_snapshots_with() -> None:
+    with pytest.raises(ValidationError, match="should match pattern"):
+        E2BEnvironmentConfig(label="Prod.EU")
+
+
 def test_load_e2b_config(tmp_path: Path) -> None:
     p = tmp_path / "e2b.json"
     p.write_text(

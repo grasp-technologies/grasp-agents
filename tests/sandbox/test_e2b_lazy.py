@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime as dt
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -329,6 +331,37 @@ async def test_config_lazy_defers_the_start(creator: _Creator) -> None:
         assert env.started
 
     assert len(creator.created) == 1
+
+
+async def test_config_passes_the_label(creator: _Creator) -> None:
+    env = await E2BEnvironmentConfig(label="prod").build()
+
+    async with env:
+        await env.file_backend.mkdir(Path(f"{WS}/x"))
+
+    assert creator.created[0]["metadata"] == {"grasp-agents": "prod"}
+
+
+async def test_snapshots_get_unique_names_that_carry_the_label_and_time(
+    creator: _Creator,
+) -> None:
+    sandbox = FakeSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True, label="prod") as env:
+        await env.file_backend.mkdir(Path(f"{WS}/x"))
+        before = dt.datetime.now(dt.UTC).replace(microsecond=0)
+        await env.snapshot()
+        await env.snapshot()
+
+    first, second = sandbox.snapshot_names
+    assert first != second
+    for name in (first, second):
+        assert name is not None
+        found = re.fullmatch(r"grasp-agents-prod-(\d{8}t\d{6})-[0-9a-f]{8}", name)
+        assert found is not None, name
+        taken = dt.datetime.strptime(f"{found.group(1)}+0000", "%Y%m%dt%H%M%S%z")
+        assert abs(taken - before) < dt.timedelta(minutes=1)
 
 
 async def test_config_passes_the_timeout_lifecycle(creator: _Creator) -> None:

@@ -37,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from grasp_agents.sandbox.policy import NetworkPolicy
 
 from ._handle import DEFAULT_EXEC_TIMEOUT, DEFAULT_WORKSPACE
+from ._names import LABEL_PATTERN
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -340,6 +341,7 @@ class E2BEnvironmentConfig(BaseModel):
     lazy: bool = False
     on_timeout: Literal["kill", "pause"] = "kill"
     auto_resume: bool = False
+    label: str | None = Field(default=None, pattern=LABEL_PATTERN)
 
     @model_validator(mode="after")
     def _one_template_source(self) -> E2BEnvironmentConfig:
@@ -394,6 +396,7 @@ class E2BEnvironmentConfig(BaseModel):
             lazy=self.lazy,
             on_timeout=self.on_timeout,
             auto_resume=self.auto_resume,
+            label=self.label,
         )
 
 
