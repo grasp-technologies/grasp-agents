@@ -207,9 +207,10 @@ class MultiplyTool(BaseTool[MultiplyInput, int, Any]):
 class FakeSnapshotEnv(ExecutionEnvironment, SnapshotCapable):
     """SnapshotCapable environment over a local backend, recording calls."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, prefix: str = "snap") -> None:
         self._policy = SandboxPolicy(allowed_roots=(root,))
         self._backend = LocalFileBackend(allowed_roots=[root])
+        self._prefix = prefix
         self.snapshots: list[str] = []
         self.restored: list[str] = []
 
@@ -232,7 +233,7 @@ class FakeSnapshotEnv(ExecutionEnvironment, SnapshotCapable):
         return None
 
     async def snapshot(self) -> str:
-        ref = f"snap-{len(self.snapshots) + 1}"
+        ref = f"{self._prefix}-{len(self.snapshots) + 1}"
         self.snapshots.append(ref)
         return ref
 
@@ -247,8 +248,8 @@ class DeletingSnapshotEnv(FakeSnapshotEnv):
     provider refuses one a sandbox still uses.
     """
 
-    def __init__(self, root: Path) -> None:
-        super().__init__(root)
+    def __init__(self, root: Path, *, prefix: str = "snap") -> None:
+        super().__init__(root, prefix=prefix)
         self.deleted: list[str] = []
         self.in_use: set[str] = set()
 

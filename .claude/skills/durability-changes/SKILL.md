@@ -56,7 +56,8 @@ violations. Before editing, read the relevant pages: `docs/durability.md`,
 14. **Snapshot refs have two homes.** A filesystem snapshot ref is recorded only in the
     head and boundaries of the agent that took it, and in the session record. Release
     (`LLMAgent._release_fs_snapshots`) deletes a snapshot only after a head that no
-    longer holds it has landed. Recording a ref anywhere else (a fork, a team-wide
+    longer holds it has landed. A copy of an agent starts with none of its source's
+    refs (`LLMAgent.__deepcopy__`). Recording a ref anywhere else (a fork, a team-wide
     record) means teaching release to treat it as held, or it gets deleted.
 15. **Rollback** runs only between runs and only on agents. The ROLLING_BACK mark
     precedes any side effect. Consumed mail is voided, task outcomes are

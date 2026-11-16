@@ -270,9 +270,11 @@ class LLMAgent[InT, OutT, CtxT](
         # :meth:`rollback_to_step`. Persisted in the head, restored on resume.
         self._step_watermarks: list[StepWatermark] = []
         self._committed: StepWatermark | None = None
-        # Filesystem snapshots this agent took or loaded in its head and has
-        # not deleted (see ``_release_fs_snapshots``).
+        # Filesystem snapshots this agent took or loaded in its head under
+        # ``_fs_snapshot_ctx``'s session and has not deleted (see
+        # ``_release_fs_snapshots``).
         self._fs_snapshot_refs: set[str] = set()
+        self._fs_snapshot_ctx: SessionContext[CtxT] | None = None
 
         # Resume notifications injected into the transcript by load_checkpoint,
         # awaiting emission as stream events (no hidden transcript messages).
@@ -805,7 +807,7 @@ class LLMAgent[InT, OutT, CtxT](
 
         self._step_watermarks = list(checkpoint.step_watermarks)
         self._committed = current
-        self._fs_snapshot_refs |= self._held_fs_snapshot_refs()
+        self._note_fs_snapshot_refs(self._held_fs_snapshot_refs())
 
         if checkpoint.location is AgentCheckpointLocation.ROLLED_BACK:
             # Restore the parked step, so the next chat delivery re-mints it
@@ -954,7 +956,7 @@ class LLMAgent[InT, OutT, CtxT](
         if self._fs_snapshot_due(location):
             environment = cast("SnapshotCapable", self._ctx.environment)
             fs_snapshot_ref = await environment.snapshot()
-            self._fs_snapshot_refs.add(fs_snapshot_ref)
+            self._note_fs_snapshot_refs({fs_snapshot_ref})
 
         # One unit of work on the store (atomic where the store has
         # transactions): deferred tool effects, the session record, the log +
@@ -1017,6 +1019,13 @@ class LLMAgent[InT, OutT, CtxT](
 
         await self._release_fs_snapshots()
 
+    def _note_fs_snapshot_refs(self, refs: set[str]) -> None:
+        """Track ``refs`` as taken in the session the agent is bound to now."""
+        if self._fs_snapshot_ctx is not self._ctx:
+            self._fs_snapshot_refs = set()
+            self._fs_snapshot_ctx = self._ctx
+        self._fs_snapshot_refs |= refs
+
     def _held_fs_snapshot_refs(self) -> set[str]:
         """The filesystem snapshot refs this agent's head and boundaries hold."""
         marks = [*self._step_watermarks]
@@ -1038,8 +1047,12 @@ class LLMAgent[InT, OutT, CtxT](
         or fails to delete is tried again at the next release.
         """
         environment = self._ctx.environment
-        if not self._ctx.release_fs_snapshots or not isinstance(
-            environment, SnapshotDeletable
+        if (
+            self._ctx.fs_snapshot_policy == "off"
+            or not self._ctx.release_fs_snapshots
+            or not isinstance(environment, SnapshotDeletable)
+            # Refs taken in another session belong to that session's records.
+            or self._fs_snapshot_ctx is not self._ctx
         ):
             return
         released = self._fs_snapshot_refs - self._held_fs_snapshot_refs()
@@ -2135,3 +2148,27 @@ class LLMAgent[InT, OutT, CtxT](
         # LLM sharing: handled by LLM.__deepcopy__ (returns self)
         # Tool sharing: handled by BaseTool.__deepcopy__ (_copy_shared_attrs)
         return deepcopy(self)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> "LLMAgent[InT, OutT, CtxT]":
+        """
+        A copy (``copy()``, or one made with its container: an eval trial, a
+        tool call, a parallel replica) holds none of the source's filesystem
+        snapshots: those belong to the source's records, so the copy never
+        deletes or restores them, and its first boundary records none.
+        """
+        cls = type(self)
+        clone = cls.__new__(cls)
+        memo[id(self)] = clone
+        state: dict[str, Any] = deepcopy(dict(self.__dict__), memo)
+        state["_fs_snapshot_refs"] = set[str]()
+        state["_fs_snapshot_ctx"] = None
+        committed: StepWatermark | None = state["_committed"]
+        if committed is not None:
+            state["_committed"] = committed.model_copy(update={"fs_snapshot_ref": None})
+        watermarks: list[StepWatermark] = state["_step_watermarks"]
+        state["_step_watermarks"] = [
+            wm.model_copy(update={"fs_snapshot_ref": None}) for wm in watermarks
+        ]
+        for key, value in state.items():
+            object.__setattr__(clone, key, value)
+        return clone

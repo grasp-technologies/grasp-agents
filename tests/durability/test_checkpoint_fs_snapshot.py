@@ -37,6 +37,8 @@ from grasp_agents.durability import (
     SessionCheckpoint,
 )
 from grasp_agents.durability.checkpoints import CheckpointSchemaError
+from grasp_agents.durability.session_history import read_fs_snapshot_refs
+from grasp_agents.evals.task import ProcessorTask
 from grasp_agents.file_backend import LocalFileBackend
 from grasp_agents.sandbox.environment import ExecutionEnvironment
 from grasp_agents.sandbox.policy import SandboxPolicy
@@ -1500,3 +1502,69 @@ async def test_dropping_rollback_steps_mid_run_is_refused(tmp_path: Path) -> Non
 
     assert len(refused) == 1
     assert "mid-run" in str(refused[0])
+
+
+# ---------- Copies never release the source's snapshots ----------
+
+
+async def test_an_evaluated_copy_never_deletes_the_source_sessions_snapshots(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryCheckpointStore()
+    agent, _ = _make_agent(
+        [_text_response(f"a{step}") for step in range(3)] + [_text_response("t")],
+        store=store,
+        environment=DeletingSnapshotEnv(tmp_path),
+        fs_snapshot_policy="final",
+    )
+    for step in range(3):
+        await agent.run(f"q{step}", step=step)
+    held = await read_fs_snapshot_refs(store, "s1")
+    assert held == {"snap-1", "snap-2", "snap-3"}
+    trial_env = DeletingSnapshotEnv(tmp_path, prefix="trial")
+    trial_store = InMemoryCheckpointStore()
+
+    def trial_ctx(_: Any) -> SessionContext[None]:
+        return SessionContext(
+            environment=trial_env,
+            checkpoint_store=trial_store,
+            session_key="trial",
+            fs_snapshot_policy="final",
+        )
+
+    task = ProcessorTask(agent, ctx_factory=trial_ctx)
+    clone = task._instantiate(trial_ctx(None))
+    await clone.run("trial question", step=7)
+
+    assert not held & set(trial_env.deleted)
+    # The trial's records point at its own snapshots only.
+    assert await read_fs_snapshot_refs(trial_store, "trial") == {"trial-1"}
+
+
+async def test_an_agent_used_as_a_tool_never_deletes_the_templates_snapshots(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryCheckpointStore()
+    env = DeletingSnapshotEnv(tmp_path)
+    ctx: SessionContext[None] = SessionContext(
+        checkpoint_store=store,
+        session_key="s1",
+        environment=env,
+        fs_snapshot_policy="turn",
+    )
+    responses = [_text_response(f"a{step}") for step in range(3)]
+    helper = LLMAgent[EchoInput, str, None](
+        name="helper",
+        ctx=ctx,
+        llm=MockLLM(responses_queue=[*responses, _text_response("helped")]),
+    )
+    for step in range(3):
+        await helper.run(f"q{step}", step=step)
+    held = await read_fs_snapshot_refs(store, "s1")
+    assert held
+
+    tool = helper.as_tool("helper", "Helps.")
+    clone = tool._resolve_processor(ctx=ctx, path=["caller", "tc_c1"])
+    await clone.run(in_args=EchoInput(text="help"))
+
+    assert not held & set(env.deleted)
