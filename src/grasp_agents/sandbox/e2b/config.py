@@ -338,6 +338,8 @@ class E2BEnvironmentConfig(BaseModel):
     code_interpreter: bool = False
     default_timeout: float = DEFAULT_EXEC_TIMEOUT
     lazy: bool = False
+    on_timeout: Literal["kill", "pause"] = "kill"
+    auto_resume: bool = False
 
     @model_validator(mode="after")
     def _one_template_source(self) -> E2BEnvironmentConfig:
@@ -345,6 +347,15 @@ class E2BEnvironmentConfig(BaseModel):
             raise ValueError(
                 "Set either 'template' (a prebuilt ref) or 'template_build' (an "
                 "inline definition to build), not both."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _auto_resume_needs_pause(self) -> E2BEnvironmentConfig:
+        if self.auto_resume and self.on_timeout != "pause":
+            raise ValueError(
+                "auto_resume=True needs on_timeout='pause': E2B resumes only a "
+                "sandbox it paused."
             )
         return self
 
@@ -381,6 +392,8 @@ class E2BEnvironmentConfig(BaseModel):
             code_interpreter=self.code_interpreter,
             default_timeout=self.default_timeout,
             lazy=self.lazy,
+            on_timeout=self.on_timeout,
+            auto_resume=self.auto_resume,
         )
 
 

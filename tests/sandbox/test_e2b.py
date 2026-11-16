@@ -725,6 +725,42 @@ async def test_enter_creates_sandbox_with_mapped_params(
     assert WS in fake_sb.files.made_dirs
 
 
+@pytest.mark.parametrize(
+    ("options", "lifecycle"),
+    [
+        ({}, {"on_timeout": "kill", "auto_resume": False}),
+        ({"on_timeout": "pause"}, {"on_timeout": "pause", "auto_resume": False}),
+        (
+            {"on_timeout": "pause", "auto_resume": True},
+            {"on_timeout": "pause", "auto_resume": True},
+        ),
+    ],
+)
+async def test_every_create_carries_the_timeout_lifecycle(
+    monkeypatch: pytest.MonkeyPatch, options: dict[str, Any], lifecycle: dict[str, Any]
+) -> None:
+    created: list[dict[str, Any]] = []
+
+    class _FakeAsyncSandbox:
+        @staticmethod
+        async def create(**kwargs: Any) -> FakeSandbox:
+            created.append(kwargs)
+            return FakeSandbox(sandbox_id=f"sbx_{len(created)}")
+
+    monkeypatch.setattr(e2b_env, "AsyncSandbox", _FakeAsyncSandbox)
+
+    async with e2b_environment(allowed_roots=[WS], **options) as env:
+        await env.restore("snap-1")
+
+    assert [kwargs["lifecycle"] for kwargs in created] == [lifecycle, lifecycle]
+    assert created[1]["template"] == "snap-1"
+
+
+async def test_auto_resume_needs_pause_on_timeout() -> None:
+    with pytest.raises(ValueError, match="auto_resume=True needs on_timeout='pause'"):
+        e2b_environment(allowed_roots=[WS], auto_resume=True)
+
+
 async def test_factory_network_none_is_default() -> None:
     env = e2b_environment(allowed_roots=[WS], network=NetworkPolicy.NONE)
     assert env.policy.network is NetworkPolicy.NONE

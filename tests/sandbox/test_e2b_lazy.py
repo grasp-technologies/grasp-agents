@@ -326,6 +326,18 @@ async def test_config_lazy_defers_the_start(creator: _Creator) -> None:
     assert len(creator.created) == 1
 
 
+async def test_config_passes_the_timeout_lifecycle(creator: _Creator) -> None:
+    env = await E2BEnvironmentConfig(on_timeout="pause", auto_resume=True).build()
+
+    async with env:
+        pass
+
+    assert creator.created[0]["lifecycle"] == {
+        "on_timeout": "pause",
+        "auto_resume": True,
+    }
+
+
 # --- lifecycle changes while a start is in flight ---------------------------
 
 

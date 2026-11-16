@@ -82,6 +82,13 @@ def test_env_config_rejects_both_template_sources() -> None:
         E2BEnvironmentConfig(template="prebuilt", template_build=E2BTemplateConfig())
 
 
+def test_env_config_auto_resume_needs_pause_on_timeout() -> None:
+    with pytest.raises(
+        ValidationError, match="auto_resume=True needs on_timeout='pause'"
+    ):
+        E2BEnvironmentConfig(auto_resume=True)
+
+
 def test_load_e2b_config(tmp_path: Path) -> None:
     p = tmp_path / "e2b.json"
     p.write_text(

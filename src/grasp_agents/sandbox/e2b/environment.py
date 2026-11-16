@@ -10,7 +10,7 @@ import asyncio
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, Self, TypedDict
 
 from e2b import AsyncSandbox
 
@@ -31,6 +31,7 @@ from .file_backend import E2BFileBackend
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Mapping, Sequence
 
+    from e2b import SandboxLifecycle
     from e2b.connection_config import ApiParams
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ class E2BCreateParams(TypedDict, total=False):
     envs: dict[str, str] | None
     secure: bool
     allow_internet_access: bool
+    lifecycle: SandboxLifecycle
     api_key: str
     domain: str
 
@@ -448,6 +450,8 @@ def e2b_environment(
     code_interpreter: bool = False,
     default_timeout: float = DEFAULT_EXEC_TIMEOUT,
     lazy: bool = False,
+    on_timeout: Literal["kill", "pause"] = "kill",
+    auto_resume: bool = False,
 ) -> E2BEnvironment:
     """
     Build a deferred-create E2B environment; the sandbox is created on
@@ -465,7 +469,9 @@ def e2b_environment(
             E2B template (a Docker image with your packages — e.g. torch — baked
             in) and pass its name/ID here. The framework does not pip-install into
             E2B sandboxes; bake requirements into the template.
-        sandbox_timeout: Sandbox keep-alive in seconds (E2B default 300).
+        sandbox_timeout: Sandbox keep-alive in seconds (E2B default 300),
+            counted from the create or the last resume; calls do not extend
+            it.
         network: ``NONE`` (no internet) or ``ALL`` (internet on). ``ALLOWLIST``
             / ``LOOPBACK`` raise ``NotImplementedError`` (per-domain egress needs
             E2B network rules — future work).
@@ -491,6 +497,14 @@ def e2b_environment(
             start fails like a failed entry: later calls raise without
             creating another sandbox until the environment is re-entered (or
             restored to :data:`FRESH_SNAPSHOT_REF`).
+        on_timeout: What E2B does with the sandbox at its keep-alive:
+            ``"kill"`` removes it with its files, shells and kernels;
+            ``"pause"`` pauses it, keeping its files, processes and kernel
+            state. E2B keeps a paused sandbox until it is killed. Sent with
+            every create, including a restore's.
+        auto_resume: With ``on_timeout="pause"``, let any traffic to the
+            paused sandbox resume it (E2B's auto-resume), not only
+            ``resume()``. Needs ``on_timeout="pause"``.
 
     Returns:
         An :class:`E2BEnvironment` to use as ``async with``.
@@ -501,6 +515,11 @@ def e2b_environment(
             f"E2B example backend does not implement network={network.value!r} "
             "(per-domain / loopback egress needs E2B network rules). Use "
             "NetworkPolicy.NONE or NetworkPolicy.ALL."
+        )
+    if auto_resume and on_timeout != "pause":
+        raise ValueError(
+            "auto_resume=True needs on_timeout='pause': E2B resumes only a "
+            "sandbox it paused."
         )
 
     roots = tuple(Path(r) for r in allowed_roots)
@@ -520,6 +539,7 @@ def e2b_environment(
         "envs": dict(env) if env else None,
         "secure": secure,
         "allow_internet_access": network == NetworkPolicy.ALL,
+        "lifecycle": {"on_timeout": on_timeout, "auto_resume": auto_resume},
     }
     if api_key is not None:
         create_params["api_key"] = api_key
