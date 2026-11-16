@@ -1366,6 +1366,92 @@ async def test_a_running_sandbox_past_its_estimate_is_checked_once(
     assert sandbox.info_calls == 1
 
 
+class _SlowInfoSandbox(FakeSandbox):
+    """A sandbox whose info takes a real round trip, so callers queue."""
+
+    async def get_info(self) -> Any:
+        await asyncio.sleep(0.01)
+        return await super().get_info()
+
+
+async def test_calls_queued_after_the_deadline_check_the_sandbox_once(
+    creator: _Creator,
+) -> None:
+    sandbox = _SlowInfoSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+
+    async with _pausing() as env:
+        await env.file_backend.mkdir(Path(f"{WS}/a"))
+        sandbox.keep_alive(3600)  # running past the estimate
+        await asyncio.gather(
+            *(env.file_backend.mkdir(Path(f"{WS}/d{i}")) for i in range(3))
+        )
+
+    assert sandbox.info_calls == 1
+
+
+async def test_a_kernel_restart_resumes_a_sandbox_e2b_paused(creator: _Creator) -> None:
+    sandbox = CodeSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+    holder = KernelHolder()
+
+    async with _pausing() as env:
+        kernel = await holder.get(env.exec_backend)
+        await _execute(kernel, "x = 1")
+        await sandbox.pause()
+
+        await kernel.restart()
+
+    assert sandbox.resumes == [0]
+    assert sandbox.restarted == ["first-ctx0"]
+
+
+async def test_a_snapshot_waits_for_a_restore_and_takes_the_restored_sandbox(
+    slow_creator: _SlowCreator,
+) -> None:
+    first, restored = (
+        FakeSandbox(sandbox_id="first"),
+        FakeSandbox(sandbox_id="restored"),
+    )
+    slow_creator._queue.extend([first, restored])
+    slow_creator.gated = {"snap-1"}
+
+    async with e2b_environment(allowed_roots=[WS]) as env:
+        restoring = asyncio.create_task(env.restore("snap-1"))
+        await slow_creator.creating.wait()
+        snapshotting = asyncio.create_task(env.snapshot())
+        await asyncio.sleep(0)
+        slow_creator.gate.set()
+        await restoring
+
+        assert await snapshotting == "snap-restored"
+
+    assert not first.snapshotted
+
+
+async def test_a_network_update_waits_for_a_restore_and_reaches_its_sandbox(
+    slow_creator: _SlowCreator,
+) -> None:
+    first, restored = (
+        FakeSandbox(sandbox_id="first"),
+        FakeSandbox(sandbox_id="restored"),
+    )
+    slow_creator._queue.extend([first, restored])
+    slow_creator.gated = {"snap-1"}
+
+    async with e2b_environment(allowed_roots=[WS]) as env:
+        restoring = asyncio.create_task(env.restore("snap-1"))
+        await slow_creator.creating.wait()
+        updating = asyncio.create_task(env.update_network(NetworkPolicy.ALL))
+        await asyncio.sleep(0)
+        slow_creator.gate.set()
+        await restoring
+        await updating
+
+    assert first.network_updates == []
+    assert restored.network_updates == [{"allow_internet_access": True}]
+
+
 def _wrapping(sandbox: FakeSandbox) -> E2BEnvironment:
     """An environment over ``sandbox``, whose keep-alive it does not know."""
     return E2BEnvironment.from_sandbox(
@@ -1389,6 +1475,62 @@ async def test_a_call_refused_by_a_paused_sandbox_resumes_it_for_the_next(
 
     assert sandbox.resumes == [None]  # E2B's own keep-alive
     assert creator.created == []
+
+
+async def test_a_snapshot_refused_by_a_paused_sandbox_resumes_it_and_is_taken(
+    creator: _Creator,
+) -> None:
+    sandbox = FakeSandbox(sandbox_id="wrapped")
+
+    async with _wrapping(sandbox) as env:
+        await sandbox.pause()
+
+        assert await env.snapshot() == "snap-wrapped"
+
+    assert sandbox.resumes == [None]
+
+
+async def test_a_shell_started_on_a_paused_sandbox_resumes_it(
+    creator: _Creator,
+) -> None:
+    commands = ShellCommands()
+    sandbox = FakeSandbox(sandbox_id="wrapped", commands=commands)
+    holder = BashSessionHolder()
+
+    async with _wrapping(sandbox) as env:
+        session = await holder.get(env.exec_backend)
+        await sandbox.pause()
+
+        result = await _run(session, "pwd", timeout=0.5)
+        assert result.reason is TerminationReason.EXIT
+        assert not holder.take_reset()
+
+    assert sandbox.resumes == [None]
+    assert list(commands.shells) == [1]
+
+
+async def test_shells_racing_to_resume_a_paused_sandbox_both_keep_their_state(
+    creator: _Creator,
+) -> None:
+    commands = ShellCommands()
+    sandbox = _SlowInfoSandbox(sandbox_id="wrapped", commands=commands)
+    first, second = BashSessionHolder(), BashSessionHolder()
+
+    async with _wrapping(sandbox) as env:
+        await _run(await first.get(env.exec_backend), "cd /tmp")
+        await _run(await second.get(env.exec_backend), "cd /var")
+        await sandbox.pause()
+        await asyncio.sleep(0)  # the shells' streams end with the pause
+        shells = [await first.get(env.exec_backend), await second.get(env.exec_backend)]
+
+        results = await asyncio.gather(*(_run(s, "pwd", timeout=0.5) for s in shells))
+
+        assert [r.reason for r in results] == [TerminationReason.EXIT] * 2
+        assert not first.take_reset()
+        assert not second.take_reset()
+
+    assert sandbox.resumes == [None]
+    assert sorted(commands.shells) == [1, 2]
 
 
 async def test_a_shell_refused_by_a_paused_sandbox_resumes_it_and_keeps_its_state(

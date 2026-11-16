@@ -448,6 +448,7 @@ class CodeSandbox(FakeSandbox):
         super().__init__(sandbox_id=sandbox_id)
         self.contexts = set(contexts)
         self.ran: list[tuple[str, str]] = []
+        self.restarted: list[str] = []
 
     def _serve(self) -> None:
         if self.gone or self.state == "paused":
@@ -458,6 +459,10 @@ class CodeSandbox(FakeSandbox):
         context = SimpleNamespace(id=f"{self.sandbox_id}-ctx{len(self.contexts)}")
         self.contexts.add(context.id)
         return context
+
+    async def restart_code_context(self, context: Any) -> None:
+        self._serve()
+        self.restarted.append(context.id)
 
     async def list_code_contexts(self) -> list[Any]:
         self._serve()

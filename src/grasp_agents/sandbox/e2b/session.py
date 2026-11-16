@@ -35,7 +35,6 @@ import asyncio
 import contextlib
 import logging
 import time
-from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
 from grasp_agents.sandbox.exec_backend import (
@@ -178,19 +177,21 @@ class E2BExecSession(ExecSession):
         if self._handle is not None:
             return
         self._stream_epoch = self._holder.stream_epoch
-        start = partial(
-            sb.commands.run,
-            "/bin/sh",
-            background=True,
-            cwd=self._cwd,
-            envs=self._env,
-            # No connection deadline: the shell lives until closed, and an E2B
-            # timeout would cancel whichever task happened to open it.
-            timeout=0,
-            stdin=True,
-            on_stdout=self._on_stdout,
-            on_stderr=self._on_stderr,
-        )
+
+        async def start() -> AsyncCommandHandle:
+            return await sb.commands.run(
+                "/bin/sh",
+                background=True,
+                cwd=self._cwd,
+                envs=self._env,
+                # No connection deadline: the shell lives until closed, and an
+                # E2B timeout would cancel whichever task happened to open it.
+                timeout=0,
+                stdin=True,
+                on_stdout=self._on_stdout,
+                on_stderr=self._on_stderr,
+            )
+
         handle = await self._holder.retrying(sb, start)
         self._follow(handle)
         self._pid = handle.pid

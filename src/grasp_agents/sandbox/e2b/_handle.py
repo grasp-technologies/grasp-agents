@@ -183,8 +183,9 @@ class SandboxHandle:
     A lazily started environment *arms* the handle with a factory instead of
     creating the sandbox on entry; :meth:`ensure` then creates it on the first
     file or exec call, once, even when several calls race. The start holds
-    :attr:`lock`, which the environment's exit, restore, pause, resume and
-    snapshot also take, so those wait for a start in flight.
+    :attr:`lock`, which the environment's exit, restore, pause, resume,
+    snapshot and network update take too, as does resuming a sandbox E2B
+    paused, so those wait for a start in flight and for each other.
 
     With ``pauses_on_timeout``, E2B pauses the sandbox at the end of its
     keep-alive. The environment records when each keep-alive starts
@@ -456,28 +457,43 @@ class SandboxHandle:
         """
         due = self._pause_due.get(str(sandbox.sandbox_id))
         if due is not None and self.now() >= due:
-            await self.resume_if_paused(sandbox)
+            await self.resume_if_paused(sandbox, only_if_due=True)
 
     async def resume_if_paused(
-        self, sandbox: AsyncSandbox, *, locked: bool = False
+        self,
+        sandbox: AsyncSandbox,
+        *,
+        locked: bool = False,
+        only_if_due: bool = False,
     ) -> bool:
         """
         Resume ``sandbox`` in place, with the handle's keep-alive, if E2B
         paused it, it is still the live sandbox and the environment did not
-        pause it itself; return True if it did. A resume drops the sandbox's
-        open streams (:meth:`drop_streams`). Holds :attr:`lock` (unless the
-        caller does, ``locked``), so it waits for a start, exit, restore,
-        pause, resume, snapshot or network update in flight.
+        pause it itself. Return True if the sandbox is running afterwards,
+        resumed here or by a call that got there first; False if it is no
+        longer the live one, stays paused, or E2B could not tell. A resume
+        drops the sandbox's open streams (:meth:`drop_streams`).
+
+        Holds :attr:`lock` (unless the caller does, ``locked``), so it waits
+        for a start, exit, restore, pause, resume, snapshot or network update
+        in flight. ``only_if_due``: skip the check when another call made it
+        while this one waited for the lock.
         """
         if locked:
-            return await self._resume_if_paused(sandbox)
+            return await self._resume_if_paused(sandbox, only_if_due=only_if_due)
         async with self._lock:
-            return await self._resume_if_paused(sandbox)
+            return await self._resume_if_paused(sandbox, only_if_due=only_if_due)
 
-    async def _resume_if_paused(self, sandbox: AsyncSandbox) -> bool:
+    async def _resume_if_paused(
+        self, sandbox: AsyncSandbox, *, only_if_due: bool
+    ) -> bool:
         sandbox_id = str(sandbox.sandbox_id)
         if self.live(sandbox_id) is None or self._held_paused == sandbox_id:
             return False
+        if only_if_due:
+            due = self._pause_due.get(sandbox_id)
+            if due is None or self.now() < due:
+                return True
         since = self.now()
         try:
             info = await sandbox.get_info()
@@ -486,7 +502,7 @@ class SandboxHandle:
         if info.state != SandboxState.PAUSED:
             if self._pauses_on_timeout:
                 self._track(sandbox_id, max(self.now(), info.end_at.timestamp()))
-            return False
+            return True
         logger.info("resuming E2B sandbox %s, which E2B paused", sandbox_id)
         try:
             await sandbox.connect(timeout=self._keep_alive)

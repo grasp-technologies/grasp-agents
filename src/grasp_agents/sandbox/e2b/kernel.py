@@ -238,8 +238,10 @@ class E2BKernel(KernelSession):
         async with self._lock:
             context = self._context
             if context is not None:
+                sandbox = self._sandbox()
+                await self._holder.ready(sandbox)
                 with contextlib.suppress(Exception):
-                    await self._sandbox().restart_code_context(context)
+                    await sandbox.restart_code_context(context)
 
     async def close(self) -> None:
         # The code context is intentionally left alive: it belongs to the

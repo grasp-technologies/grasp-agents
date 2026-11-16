@@ -42,12 +42,7 @@ from .file_backend import E2BFileBackend
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Mapping, Sequence
 
-    from e2b import (
-        SandboxLifecycle,
-        SandboxNetworkOpts,
-        SandboxNetworkUpdate,
-        SnapshotInfo,
-    )
+    from e2b import SandboxLifecycle, SandboxNetworkOpts, SandboxNetworkUpdate
     from e2b.connection_config import ApiParams
 
 logger = logging.getLogger(__name__)
@@ -310,19 +305,28 @@ class E2BEnvironment(
         """
         if self._holder.sandbox is None and self._holder.armed:
             return FRESH_SNAPSHOT_REF
-        sandbox = await self._holder.ensure()
-
-        async def create() -> SnapshotInfo:
+        await self._holder.ensure()
+        attempts = 2
+        while True:
+            attempts -= 1
             async with self._holder.lock:
+                # The live sandbox once the lock is ours: a restore it waited
+                # for has replaced the one ``ensure`` saw.
+                if self._holder.sandbox is None and self._holder.armed:
+                    return FRESH_SNAPSHOT_REF
+                sandbox = self._holder.require()
                 try:
                     name = snapshot_name(self._label, datetime.now(UTC))
-                    return await sandbox.create_snapshot(name=name)
+                    snap = await sandbox.create_snapshot(name=name)
+                except Exception as exc:
+                    failure = exc
+                else:
+                    return str(snap.snapshot_id)
                 finally:
                     self._holder.drop_streams()
-
-        # E2B refuses to snapshot a paused sandbox, without creating one.
-        snap = await self._holder.retrying(sandbox, create)
-        return str(snap.snapshot_id)
+            # E2B refuses to snapshot a paused sandbox, without creating one.
+            if not attempts or not await self._holder.recover(sandbox, failure):
+                raise failure
 
     async def restore(self, ref: str) -> None:
         """
