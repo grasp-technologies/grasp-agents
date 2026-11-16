@@ -83,11 +83,11 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
     and reconnect the same sandbox).
 
     Prefer the :func:`e2b_environment` factory. The async context manager owns
-    sandbox create (``__aenter__`` — where the optional ``e2b`` import happens)
-    and teardown (``__aexit__`` — kill, or pause when ``pause_on_exit``). The
-    ``file_backend`` / ``exec_backend`` objects exist before entry (so a
-    ``SessionContext`` can source them), but their I/O raises until the context is
-    entered and the sandbox is live.
+    sandbox create (``__aenter__``, or the first file or exec call with
+    ``lazy=True``) and teardown (``__aexit__`` — kill, or pause when
+    ``pause_on_exit``). The ``file_backend`` / ``exec_backend`` objects exist
+    before entry (so a ``SessionContext`` can source them), but their I/O raises
+    until the context is entered.
     """
 
     def __init__(
@@ -343,7 +343,7 @@ def e2b_environment(
     Args:
         allowed_roots: POSIX paths *inside* the sandbox the file tools may
             address. The first is the default working directory; all are
-            ``mkdir -p``'d on entry.
+            ``mkdir -p``'d when the sandbox starts.
         deny_read: Remote paths carved out of the readable space (tool plane).
         allow_read: Remote paths re-allowed within ``deny_read`` (allow wins).
         deny_write: Remote paths write-protected on the tool plane (deny wins).
@@ -368,7 +368,8 @@ def e2b_environment(
             (``E2BExecBackend.open_kernel``). The base template is shell + files
             only. Files + commands behave identically either way.
         default_timeout: Per-command wall-clock ceiling when a call passes no
-            ``timeout`` (E2B would otherwise impose its own 60 s).
+            ``timeout``. The backend enforces it: a command that runs past it
+            is killed and reported as ``OVERALL_TIMEOUT``.
         lazy: Start the sandbox on the first file or exec call instead of on
             ``async with``, so a session that never needs it never pays for
             one. Concurrent first calls share one sandbox; ``snapshot()``
