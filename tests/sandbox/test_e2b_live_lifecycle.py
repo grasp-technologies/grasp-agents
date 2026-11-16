@@ -56,6 +56,7 @@ _live = pytest.mark.skipif(
 WS = "/home/user/workspace"
 TAG_KEY = "grasp-agents-live-test"
 KEEP_ALIVE = 180  # seconds; a leftover sandbox dies on its own after this
+PAUSE_KEEP_ALIVE = 20  # seconds; short, so a test can wait past it
 
 
 class LiveRun:
@@ -65,11 +66,13 @@ class LiveRun:
         self.tag = uuid.uuid4().hex
         self.snapshots: list[str] = []
 
-    def env(self, **kwargs: Any) -> E2BEnvironment:
+    def env(
+        self, *, sandbox_timeout: int = KEEP_ALIVE, **kwargs: Any
+    ) -> E2BEnvironment:
         return e2b_environment(
             allowed_roots=[WS],
             metadata={TAG_KEY: self.tag},
-            sandbox_timeout=KEEP_ALIVE,
+            sandbox_timeout=sandbox_timeout,
             **kwargs,
         )
 
@@ -118,6 +121,24 @@ def live_id(env: E2BEnvironment) -> str:
     sandbox = env._holder.sandbox
     assert sandbox is not None
     return str(sandbox.sandbox_id)
+
+
+async def paused_by_e2b(sandbox_id: str) -> None:
+    """Wait until E2B paused the sandbox at the end of its keep-alive."""
+    from e2b import AsyncSandbox, SandboxState
+
+    async def paused() -> bool:
+        info = await AsyncSandbox.get_info(sandbox_id)
+        return info.state == SandboxState.PAUSED
+
+    await until(paused, timeout=PAUSE_KEEP_ALIVE + 30)
+
+
+async def keep_alive_left(sandbox_id: str) -> float:
+    from e2b import AsyncSandbox
+
+    info = await AsyncSandbox.get_info(sandbox_id)
+    return info.end_at.timestamp() - time.time()
 
 
 class Agent:
@@ -339,6 +360,77 @@ async def test_a_sandbox_killed_from_outside_is_replaced_on_the_call_after() -> 
             assert result.returncode == 0
             assert "shell session was reset" in result.stderr
             assert result.stdout.strip() == WS
+    finally:
+        await run.cleanup()
+
+
+# --- a sandbox E2B paused at its keep-alive ----------------------------------
+
+
+@_live
+async def test_calls_resume_a_sandbox_e2b_paused_and_find_its_state() -> None:
+    run = LiveRun()
+    try:
+        async with run.env(
+            lazy=True,
+            code_interpreter=True,
+            sandbox_timeout=PAUSE_KEEP_ALIVE,
+            on_timeout="pause",
+        ) as env:
+            agent = Agent(env)
+            note = Path(f"{WS}/note.txt")
+            await env.file_backend.write_bytes(note, b"kept", mode=0o644)
+            await agent.shell("cd /tmp && export MARK=kept")
+            assert "status=ok" in await agent.python("x = 41")
+            sandbox_id = live_id(env)
+
+            # After each pause another kind of call is the first to find it.
+            await paused_by_e2b(sandbox_id)
+            assert (await env.file_backend.read_text(note))[0] == "kept"
+
+            await paused_by_e2b(sandbox_id)
+            shell = await agent.shell("echo $MARK; pwd")
+            assert shell.reason is TerminationReason.EXIT
+            assert shell.stdout.split() == ["kept", "/tmp"]
+            assert "shell session was reset" not in shell.stderr
+
+            await paused_by_e2b(sandbox_id)
+            out = await agent.python("print(x + 1)")
+            assert "42" in out
+            assert "kernel was restarted" not in out
+
+            await paused_by_e2b(sandbox_id)
+            run.snapshots.append(await env.snapshot())
+            assert (await env.exec_backend.execute("cat note.txt")).stdout == "kept"
+            assert live_id(env) == sandbox_id
+    finally:
+        await run.cleanup()
+
+
+@_live
+async def test_a_sandbox_e2b_paused_with_auto_resume_keeps_its_keep_alive() -> None:
+    run = LiveRun()
+    try:
+        async with run.env(
+            lazy=True,
+            code_interpreter=True,
+            sandbox_timeout=PAUSE_KEEP_ALIVE,
+            on_timeout="pause",
+            auto_resume=True,
+        ) as env:
+            agent = Agent(env)
+            await agent.shell("cd /tmp && export MARK=kept")
+            assert "status=ok" in await agent.python("x = 41")
+            sandbox_id = live_id(env)
+
+            await paused_by_e2b(sandbox_id)
+            shell = await agent.shell("echo $MARK; pwd")
+            assert shell.reason is TerminationReason.EXIT
+            assert shell.stdout.split() == ["kept", "/tmp"]
+            assert "shell session was reset" not in shell.stderr
+            # Resumed with sandbox_timeout, not E2B's own default for traffic.
+            assert await keep_alive_left(sandbox_id) <= PAUSE_KEEP_ALIVE
+            assert "42" in await agent.python("print(x + 1)")
     finally:
         await run.cleanup()
 
