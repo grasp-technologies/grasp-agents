@@ -182,15 +182,21 @@ class E2BEnvironment(
         policy: SandboxPolicy,
         owns_sandbox: bool = False,
         pause_on_exit: bool = False,
+        label: str | None = None,
     ) -> Self:
         """
         Wrap an already-created e2b ``AsyncSandbox`` (or a test double).
 
         The ``policy`` is the single source of ``allowed_roots`` + carve-outs
-        for both surfaces. ``owns_sandbox=False`` by default: the caller created
-        it, so teardown is the caller's responsibility. Used for connecting to a
-        pre-existing sandbox and for tests.
+        for both surfaces, and of the network a :meth:`restore` creates its
+        sandbox with; ``label`` tags those sandboxes and names snapshots, as
+        :func:`e2b_environment`'s does. ``owns_sandbox=False`` by default: the
+        caller created it, so teardown is the caller's responsibility. Used for
+        connecting to a pre-existing sandbox and for tests.
+
+        Raises ``NotImplementedError`` for a network policy E2B cannot enforce.
         """
+        e2b_egress(policy)
         holder = SandboxHandle(sandbox)
         return cls(
             policy=policy,
@@ -200,6 +206,7 @@ class E2BEnvironment(
             create_params=None,
             owns_sandbox=owns_sandbox,
             pause_on_exit=pause_on_exit,
+            label=label,
         )
 
     @property
@@ -362,7 +369,10 @@ class E2BEnvironment(
         if ref == FRESH_SNAPSHOT_REF:
             return await self._start()
         # Create from the snapshot instead of the configured template.
-        params: E2BCreateParams = {**(self._create_params or {}), "template": ref}
+        params: E2BCreateParams = {
+            **(self._create_params or self._wrapped_create_params()),
+            "template": ref,
+        }
         since = time.monotonic()
         sandbox = await _sandbox_cls(self._code_interpreter).create(**params)
         self._holder.keep_alive_from(str(sandbox.sandbox_id), since)
@@ -460,6 +470,21 @@ class E2BEnvironment(
         if "domain" in params:
             opts["domain"] = params["domain"]
         return opts
+
+    def _wrapped_create_params(self) -> E2BCreateParams:
+        """
+        What a :meth:`from_sandbox` environment's restores create with: its
+        policy's network, kill at E2B's default keep-alive, and its tag.
+        """
+        internet, network = e2b_egress(self._policy)
+        params: E2BCreateParams = {
+            "allow_internet_access": internet,
+            "lifecycle": {"on_timeout": "kill", "auto_resume": False},
+            "metadata": {METADATA_KEY: self._label},
+        }
+        if network is not None:
+            params["network"] = network
+        return params
 
     async def pause(self) -> str:
         """

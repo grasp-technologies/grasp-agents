@@ -631,6 +631,51 @@ async def test_restore_spawns_fresh_sandbox_from_snapshot(
     assert new_sb.killed is True
 
 
+async def test_restores_of_a_wrapped_sandbox_carry_its_network_and_tag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = _created_by(monkeypatch)
+    wrapped = FakeSandbox(sandbox_id="sbx_old")
+    env = E2BEnvironment.from_sandbox(
+        cast("AsyncSandbox", wrapped),
+        policy=SandboxPolicy(
+            allowed_roots=(Path(WS),),
+            network=NetworkPolicy.ALLOWLIST,
+            allowed_domains=("pypi.org",),
+        ),
+        owns_sandbox=True,
+        label="prod",
+    )
+
+    async with env:
+        await env.restore("snap-1")
+        await env.update_network(NetworkPolicy.NONE)
+        await env.restore("snap-2")
+
+    allowlisted, cut = created
+    for kwargs in (allowlisted, cut):
+        assert kwargs["metadata"] == {"grasp-agents": "prod"}
+        assert kwargs["lifecycle"] == {"on_timeout": "kill", "auto_resume": False}
+    assert allowlisted["template"] == "snap-1"
+    assert allowlisted["allow_internet_access"] is True
+    assert allowlisted["network"] == {
+        "deny_out": ["0.0.0.0/0"],
+        "allow_out": ["pypi.org"],
+    }
+    assert cut["allow_internet_access"] is False
+    assert "network" not in cut
+
+
+async def test_a_wrapped_sandbox_with_a_policy_e2b_cannot_enforce_is_refused() -> None:
+    with pytest.raises(NotImplementedError):
+        E2BEnvironment.from_sandbox(
+            cast("AsyncSandbox", FakeSandbox()),
+            policy=SandboxPolicy(
+                allowed_roots=(Path(WS),), network=NetworkPolicy.LOOPBACK
+            ),
+        )
+
+
 async def test_resume_reconnects_to_sandbox(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
