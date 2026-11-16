@@ -45,8 +45,13 @@ from grasp_agents.tools.base import BaseTool
 from grasp_agents.types.errors import ProcRunError
 from grasp_agents.types.response import Response
 from grasp_agents.workflow import SequentialWorkflow
+from tests._helpers import (
+    DeletingSnapshotEnv,
+    MockLLM,
+    _text_response,
+    _tool_call_response,
+)
 from tests._helpers import FakeSnapshotEnv as _FakeSnapshotEnv
-from tests._helpers import MockLLM, _text_response, _tool_call_response
 
 pytestmark = pytest.mark.asyncio
 
@@ -129,12 +134,14 @@ def _make_agent(
     environment: ExecutionEnvironment | None = None,
     fs_snapshot_policy: Literal["off", "final", "turn"] = "off",
     tools: list[BaseTool[Any, Any, Any]] | None = None,
+    release_fs_snapshots: bool = True,
 ) -> tuple[LLMAgent[str, str, None], SessionContext[None]]:
     ctx: SessionContext[None] = SessionContext(
         checkpoint_store=store,
         session_key="s1",
         environment=environment,
         fs_snapshot_policy=fs_snapshot_policy,
+        release_fs_snapshots=release_fs_snapshots,
     )
     agent = LLMAgent[str, str, None](
         name="fs_agent",
@@ -1141,3 +1148,255 @@ async def test_nested_workflow_does_not_hand_over_writer(tmp_path: Path) -> None
     workflow._hand_over_session_writer(node1)
     assert ctx.session_writer is None
     assert not node1._is_session_writer()
+
+
+# ---------- Releasing snapshots no record holds ----------
+
+
+def _refs_in(checkpoint: AgentCheckpoint) -> set[str]:
+    marks = [checkpoint.current, *checkpoint.step_watermarks]
+    return {wm.fs_snapshot_ref for wm in marks if wm.fs_snapshot_ref is not None}
+
+
+class _CallbackTool(BaseTool[EchoInput, str, Any]):
+    """Runs ``callback`` when called, then echoes."""
+
+    def __init__(self, callback: Any) -> None:
+        super().__init__(name="echo", description="Echoes input")
+        self._callback = callback
+
+    async def _run(
+        self,
+        inp: EchoInput,
+        *,
+        ctx: Any = None,
+        exec_id: str | None = None,
+        progress_callback: Any = None,
+        path: Any = None,
+        agent_ctx: Any = None,
+    ) -> str:
+        self._callback()
+        return inp.text
+
+
+async def test_turn_policy_deletes_the_snapshots_later_checkpoints_superseded(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryCheckpointStore()
+    env = DeletingSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_tool_call_response("echo", '{"text": "hi"}', "c1"), _text_response("done")],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="turn",
+        tools=[EchoTool()],
+    )
+
+    await agent.run("hello")
+
+    assert env.snapshots == ["snap-1", "snap-2", "snap-3"]
+    assert env.deleted == ["snap-1", "snap-2"]
+    assert _refs_in(await _stored_checkpoint(store)) == {"snap-3"}
+
+
+async def test_final_policy_keeps_the_snapshots_rollback_boundaries_hold(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryCheckpointStore()
+    env = DeletingSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_text_response("a0"), _text_response("a1"), _text_response("a2")],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
+    )
+
+    for step in range(3):
+        await agent.run(f"q{step}", step=step)
+
+    assert env.snapshots == ["snap-1", "snap-2", "snap-3"]
+    assert env.deleted == []
+
+
+async def test_the_snapshot_the_session_record_holds_is_kept(tmp_path: Path) -> None:
+    store = InMemoryCheckpointStore()
+    env = DeletingSnapshotEnv(tmp_path)
+    deleted_mid_run: list[list[str]] = []
+    agent, _ = _make_agent(
+        [
+            _text_response("a1"),
+            _tool_call_response("echo", '{"text": "hi"}', "c1"),
+            _text_response("a2"),
+        ],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
+        tools=[_CallbackTool(lambda: deleted_mid_run.append(list(env.deleted)))],
+    )
+
+    # Typed-args runs are unstepped: no boundary keeps the first run's
+    # snapshot, only the session record, which a resume restores.
+    await agent.run(in_args="q1")
+    await agent.run(in_args="q2")
+
+    assert deleted_mid_run == [[]]
+    assert env.deleted == ["snap-1"]
+    record = await _session_record(store)
+    assert record is not None
+    assert record.fs_snapshot_ref == "snap-2"
+
+
+async def test_rollback_deletes_the_snapshots_of_the_steps_it_discards(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryCheckpointStore()
+    env = DeletingSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_text_response("a0"), _text_response("a1"), _text_response("a2")],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
+    )
+    for step in range(3):
+        await agent.run(f"q{step}", step=step)
+
+    await agent.rollback_to_step(1)
+
+    assert env.restored == ["snap-1"]
+    assert env.deleted == ["snap-2", "snap-3"]
+    assert _refs_in(await _stored_checkpoint(store)) == {"snap-1"}
+
+
+async def test_a_snapshot_in_use_is_deleted_at_a_later_release(tmp_path: Path) -> None:
+    store = InMemoryCheckpointStore()
+    env = DeletingSnapshotEnv(tmp_path)
+    env.in_use.add("snap-1")
+    agent, _ = _make_agent(
+        [_text_response("a0"), _text_response("a1")],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="turn",
+    )
+
+    await agent.run("q0")
+    assert env.deleted == []
+
+    env.in_use.clear()
+    await agent.run("q1")
+    # snap-2 ended the first step, so the second step's boundary keeps it.
+    assert env.deleted == ["snap-1", "snap-3"]
+
+
+class _HeadFailingStore(InMemoryCheckpointStore):
+    """Fails the agent head's next save once ``fail_head`` is set."""
+
+    fail_head = False
+
+    async def save(self, key: str, data: bytes) -> None:
+        if self.fail_head and key == "s1/agent/fs_agent":
+            self.fail_head = False
+            raise RuntimeError("store down")
+        await super().save(key, data)
+
+
+async def test_a_snapshot_whose_checkpoint_failed_is_deleted_once_one_lands(
+    tmp_path: Path,
+) -> None:
+    store = _HeadFailingStore()
+    env = DeletingSnapshotEnv(tmp_path)
+
+    def fail_next_head() -> None:
+        store.fail_head = True
+
+    agent, _ = _make_agent(
+        [
+            _tool_call_response("echo", '{"text": "hi"}', "c1"),
+            _text_response("a1"),
+        ],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="turn",
+        tools=[_CallbackTool(fail_next_head)],
+    )
+
+    with pytest.raises(ProcRunError):
+        await agent.run("q0")
+    # The tool round's snapshot was taken, but its head never landed: the
+    # stored head still holds the one before it, and nothing was deleted.
+    assert env.snapshots == ["snap-1", "snap-2"]
+    assert _refs_in(await _stored_checkpoint(store)) == {"snap-1"}
+    assert env.deleted == []
+
+    await agent.run("q1")
+
+    held = _refs_in(await _stored_checkpoint(store))
+    record = await _session_record(store)
+    assert record is not None
+    assert record.fs_snapshot_ref is not None
+    held.add(record.fs_snapshot_ref)
+    assert "snap-2" in env.deleted
+    assert not held & set(env.deleted)
+
+
+async def test_release_fs_snapshots_off_keeps_every_snapshot(tmp_path: Path) -> None:
+    store = InMemoryCheckpointStore()
+    env = DeletingSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_tool_call_response("echo", '{"text": "hi"}', "c1"), _text_response("done")],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="turn",
+        tools=[EchoTool()],
+        release_fs_snapshots=False,
+    )
+
+    await agent.run("hello")
+
+    assert len(env.snapshots) == 3
+    assert env.deleted == []
+
+
+async def test_refs_live_only_in_the_taking_agents_records_and_the_session_record(
+    tmp_path: Path,
+) -> None:
+    # Release relies on this: each agent deletes only what it took and its own
+    # records dropped, so no other record may hold a ref it took.
+    store = InMemoryCheckpointStore()
+    env = DeletingSnapshotEnv(tmp_path)
+    ctx: SessionContext[None] = SessionContext(
+        checkpoint_store=store,
+        session_key="s1",
+        environment=env,
+        fs_snapshot_policy="turn",
+    )
+
+    def llm(name: str) -> MockLLM:
+        return MockLLM(
+            responses_queue=[
+                _tool_call_response("echo", '{"text": "x"}', f"{name}-c"),
+                _text_response(name),
+            ]
+        )
+
+    first = LLMAgent[Any, str, None](
+        name="n1", llm=llm("n1"), ctx=ctx, tools=[EchoTool()]
+    )
+    second = LLMAgent[str, str, None](
+        name="n2", llm=llm("n2"), ctx=ctx, tools=[EchoTool()]
+    )
+    workflow = SequentialWorkflow[Any, str, None]("wf", [first, second], ctx=ctx)
+    await workflow.run("go")
+
+    held: dict[str, set[str]] = {}
+    for key in await store.list_keys("s1/agent"):
+        raw = await store.load(key)
+        assert raw is not None
+        held[key] = _refs_in(AgentCheckpoint.model_validate_json(raw))
+    assert set(held) == {"s1/agent/wf/n1", "s1/agent/wf/n2"}
+    assert not held["s1/agent/wf/n1"] & held["s1/agent/wf/n2"]
+    record = await _session_record(store)
+    assert record is not None
+    in_records = {*held["s1/agent/wf/n1"], *held["s1/agent/wf/n2"]}
+    assert record.fs_snapshot_ref in in_records
+    assert in_records <= set(env.snapshots)
+    assert not in_records & set(env.deleted)

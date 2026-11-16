@@ -29,6 +29,7 @@ violations. Before editing, read the relevant pages: `docs/durability.md`,
    2. The unit: deferred effects → session record → message log → agent head →
       task-record flips → inbox acks.
    3. Then `_committed` is set and the effects are retired.
+   4. Last, snapshots no record holds any more are deleted (invariant 14).
 
    Don't reorder these without re-reading the crash analysis in
    `docs/durability.md`.
@@ -52,7 +53,12 @@ violations. Before editing, read the relevant pages: `docs/durability.md`,
     logs a warning and is treated as missing.
 13. **Keys come from `durability/store_keys.py` helpers only.** `exec_id` never appears in a
     key, and tool-call children use `tc_<call_id>`.
-14. **Rollback** runs only between runs and only on agents. The ROLLING_BACK mark
+14. **Snapshot refs have two homes.** A filesystem snapshot ref is recorded only in the
+    head and boundaries of the agent that took it, and in the session record. Release
+    (`LLMAgent._release_fs_snapshots`) deletes a snapshot only after a head that no
+    longer holds it has landed. Recording a ref anywhere else (a fork, a team-wide
+    record) means teaching release to treat it as held, or it gets deleted.
+15. **Rollback** runs only between runs and only on agents. The ROLLING_BACK mark
     precedes any side effect. Consumed mail is voided, task outcomes are
     re-injected, and post-boundary launches are cancelled. A parked agent refuses
     no-input runs.

@@ -88,6 +88,13 @@ class SessionContext[CtxT](BaseModel):
         default="off", exclude=True
     )
 
+    # Delete the filesystem snapshots no checkpoint record holds any more
+    # (superseded by a later checkpoint, discarded by a rollback or a
+    # ``drop_rollback_steps``, or taken for a checkpoint that never landed),
+    # when the environment is ``SnapshotDeletable``. ``False`` keeps every
+    # snapshot.
+    release_fs_snapshots: bool = Field(default=True, exclude=True)
+
     # The processor owning session-scoped persistence: only it writes the
     # per-session record (serialized ``state``, fs snapshot ref, metadata),
     # snapshots the filesystem, and may restore one. Normally claimed
@@ -314,6 +321,19 @@ class SessionContext[CtxT](BaseModel):
                 record.fs_snapshot_ref or "none",
             )
             return record
+
+    async def load_fs_snapshot_ref(self) -> str | None:
+        """
+        The filesystem snapshot ref the persisted session record holds: the
+        one a cold resume restores. ``None`` without a store or record.
+        """
+        key = self._session_store_key()
+        if self.checkpoint_store is None or key is None:
+            return None
+        record = await self.checkpoint_store.load_json(
+            key, SessionCheckpoint, subject=f"session checkpoint at {key}"
+        )
+        return record.fs_snapshot_ref if record is not None else None
 
     async def save_checkpoint(self, *, fs_snapshot_ref: str | None = None) -> None:
         """

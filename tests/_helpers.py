@@ -240,6 +240,25 @@ class FakeSnapshotEnv(ExecutionEnvironment, SnapshotCapable):
         self.restored.append(ref)
 
 
+class DeletingSnapshotEnv(FakeSnapshotEnv):
+    """
+    A :class:`FakeSnapshotEnv` that can delete snapshots (``SnapshotDeletable``),
+    recording each deletion. Refs in ``in_use`` are refused for now, as a
+    provider refuses one a sandbox still uses.
+    """
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.deleted: list[str] = []
+        self.in_use: set[str] = set()
+
+    async def delete_snapshot(self, ref: str) -> bool:
+        if ref in self.in_use:
+            return False
+        self.deleted.append(ref)
+        return True
+
+
 @dataclass(frozen=True)
 class FailFirstLLM(MockLLM):
     """Raises on the first generation, then serves the queue."""

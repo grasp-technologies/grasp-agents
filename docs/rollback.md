@@ -14,6 +14,7 @@ Step rollback rewinds an agent's session to the start of an earlier step: the tr
 | `SessionContext.session_writer`, `claim_session_writer` | `session_context.py` | The session-persistence owner. |
 | `SessionContext.fs_snapshot_policy`, `restore_fs_snapshot` | `session_context.py` | Filesystem snapshots. |
 | `SnapshotCapable` | `sandbox/environment.py` | Environment capability: `snapshot()` / `restore(ref)`. |
+| `SnapshotDeletable`, `SessionContext.release_fs_snapshots` | `sandbox/environment.py`, `session_context.py` | Deleting the snapshots no record holds. |
 
 ## Steps and anchors
 
@@ -93,6 +94,7 @@ async with env:
 - On a cold resume of a mid-run head over an older restored snapshot, the agent receives a `<system-reminder subject="filesystem restored">` telling it to re-verify files its recent turns claim to have written.
 - A session record carrying a ref resumed without a `SnapshotCapable` environment fails (`RuntimeError`) rather than resuming over divergent files.
 - Kernel context ids are kept only alongside a snapshot and re-attached only when the session actually restored one. A rollback points each kernel at the context its boundary recorded. When the boundary predates the kernel, the kernel the restore closed is dropped with its id: checkpoints record no id for it, and the next call opens a fresh kernel in the restored sandbox without a reset notice, since the rolled-back transcript never used that kernel.
+- **Snapshots no record holds are deleted.** A snapshot ref is recorded only by the agent that took it (its head and its boundaries) and in the session record. Once a checkpoint or a rollback of that agent has landed, it deletes the snapshots it took that neither its head, its boundaries nor the session record still hold: under `"turn"`, each tool round's snapshot once the next checkpoint supersedes it; after a rollback, the discarded steps' snapshots; a snapshot whose checkpoint never landed. Under `"final"` every completed step's snapshot is a later step's boundary and stays. Deleting only after the landing means a crash can leave a snapshot behind but never a record pointing at a deleted one. This needs a `SnapshotDeletable` environment (E2B is); a snapshot it refuses for now (a sandbox still uses it) or fails to delete is retried at the agent's next checkpoint. `SessionContext(release_fs_snapshots=False)` keeps every snapshot.
 - Multi-agent hosts register `ctx.add_environment_restored_callback(cb)`; teams use it to post an `<environment_rewind>` notice to the other members after the lead restores a snapshot. Remove it with `remove_environment_restored_callback` when the host is torn down.
 
 ## What rollback never undoes

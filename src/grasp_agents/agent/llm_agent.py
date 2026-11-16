@@ -62,7 +62,7 @@ from grasp_agents.memory.injection import (
     relevant_memories_attachment,
 )
 from grasp_agents.processors.processor import Processor
-from grasp_agents.sandbox.environment import SnapshotCapable
+from grasp_agents.sandbox.environment import SnapshotCapable, SnapshotDeletable
 from grasp_agents.session_context import SessionContext
 from grasp_agents.skills.injection import make_skills_section
 from grasp_agents.skills.types import SkillFilter
@@ -269,6 +269,9 @@ class LLMAgent[InT, OutT, CtxT](
         # :meth:`rollback_to_step`. Persisted in the head, restored on resume.
         self._step_watermarks: list[StepWatermark] = []
         self._committed: StepWatermark | None = None
+        # Filesystem snapshots this agent took or loaded in its head and has
+        # not deleted (see ``_release_fs_snapshots``).
+        self._fs_snapshot_refs: set[str] = set()
 
         # Resume notifications injected into the transcript by load_checkpoint,
         # awaiting emission as stream events (no hidden transcript messages).
@@ -801,6 +804,7 @@ class LLMAgent[InT, OutT, CtxT](
 
         self._step_watermarks = list(checkpoint.step_watermarks)
         self._committed = current
+        self._fs_snapshot_refs |= self._held_fs_snapshot_refs()
 
         if checkpoint.location is AgentCheckpointLocation.ROLLED_BACK:
             # Restore the parked step, so the next chat delivery re-mints it
@@ -949,6 +953,7 @@ class LLMAgent[InT, OutT, CtxT](
         if self._fs_snapshot_due(location):
             environment = cast("SnapshotCapable", self._ctx.environment)
             fs_snapshot_ref = await environment.snapshot()
+            self._fs_snapshot_refs.add(fs_snapshot_ref)
 
         # One unit of work on the store (atomic where the store has
         # transactions): deferred tool effects, the session record, the log +
@@ -1008,6 +1013,52 @@ class LLMAgent[InT, OutT, CtxT](
                 inbox.release(acked)
             else:
                 await inbox.flush_acks()
+
+        await self._release_fs_snapshots()
+
+    def _held_fs_snapshot_refs(self) -> set[str]:
+        """The filesystem snapshot refs this agent's head and boundaries hold."""
+        marks = [*self._step_watermarks]
+        if self._committed is not None:
+            marks.append(self._committed)
+        return {wm.fs_snapshot_ref for wm in marks if wm.fs_snapshot_ref is not None}
+
+    async def _release_fs_snapshots(self) -> None:
+        """
+        Delete the filesystem snapshots this agent took that neither its head
+        nor its boundaries hold any more, unless the session record does: a
+        later checkpoint superseded them, a rollback discarded their steps, or
+        the checkpoint they were taken for never landed. Called only once the
+        head that dropped them has landed, so no record points at a deleted
+        snapshot. Only the agent that took a snapshot records its ref (and the
+        session record), so no other record can hold one released here.
+
+        A snapshot the environment refuses for now (a sandbox still uses it)
+        or fails to delete is tried again at the next release.
+        """
+        environment = self._ctx.environment
+        if not self._ctx.release_fs_snapshots or not isinstance(
+            environment, SnapshotDeletable
+        ):
+            return
+        released = self._fs_snapshot_refs - self._held_fs_snapshot_refs()
+        if not released:
+            return
+        released.discard(await self._ctx.load_fs_snapshot_ref())
+        for ref in sorted(released):
+            try:
+                gone = await environment.delete_snapshot(ref)
+            except Exception:
+                logger.warning(
+                    "agent '%s' failed to delete filesystem snapshot %s; it "
+                    "is tried again at the next checkpoint",
+                    self.name,
+                    ref,
+                    exc_info=True,
+                )
+                continue
+            if gone:
+                self._fs_snapshot_refs.discard(ref)
 
     async def _run_checkpoint_unit(
         self,
@@ -1304,6 +1355,7 @@ class LLMAgent[InT, OutT, CtxT](
         # launches — safe to flip their records now rather than waiting for
         # the next loop save.
         await self._agent_ctx.bg_tasks.flush_flips(ctx=self._ctx)
+        await self._release_fs_snapshots()
 
         logger.info(
             "agent '%s' rolled back to step %d (messages=%d, turn=%d)",

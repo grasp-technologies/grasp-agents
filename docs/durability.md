@@ -86,6 +86,7 @@ Heads are written only at closed boundaries, so a committed prefix never ends in
    6. inbox acks, when the store is `transactional` and holds the mailbox.
 3. Cache the new head and retire the effects.
 4. On a non-transactional store, ack the inbox messages the persisted turn absorbed.
+5. Delete the filesystem snapshots no record holds any more (see [Rollback](rollback.md#filesystem-snapshots)).
 
 A crash between steps leaves the filesystem and external artifacts at or after the transcript. Work may be redone; it is never silently missing.
 
@@ -184,6 +185,7 @@ async def save_draft(title: str, body: str, *, agent_ctx: AgentContext) -> str:
 5. Only the session writer writes the session record and snapshots the filesystem (see [Rollback](rollback.md#the-session-writer)).
 6. `durability_enabled=False` on a processor opts it and all its descendants out of the store: no log, no heads, no task records (`Processor._inherit_durability`).
 7. Input is durable before generation (`AgentLoop.execute_stream`).
+8. A filesystem snapshot ref is recorded only in the head and boundaries of the agent that took it and in the session record. An agent deletes a snapshot it took only after a head that no longer holds it has landed, and never one the session record holds (`LLMAgent._release_fs_snapshots`). A feature that copies a ref anywhere else must keep that copy's snapshot from being released.
 
 ## Limitations
 
