@@ -1325,7 +1325,7 @@ async def test_a_restored_sandbox_has_its_keep_alive_tracked(
     assert restored.resumes == [100]
 
 
-async def test_a_cancelled_restore_keeps_the_live_sandboxs_keep_alive(
+async def test_a_cancelled_restore_keeps_the_keep_alive_of_the_live_sandbox(
     slow_creator: _SlowCreator,
 ) -> None:
     first = FakeSandbox(sandbox_id="first")
