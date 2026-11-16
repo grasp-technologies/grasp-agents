@@ -98,7 +98,12 @@ The tool-call name must match the tool's registered `name` (here `"add"`).
   environments with a `label` of its own, which names their snapshots. Its
   `cleanup()`, called in a `finally`, kills every tagged sandbox and deletes every
   snapshot named with that label or recorded by the test. Find leftovers by that
-  metadata key and by snapshot names starting `grasp-agents-t`.
+  metadata key and by snapshot names starting `grasp-agents-t`. The template
+  build test (`tests/sandbox/test_e2b_config.py`) builds over
+  `code-interpreter-v1`, which takes about 20 seconds, names its template
+  `grasp-agents-t<hex>` and deletes it in a `finally`; look for leftovers among
+  the team's templates with that prefix. Never delete templates a test did not
+  create.
 - Some tests pin a specific model on purpose (feature-support pairs, a nonexistent
   model for error paths). Keep those pins.
 - **Diagnosing failures.** HTTP 429 with `insufficient_quota` is an account

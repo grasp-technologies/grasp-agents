@@ -5,11 +5,20 @@ Schema validation, the config -> Dockerfile mapping and what ``build()`` does
 for each state of a template's latest build run **offline**, against
 ``FakeTemplateAPI`` — no E2B key, no build, no network. Gated only on the
 optional ``e2b`` package being importable.
+
+The ``integration``-marked tests at the end call E2B; run them unsandboxed with
+``E2B_API_KEY`` set:
+``uv run pytest -m integration tests/sandbox/test_e2b_config.py``. A template
+they build is named ``grasp-agents-t<hex>`` and deleted in a ``finally``, and
+its sandbox carries the metadata key :data:`TAG_KEY` and a short keep-alive.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import shlex
+import uuid
 from typing import TYPE_CHECKING
 
 import pytest
@@ -18,7 +27,15 @@ pytest.importorskip("e2b")
 
 import json
 
-from e2b import BuildException, Template
+from e2b import BuildException, Template, TemplateException
+from e2b.api import AsyncApiClient, encode_path_param
+from e2b.api.client.api.templates import (
+    delete_templates_template_id,
+    get_templates_aliases_alias,
+    get_templates_template_id,
+)
+from e2b.api.client.models import TemplateAliasResponse, TemplateWithBuilds
+from e2b.connection_config import ConnectionConfig
 from pydantic import ValidationError
 
 from grasp_agents.sandbox.e2b.config import (
@@ -33,11 +50,14 @@ from grasp_agents.sandbox.e2b.config import (
     TemplateBase,
     load_e2b_config,
 )
-from grasp_agents.sandbox.e2b.templates import TemplateBuildState
+from grasp_agents.sandbox.e2b.templates import E2BTemplateClient, TemplateBuildState
 from tests.sandbox._e2b_fakes import FakeTemplateAPI
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from e2b.api.client.models import TemplateBuild
+    from e2b.template.main import TemplateBuilder, TemplateFinal
 
 
 def test_to_dockerfile_maps_base_and_steps() -> None:
@@ -244,3 +264,123 @@ async def test_template_base_builds_on_an_existing_e2b_template() -> None:
     assert "pip install six==1.16.0" in json.dumps(built["steps"])
     with pytest.raises(ValueError, match="another template"):
         config.to_dockerfile()
+
+
+# --- live --------------------------------------------------------------------
+
+# bool, not the key itself — a raw key in a module global can surface in logs.
+_HAS_E2B_KEY = bool(os.getenv("E2B_API_KEY"))
+_live = pytest.mark.skipif(not _HAS_E2B_KEY, reason="needs E2B_API_KEY")
+
+TAG_KEY = "grasp-agents-live-test"
+KEEP_ALIVE = 180  # seconds; a leftover sandbox dies on its own after this
+
+
+class CountingTemplates(E2BTemplateClient):
+    """E2B's template API, counting the builds it starts."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.builds = 0
+
+    async def build(
+        self,
+        template: TemplateBuilder | TemplateFinal,
+        name: str,
+        *,
+        tags: list[str] | None,
+        cpu_count: int,
+        memory_mb: int,
+        skip_cache: bool,
+    ) -> None:
+        self.builds += 1
+        await super().build(
+            template,
+            name,
+            tags=tags,
+            cpu_count=cpu_count,
+            memory_mb=memory_mb,
+            skip_cache=skip_cache,
+        )
+
+
+async def _template_id(client: AsyncApiClient, name: str) -> str | None:
+    alias = await get_templates_aliases_alias.asyncio_detailed(
+        encode_path_param(name), client=client
+    )
+    if not isinstance(alias.parsed, TemplateAliasResponse):
+        return None
+    return alias.parsed.template_id
+
+
+async def _builds(name: str) -> list[TemplateBuild]:
+    """Every build E2B records for the template ``name``."""
+    async with AsyncApiClient(ConnectionConfig()) as client:
+        template_id = await _template_id(client, name)
+        assert template_id is not None
+        found = await get_templates_template_id.asyncio_detailed(
+            encode_path_param(template_id), client=client
+        )
+    assert isinstance(found.parsed, TemplateWithBuilds)
+    return found.parsed.builds
+
+
+async def _delete_template(name: str) -> None:
+    async with AsyncApiClient(ConnectionConfig()) as client:
+        template_id = await _template_id(client, name)
+        if template_id is not None:
+            await delete_templates_template_id.asyncio_detailed(
+                encode_path_param(template_id), client=client
+            )
+
+
+@pytest.mark.integration
+@_live
+@pytest.mark.asyncio
+async def test_e2b_live_template_is_built_once_and_reused() -> None:
+    run = uuid.uuid4().hex[:12]
+    name = f"grasp-agents-t{run}"
+    config = E2BTemplateConfig(
+        base=TemplateBase(template="code-interpreter-v1"),
+        steps=[PipInstall(op="pip_install", packages=["inflection==0.5.1"])],
+        alias=name,
+    )
+    templates = CountingTemplates()
+    try:
+        assert await config.build(templates=templates) == name
+        assert await config.build(templates=templates) == name
+        assert templates.builds == 1
+
+        environment = await E2BEnvironmentConfig(
+            template_build=config,
+            label=f"t{run}",
+            metadata={TAG_KEY: run},
+            sandbox_timeout=KEEP_ALIVE,
+        ).build()
+        assert len(await _builds(name)) == 1
+        async with environment:
+            exec_backend = environment.exec_backend
+            assert exec_backend is not None
+            check = (
+                "import importlib.metadata as m, inflection; "
+                "print(m.version('inflection'))"
+            )
+            imported = await exec_backend.execute(f"python3 -c {shlex.quote(check)}")
+        assert imported.returncode == 0, imported.stderr
+        assert imported.stdout.strip() == "0.5.1"
+    finally:
+        await _delete_template(name)
+    assert await E2BTemplateClient().latest_build(name) is None
+
+
+@pytest.mark.integration
+@_live
+@pytest.mark.asyncio
+async def test_e2b_live_latest_build_of_a_missing_and_a_foreign_name() -> None:
+    templates = E2BTemplateClient()
+    assert (
+        await templates.latest_build(f"grasp-agents-t{uuid.uuid4().hex[:12]}") is None
+    )
+    # E2B's public template belongs to another team: this team cannot build it.
+    with pytest.raises(TemplateException, match="403"):
+        await templates.latest_build("code-interpreter-v1")
