@@ -86,8 +86,7 @@ class GrepInput(BaseModel):
         description=(
             "Filter by file type using rg's named types (``py``, ``js``, "
             "``rust``, ``go``, ``md``, ...). See ``rg --type-list`` for "
-            "the full set. Some backends support only common types; use "
-            "``glob`` for the rest."
+            "the full set."
         ),
     )
     output_mode: OutputMode = Field(
