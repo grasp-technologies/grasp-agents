@@ -82,6 +82,7 @@
         "pbar",
         "pgid",
         "procs",
+        "pypirc",
         "pyqwest",
         "quiesces",
         "redef",
