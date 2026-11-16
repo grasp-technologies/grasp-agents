@@ -26,10 +26,17 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from grasp_agents.sandbox import E2BSandboxExpiredError, e2b_environment
+from grasp_agents.sandbox import (
+    FRESH_SNAPSHOT_REF,
+    E2BSandboxExpiredError,
+    e2b_environment,
+)
+from grasp_agents.sandbox.exec_backend import TerminationReason
 from grasp_agents.session_context import SessionContext
-from grasp_agents.tools.bash_common import BashInput
+from grasp_agents.tools.bash_common import BashInput, BashResult
 from grasp_agents.tools.bash_session import BashSession, BashSessionHolder
+from grasp_agents.tools.code_interpreter import RunPython, RunPythonInput
+from grasp_agents.types.content import InputText
 from tests._helpers import _make_agent_ctx
 
 if TYPE_CHECKING:
@@ -113,6 +120,192 @@ def live_id(env: E2BEnvironment) -> str:
     return str(sandbox.sandbox_id)
 
 
+class Agent:
+    """The per-agent state the shell and kernel tools read, over ``env``."""
+
+    def __init__(self, env: E2BEnvironment) -> None:
+        self.ctx = SessionContext[None](environment=env)
+        self.agent_ctx = _make_agent_ctx()
+        self.agent_ctx.session_holder = BashSessionHolder()
+
+    async def shell(self, command: str, *, timeout: float = 30) -> BashResult:
+        return await BashSession()._run(
+            BashInput(command=command, timeout=timeout),
+            ctx=self.ctx,
+            agent_ctx=self.agent_ctx,
+        )
+
+    async def python(self, code: str) -> str:
+        parts = await RunPython()._run(
+            RunPythonInput(code=code), ctx=self.ctx, agent_ctx=self.agent_ctx
+        )
+        return "".join(part.text for part in parts if isinstance(part, InputText))
+
+
+# --- lazy start --------------------------------------------------------------
+
+
+@_live
+async def test_a_lazy_start_creates_one_sandbox_and_exit_kills_it() -> None:
+    run = LiveRun()
+    try:
+        async with run.env(lazy=True) as env:
+            assert await run.tagged() == set()
+
+            await asyncio.gather(
+                *(env.file_backend.mkdir(Path(f"{WS}/d{i}")) for i in range(4)),
+                env.exec_backend.execute("true"),
+            )
+            assert env.started
+            assert await run.tagged() == {live_id(env)}
+
+        async def none_left() -> bool:
+            return await run.tagged() == set()
+
+        await until(none_left)
+    finally:
+        await run.cleanup()
+
+
+@_live
+async def test_restoring_the_fresh_ref_starts_over_on_the_next_call() -> None:
+    run = LiveRun()
+    try:
+        async with run.env(lazy=True) as env:
+            note = Path(f"{WS}/note.txt")
+            await env.file_backend.write_bytes(note, b"before", mode=0o644)
+            first = live_id(env)
+
+            await env.restore(FRESH_SNAPSHOT_REF)
+            assert not env.started
+
+            async def first_is_gone() -> bool:
+                return first not in await run.tagged()
+
+            await until(first_is_gone)
+            assert not await env.file_backend.exists(note)
+            assert live_id(env) != first
+    finally:
+        await run.cleanup()
+
+
+# --- commands ----------------------------------------------------------------
+
+
+@_live
+async def test_a_command_past_its_timeout_does_not_cancel_the_caller() -> None:
+    run = LiveRun()
+    try:
+        async with run.env(lazy=True) as env:
+            await env.exec_backend.execute("true")  # start outside the timing
+            t0 = time.monotonic()
+            result = await env.exec_backend.execute("echo started; sleep 60", timeout=3)
+
+            assert result.reason is TerminationReason.OVERALL_TIMEOUT
+            assert "started" in result.stdout
+            assert time.monotonic() - t0 < 20
+            task = asyncio.current_task()
+            assert task is not None
+            assert task.cancelling() == 0
+            await asyncio.sleep(0.5)  # a stray cancel would land here
+            assert (await env.exec_backend.execute("true")).returncode == 0
+    finally:
+        await run.cleanup()
+
+
+@_live
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "E2B's kill reaches the shell it runs the command in (/bin/bash -l -c), "
+        "not the processes that shell started; docs/sandbox.md, Limitations"
+    ),
+)
+async def test_a_timeout_stops_the_processes_the_command_started() -> None:
+    run = LiveRun()
+    try:
+        async with run.env(lazy=True) as env:
+            await env.exec_backend.execute("true")
+            await env.exec_backend.execute("sleep 41.37; echo done", timeout=2)
+            await asyncio.sleep(1)
+            left = await env.exec_backend.execute(
+                "ps -eo args | grep -c '^sleep 41.37' || true"
+            )
+            assert left.stdout.strip() == "0"
+    finally:
+        await run.cleanup()
+
+
+# --- shells and kernels across a pause, a snapshot and a restore ------------
+
+
+@_live
+async def test_a_shell_answers_after_a_snapshot_and_a_pause() -> None:
+    run = LiveRun()
+    try:
+        async with run.env(lazy=True) as env:
+            agent = Agent(env)
+            await agent.shell("cd /tmp && export MARK=kept")
+            run.snapshots.append(await env.snapshot())
+            after_snapshot = await agent.shell("echo $MARK; pwd")
+            await agent.shell("cd /tmp && export MARK=kept")
+            await env.pause()
+            await env.resume()
+            after_resume = await agent.shell("echo $MARK; pwd")
+
+        for result in (after_snapshot, after_resume):
+            # The command ran: it reports its output, never a timeout.
+            assert result.reason is TerminationReason.EXIT
+            assert result.returncode == 0
+            reattached = result.stdout.split() == ["kept", "/tmp"]
+            reopened = "shell session was reset" in result.stderr
+            assert reattached or reopened, result
+    finally:
+        await run.cleanup()
+
+
+@_live
+async def test_a_kernel_keeps_its_variables_across_pause_and_resume() -> None:
+    run = LiveRun()
+    try:
+        async with run.env(lazy=True, code_interpreter=True) as env:
+            agent = Agent(env)
+            assert "status=ok" in await agent.python("x = 41")
+            await env.pause()
+            await env.resume()
+
+            out = await agent.python("print(x + 1)")
+            assert "42" in out
+            assert "kernel was restarted" not in out
+    finally:
+        await run.cleanup()
+
+
+@_live
+async def test_a_kernel_restored_past_opens_a_fresh_context_with_a_notice() -> None:
+    run = LiveRun()
+    try:
+        async with run.env(lazy=True, code_interpreter=True) as env:
+            await env.exec_backend.execute("true")
+            before_kernel = await env.snapshot()
+            run.snapshots.append(before_kernel)
+            agent = Agent(env)
+            assert "status=ok" in await agent.python("x = 1")
+            holder = agent.agent_ctx.ipy_kernel_holder
+            assert holder is not None
+            # Seeded as a cold resume would be, with a context the snapshot lacks.
+            holder.rebind(holder.context_id)
+
+            await env.restore(before_kernel)
+
+            out = await agent.python("print('x' in globals())")
+            assert "status=ok" in out
+            assert "False" in out
+            assert "kernel was restarted" in out
+    finally:
+        await run.cleanup()
+
+
 # --- a sandbox E2B removed ---------------------------------------------------
 
 
@@ -191,6 +384,7 @@ async def test_resuming_another_sandbox_kills_the_previous_one() -> None:
     run = LiveRun()
     try:
         other = await run.create_sandbox()
+        await other.files.make_dir(WS)  # as an environment like this one would
         async with run.env(lazy=True) as env:
             await env.exec_backend.execute("true")
             first = live_id(env)
