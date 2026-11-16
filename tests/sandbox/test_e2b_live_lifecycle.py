@@ -546,11 +546,16 @@ async def test_sandboxes_are_tagged_and_snapshots_named_and_deletable() -> None:
             assert await run.named() == {snapshot}
             await env.restore(snapshot)
             assert (await env.file_backend.read_text(note))[0] == "kept"
-            # The restored sandbox was created from it, so E2B keeps it.
-            assert not await env.delete_snapshot(snapshot)
+            # The restored sandbox was created from it, so E2B refuses to
+            # delete it yet: the environment takes the delete over.
+            assert await env.delete_snapshot(snapshot)
+            assert await run.named() == {snapshot}
 
-        assert await env.delete_snapshot(snapshot)
-        assert await run.named() == set()
+        # Exit killed that sandbox, then deleted the snapshot.
+        async def deleted() -> bool:
+            return await run.named() == set()
+
+        await until(deleted)
         with pytest.raises(SandboxException):
             await AsyncSandbox.create(template=snapshot, timeout=30)
     finally:
