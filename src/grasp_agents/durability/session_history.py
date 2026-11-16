@@ -79,9 +79,11 @@ async def read_fs_snapshot_refs(
     rollback boundaries. These are the snapshots a resume or a rollback may
     still restore, so keep them when deleting snapshots any other way.
 
-    A record that is missing or unreadable is skipped, as resume treats it.
-    The store-wide scan finds sessions by their session record, which every
-    session that took a snapshot has.
+    A missing record is skipped, but an unreadable one raises (a
+    ``ValidationError``, or ``CheckpointSchemaError`` for a newer schema):
+    its refs would otherwise be missing from what you keep. The store-wide
+    scan finds sessions by their session record, which every session that
+    took a snapshot has.
     """
     if session_key is None:
         suffix = f"/{CheckpointKind.SESSION}"
@@ -96,19 +98,17 @@ async def read_fs_snapshot_refs(
         return refs
 
     refs = set[str]()
-    session_record_key = make_store_key(session_key, CheckpointKind.SESSION)
-    record = await store.load_json(
-        session_record_key,
-        SessionCheckpoint,
-        subject=f"session checkpoint at {session_record_key}",
-    )
-    if record is not None and record.fs_snapshot_ref is not None:
-        refs.add(record.fs_snapshot_ref)
+    raw = await store.load(make_store_key(session_key, CheckpointKind.SESSION))
+    if raw is not None:
+        record = SessionCheckpoint.model_validate_json(raw)
+        if record.fs_snapshot_ref is not None:
+            refs.add(record.fs_snapshot_ref)
     prefix = make_store_key(session_key, CheckpointKind.AGENT) + "/"
     for key in await store.list_keys(prefix):
-        head = await store.load_json(key, AgentCheckpoint, subject=f"head at {key}")
-        if head is None:
+        raw = await store.load(key)
+        if raw is None:
             continue
+        head = AgentCheckpoint.model_validate_json(raw)
         for mark in (head.current, *head.step_watermarks):
             if mark.fs_snapshot_ref is not None:
                 refs.add(mark.fs_snapshot_ref)

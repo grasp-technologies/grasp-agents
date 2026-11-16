@@ -51,6 +51,8 @@ class _Account:
     snapshots: list[SimpleNamespace] = field(default_factory=list)
     in_use: set[str] = field(default_factory=set)
     calls: list[tuple[str, str, dict[str, Any]]] = field(default_factory=list)
+    # E2B lists every state when asked for none; some listings may ignore it.
+    ignores_state_filter: bool = False
 
     def sandbox(
         self,
@@ -79,7 +81,11 @@ class _Account:
     def list(self, query: SandboxQuery | None = None, **opts: Any) -> _Pages:
         self.calls.append(("list", "", opts))
         wanted = query.metadata or {} if query is not None else {}
-        states = query.state if query is not None and query.state else None
+        states = (
+            query.state
+            if query is not None and query.state and not self.ignores_state_filter
+            else None
+        )
         return _Pages(
             [
                 info
@@ -230,6 +236,47 @@ async def test_the_api_key_and_domain_reach_every_call(account: _Account) -> Non
 
     opts = {"api_key": "key-1", "domain": "e2b.example"}
     assert all(call_opts == opts for _, _, call_opts in account.calls)
+
+
+async def test_an_empty_states_is_refused(account: _Account) -> None:
+    _seed(account)
+
+    with pytest.raises(ValueError, match="states"):
+        await sweep_e2b(older_than=2 * HOUR, keep_snapshots=(), label="prod", states=())
+
+    assert account.acted() == []
+
+
+async def test_a_sandbox_in_a_state_not_asked_for_is_never_killed(
+    account: _Account,
+) -> None:
+    _seed(account)
+    account.ignores_state_filter = True
+
+    report = await sweep_e2b(
+        older_than=2 * HOUR, keep_snapshots=(), label="prod", dry_run=False
+    )
+
+    assert [s.sandbox_id for s in report.killed] == ["old-paused"]
+    assert ("kill", "old-running") not in account.acted()
+
+
+async def test_a_badly_dated_snapshot_is_reported_and_skipped(
+    account: _Account,
+) -> None:
+    refs = _seed(account)
+    bad = account.snapshot("team/grasp-agents-prod-20261399t999999-0000000f")
+
+    report = await sweep_e2b(
+        older_than=2 * HOUR,
+        keep_snapshots={refs["kept"]},
+        label="prod",
+        dry_run=False,
+    )
+
+    assert report.undated == [bad]
+    assert ("delete_snapshot", bad) not in account.acted()
+    assert ("delete_snapshot", refs["old"]) in account.acted()
 
 
 async def test_a_negative_age_is_refused(account: _Account) -> None:
