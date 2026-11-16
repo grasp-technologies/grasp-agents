@@ -328,11 +328,12 @@ async def test_exit_waits_for_a_start_and_kills_its_sandbox(
         # Finish the create only once the exit is under way.
         asyncio.get_running_loop().call_soon(slow_creator.gate.set)
 
-    with pytest.raises(RuntimeError, match="while it was starting"):
-        await first_use
+    # Exit returned only after the start finished and killed its sandbox.
     (started,) = slow_creator.made
     assert started.killed
     assert not env.started
+    with pytest.raises(RuntimeError, match="while it was starting"):
+        await first_use
 
 
 async def test_restore_waits_for_a_start_in_flight(
@@ -481,6 +482,9 @@ async def test_session_reopens_on_the_next_sandbox_after_a_fresh_restore(
 
     assert len(first.commands.stdin_writes) == 1
     assert len(second.commands.stdin_writes) == 1
+    # A deadline on the shell's stream would cancel whichever task opened it.
+    assert first.commands.shell_timeouts == [0]
+    assert second.commands.shell_timeouts == [0]
 
 
 async def test_stale_session_never_touches_the_next_sandbox(
