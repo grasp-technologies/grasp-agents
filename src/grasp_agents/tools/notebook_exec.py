@@ -110,21 +110,26 @@ class KernelHolder:
     @property
     def context_id(self) -> str | None:
         """
-        The live kernel's durable context id (persist it for resume), or the
-        seeded id if no kernel is open yet (``None`` for non-persistable kernels).
+        The open kernel's durable context id (persist it for resume), or the
+        seeded id while no kernel is open, including after the kernel closed
+        (``None`` for non-persistable kernels).
         """
         kernel = self._kernel
-        if kernel is not None and kernel.context_id is not None:
+        if kernel is not None and not kernel.closed and kernel.context_id is not None:
             return kernel.context_id
         return self._context_id
 
     def rebind(self, context_id: str | None) -> None:
         """
         Seed the context id to re-attach to on the next (re)open — used by resume
-        to point a freshly-built loop's kernel at its persisted context. Takes
-        effect when the kernel is next opened; does not disturb an open kernel.
+        and rollback to point the kernel at the context a restored snapshot
+        kept, or at none. Does not disturb an open kernel. A kernel that already
+        closed (its sandbox was replaced by the restore) is dropped, so the next
+        open is not reported as a reset: the restored state never had it.
         """
         self._context_id = context_id
+        if self._kernel is not None and self._kernel.closed:
+            self._kernel = None
 
     async def close(self) -> None:
         kernel = self._kernel

@@ -507,6 +507,28 @@ async def test_kernel_reattaches_after_a_snapshot_rollback_without_a_reset(
     assert restored.ran == [("first-ctx0", "x")]
 
 
+async def test_rollback_past_a_kernel_opens_a_fresh_one(creator: _Creator) -> None:
+    first = CodeSandbox(sandbox_id="first")
+    restored = CodeSandbox(sandbox_id="restored")  # the snapshot predates the kernel
+    creator._queue.extend([first, restored])
+    holder = KernelHolder()
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        kernel = await holder.get(env.exec_backend)
+        await _execute(kernel, "x = 1")
+        await env.restore("snap-0")
+        holder.rebind(None)  # what rollback_to_step does for this boundary
+        # The next checkpoint records this id with the restored snapshot.
+        assert holder.context_id is None
+
+        reopened = await holder.get(env.exec_backend)
+        assert (await _execute(reopened, "x = 2")).status == "ok"
+        # The rolled-back transcript never used the kernel: nothing was lost.
+        assert not holder.take_reset()
+
+    assert restored.ran == [("restored-ctx0", "x = 2")]
+
+
 async def test_kernel_survives_a_reconnect_to_the_same_sandbox(
     creator: _Creator,
 ) -> None:

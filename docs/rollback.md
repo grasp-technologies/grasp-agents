@@ -92,7 +92,7 @@ async with env:
 - Only the opaque ref is stored. The session record keeps the **latest** ref; a boundary that took no snapshot carries it forward. Each step boundary records the ref of the checkpoint before it, so rolling back to step N restores the filesystem as of the end of step N−1.
 - On a cold resume of a mid-run head over an older restored snapshot, the agent receives a `<system-reminder subject="filesystem restored">` telling it to re-verify files its recent turns claim to have written.
 - A session record carrying a ref resumed without a `SnapshotCapable` environment fails (`RuntimeError`) rather than resuming over divergent files.
-- Kernel context ids are kept only alongside a snapshot and re-attached only when the session actually restored one. A rollback that restores a snapshot from before a kernel existed forgets that kernel's live id, so the next call opens a fresh kernel in the restored sandbox.
+- Kernel context ids are kept only alongside a snapshot and re-attached only when the session actually restored one. A rollback points each kernel at the context its boundary recorded. When the boundary predates the kernel, the kernel the restore closed is dropped with its id: checkpoints record no id for it, and the next call opens a fresh kernel in the restored sandbox without a reset notice, since the rolled-back transcript never used that kernel.
 - Multi-agent hosts register `ctx.add_environment_restored_callback(cb)`; teams use it to post an `<environment_rewind>` notice to the other members after the lead restores a snapshot. Remove it with `remove_environment_restored_callback` when the host is torn down.
 
 ## What rollback never undoes

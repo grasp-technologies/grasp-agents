@@ -941,6 +941,98 @@ async def test_rollback_forgets_kernels_the_boundary_predates(
     assert agent_ctx.nb_kernel_holder.context_id is None
 
 
+class _SandboxKernel:
+    """A kernel that lives in the sandbox its environment held when it opened."""
+
+    def __init__(self, env: _KernelSnapshotEnv, context_id: str) -> None:
+        self._env = env
+        self._sandbox = env.sandbox
+        self.context_id = context_id
+
+    @property
+    def closed(self) -> bool:
+        return self._env.sandbox != self._sandbox
+
+    def take_reset(self) -> bool:
+        return False
+
+    async def close(self) -> None:
+        return None
+
+
+class _KernelSnapshotEnv(_FakeSnapshotEnv):
+    """Each restore replaces the sandbox, and the kernels in it with it."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.sandbox = 0
+        self.opened = 0
+
+    async def restore(self, ref: str) -> None:
+        await super().restore(ref)
+        self.sandbox += 1
+
+    async def open_kernel(self, context_id: str | None = None) -> _SandboxKernel:
+        self.opened += 1
+        return _SandboxKernel(self, context_id or f"ctx-{self.opened}")
+
+
+class _RunCellTool(BaseTool[EchoInput, str, Any]):
+    """Stands in for RunCell: runs through the agent's notebook kernel."""
+
+    def __init__(self, env: _KernelSnapshotEnv) -> None:
+        super().__init__(name="run_cell", description="Runs a cell")
+        self._env = env
+
+    async def _run(
+        self,
+        inp: EchoInput,
+        *,
+        ctx: Any = None,
+        exec_id: str | None = None,
+        progress_callback: Any = None,
+        path: Any = None,
+        agent_ctx: Any = None,
+    ) -> str:
+        await agent_ctx.nb_kernel_holder.get(self._env)
+        return inp.text
+
+
+async def test_rollback_past_a_live_kernel_records_no_context_id(
+    tmp_path: Path,
+) -> None:
+    """
+    A warm agent rolls back to a boundary from before its kernel existed. The
+    restore replaced the kernel's sandbox, so a later checkpoint must not
+    record that kernel's context id with the restored snapshot.
+    """
+    store = InMemoryCheckpointStore()
+    env = _KernelSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [
+            _text_response("a0"),
+            _tool_call_response("run_cell", '{"text": "x = 1"}', "c1"),
+            _text_response("a1"),
+            _text_response("a1 again"),
+        ],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
+        tools=[_RunCellTool(env)],
+    )
+    await agent.run("q0", step=0)
+    await agent.run("q1", step=1)
+    head = (await _stored_checkpoint(store)).current
+    assert head.agent_ctx_state.nb_exec_context_id == "ctx-1"
+
+    await agent.rollback_to_step(1)
+    await agent.run("q1 again", step=1)
+
+    head = (await _stored_checkpoint(store)).current
+    assert head.fs_snapshot_ref is not None
+    assert head.agent_ctx_state.nb_exec_context_id is None
+
+
 # ---------- Session writers ----------
 
 
