@@ -478,6 +478,54 @@ async def test_a_sandbox_e2b_paused_with_auto_resume_keeps_its_keep_alive() -> N
         await run.cleanup()
 
 
+# --- network -------------------------------------------------------------------
+
+PYPI = ("pypi.org", "files.pythonhosted.org")
+
+
+async def reaches(env: E2BEnvironment, host: str) -> bool:
+    """Whether a command in the sandbox gets any HTTP answer from ``host``."""
+    result = await env.exec_backend.execute(
+        f"curl -sS -o /dev/null -w '%{{http_code}}' --max-time 8 https://{host}/ "
+        "|| true",
+        timeout=30,
+    )
+    return result.stdout.strip() not in {"", "000"}
+
+
+@_live
+async def test_install_through_an_allowlist_then_cut_the_network() -> None:
+    from grasp_agents.sandbox import NetworkPolicy
+
+    run = LiveRun()
+    try:
+        async with run.env(
+            network=NetworkPolicy.ALLOWLIST, allowed_domains=PYPI
+        ) as env:
+            install = await env.exec_backend.execute(
+                "pip install --user --no-deps --no-cache-dir six==1.16.0 && "
+                "python3 -c 'import six; print(six.__version__)'",
+                timeout=180,
+            )
+            assert install.returncode == 0, install.stderr
+            assert install.stdout.strip().endswith("1.16.0")
+            assert await reaches(env, "pypi.org")
+            assert not await reaches(env, "example.com")
+
+            await env.update_network(NetworkPolicy.NONE)
+
+            assert env.exec_backend.policy.network is NetworkPolicy.NONE
+            assert not await reaches(env, "pypi.org")
+            assert not await reaches(env, "example.com")
+            # A sandbox restored after the change starts without network too.
+            snapshot = await env.snapshot()
+            run.snapshots.append(snapshot)
+            await env.restore(snapshot)
+            assert not await reaches(env, "pypi.org")
+    finally:
+        await run.cleanup()
+
+
 # --- what environments leave on the account ---------------------------------
 
 
