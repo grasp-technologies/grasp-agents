@@ -18,7 +18,11 @@ import pytest
 
 pytest.importorskip("e2b")
 
-from grasp_agents.sandbox import E2BSandboxExpiredError
+from grasp_agents.sandbox import (
+    E2BSandboxExpiredError,
+    NetworkUpdatable,
+    local_environment,
+)
 from grasp_agents.sandbox.e2b import _handle as e2b_handle
 from grasp_agents.sandbox.e2b import environment as e2b_env
 from grasp_agents.sandbox.e2b.config import E2BEnvironmentConfig
@@ -376,6 +380,111 @@ async def test_snapshots_get_unique_names_that_carry_the_label_and_time(
         assert found is not None, name
         taken = dt.datetime.strptime(f"{found.group(1)}+0000", "%Y%m%dt%H%M%S%z")
         assert abs(taken - before) < dt.timedelta(minutes=1)
+
+
+# --- changing the network ----------------------------------------------------
+
+
+async def test_update_network_changes_the_sandbox_and_what_it_reports(
+    creator: _Creator,
+) -> None:
+    sandbox = FakeSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+    env = e2b_environment(
+        allowed_roots=[WS],
+        network=NetworkPolicy.ALLOWLIST,
+        allowed_domains=["pypi.org"],
+    )
+    assert isinstance(env, NetworkUpdatable)
+
+    async with env:
+        await env.update_network(NetworkPolicy.NONE)
+
+        for policy in (env.policy, env.exec_backend.policy):
+            assert policy.network is NetworkPolicy.NONE
+            assert policy.allowed_domains == ()
+            assert policy.allowed_roots == (Path(WS),)
+
+    assert sandbox.network_updates == [{"allow_internet_access": False}]
+
+
+async def test_sandboxes_created_after_an_update_use_its_network(
+    creator: _Creator,
+) -> None:
+    async with e2b_environment(allowed_roots=[WS]) as env:
+        await env.update_network(
+            NetworkPolicy.ALLOWLIST,
+            allowed_domains=["pypi.org", "evil.org"],
+            denied_domains=["evil.org"],
+        )
+        await env.restore("snap-1")
+        await env.update_network(NetworkPolicy.ALL)
+        await env.restore("snap-2")
+
+    first, after_allowlist, after_all = creator.created
+    assert first["allow_internet_access"] is False
+    assert creator.made[0].network_updates[0] == {
+        "allow_internet_access": True,
+        "allow_out": ["pypi.org"],
+        "deny_out": ["0.0.0.0/0"],
+    }
+    assert after_allowlist["allow_internet_access"] is True
+    assert after_allowlist["network"] == {
+        "allow_out": ["pypi.org"],
+        "deny_out": ["0.0.0.0/0"],
+    }
+    assert after_all["allow_internet_access"] is True
+    assert "network" not in after_all
+
+
+async def test_an_update_before_a_lazy_start_reaches_the_start(
+    creator: _Creator,
+) -> None:
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        await env.update_network(NetworkPolicy.ALL)
+        assert creator.created == []
+
+        await env.file_backend.mkdir(Path(f"{WS}/x"))
+
+    assert creator.created[0]["allow_internet_access"] is True
+    assert creator.made[0].network_updates == []
+
+
+async def test_an_update_to_a_sandbox_e2b_removed_applies_to_its_replacement(
+    creator: _Creator,
+) -> None:
+    first, second = FakeSandbox(sandbox_id="first"), FakeSandbox(sandbox_id="second")
+    creator._queue.extend([first, second])
+
+    async with e2b_environment(allowed_roots=[WS], network=NetworkPolicy.ALL) as env:
+        first.expire()
+        with pytest.raises(E2BSandboxExpiredError):
+            await env.update_network(NetworkPolicy.NONE)
+        assert env.policy.network is NetworkPolicy.NONE
+
+        await env.file_backend.mkdir(Path(f"{WS}/x"))
+
+    assert creator.created[1]["allow_internet_access"] is False
+
+
+async def test_an_update_e2b_cannot_enforce_changes_nothing(creator: _Creator) -> None:
+    sandbox = FakeSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+
+    async with e2b_environment(allowed_roots=[WS]) as env:
+        with pytest.raises(NotImplementedError):
+            await env.update_network(
+                NetworkPolicy.ALLOWLIST,
+                allowed_domains=["*.example.com"],
+                denied_domains=["evil.example.com"],
+            )
+        assert env.policy.network is NetworkPolicy.NONE
+
+    assert sandbox.network_updates == []
+
+
+async def test_local_environments_cannot_change_their_network(tmp_path: Path) -> None:
+    assert not isinstance(local_environment(allowed_roots=[tmp_path]), NetworkUpdatable)
 
 
 # --- lifecycle changes while a start is in flight ---------------------------

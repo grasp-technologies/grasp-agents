@@ -18,7 +18,7 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any
 
-from .environment import ExecutionEnvironment, SnapshotCapable
+from .environment import ExecutionEnvironment, NetworkUpdatable, SnapshotCapable
 from .exec_backend import ExecBackend, ExecChunk, ExecResult, TerminationReason
 from .policy import NetworkPolicy, SandboxPolicy
 
@@ -114,6 +114,7 @@ __all__ = [
     "LocalExecBackend",
     "NetworkConfig",
     "NetworkPolicy",
+    "NetworkUpdatable",
     "ProcessSupervisor",
     "SandboxPolicy",
     "SeatbeltExecBackend",

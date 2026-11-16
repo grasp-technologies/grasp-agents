@@ -9,18 +9,24 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, TypedDict
 
 from e2b import AsyncSandbox
 
-from grasp_agents.sandbox.environment import ExecutionEnvironment, SnapshotCapable
+from grasp_agents.sandbox.environment import (
+    ExecutionEnvironment,
+    NetworkUpdatable,
+    SnapshotCapable,
+)
 from grasp_agents.sandbox.policy import NetworkPolicy, SandboxPolicy
 
 from ._handle import (
     DEFAULT_EXEC_TIMEOUT,
     DEFAULT_WORKSPACE,
+    E2BSandboxExpiredError,
     SandboxHandle,
     consume_outcome,
     kill_quietly,
@@ -34,7 +40,7 @@ from .file_backend import E2BFileBackend
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Mapping, Sequence
 
-    from e2b import SandboxNetworkOpts
+    from e2b import SandboxNetworkOpts, SandboxNetworkUpdate
     from e2b.connection_config import ApiParams
 
 logger = logging.getLogger(__name__)
@@ -103,7 +109,7 @@ def _sandbox_cls(code_interpreter: bool) -> type[AsyncSandbox]:
     return CISandbox
 
 
-class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
+class E2BEnvironment(ExecutionEnvironment, SnapshotCapable, NetworkUpdatable):
     """
     An :class:`ExecutionEnvironment` over an E2B cloud sandbox, with
     :class:`SnapshotCapable` wired to E2B's native snapshots (``snapshot`` /
@@ -343,6 +349,78 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         # Create from the snapshot instead of the configured template.
         params: E2BCreateParams = {**(self._create_params or {}), "template": ref}
         return await _sandbox_cls(self._code_interpreter).create(**params)
+
+    async def update_network(
+        self,
+        network: NetworkPolicy,
+        *,
+        allowed_domains: Sequence[str] = (),
+        denied_domains: Sequence[str] = (),
+    ) -> None:
+        """
+        Change the sandbox's egress to ``network`` (with ``allowed_domains``
+        and ``denied_domains``, as :func:`e2b_environment` takes them), and
+        record it: :attr:`policy` and the exec backend's report it, and every
+        sandbox the environment creates afterwards (a lazy start, a restore,
+        the replacement of one E2B removed) starts with it. Before a lazy
+        start it only records.
+
+        When E2B no longer has the sandbox, the change is still recorded for
+        its replacement and :class:`E2BSandboxExpiredError` is raised. A
+        sandbox :meth:`pause` paused refuses the change; :meth:`resume` it
+        first. ``resume()`` of another sandbox keeps that sandbox's own
+        network.
+
+        Raises ``NotImplementedError``, changing nothing, for a policy E2B
+        cannot enforce (``LOOPBACK``; a denied host an allowed wildcard
+        covers).
+        """
+        policy = replace(
+            self._policy,
+            network=network,
+            allowed_domains=tuple(allowed_domains),
+            denied_domains=tuple(denied_domains),
+        )
+        internet, options = e2b_egress(policy)
+        update: SandboxNetworkUpdate = {"allow_internet_access": internet}
+        if options is not None and "deny_out" in options:
+            update["deny_out"] = options["deny_out"]
+        if options is not None and "allow_out" in options:
+            update["allow_out"] = options["allow_out"]
+        async with self._holder.lock:
+            sandbox = self._holder.sandbox
+            try:
+                if sandbox is not None:
+                    await self._apply_network(sandbox, update)
+            except E2BSandboxExpiredError:
+                self._adopt_network(policy, internet, options)
+                raise
+            self._adopt_network(policy, internet, options)
+
+    async def _apply_network(
+        self, sandbox: AsyncSandbox, update: SandboxNetworkUpdate
+    ) -> None:
+        try:
+            await sandbox.update_network(update)
+        except Exception as exc:
+            await self._holder.raise_if_expired(sandbox, exc)
+            raise
+
+    def _adopt_network(
+        self,
+        policy: SandboxPolicy,
+        internet: bool,
+        options: SandboxNetworkOpts | None,
+    ) -> None:
+        self._policy = policy
+        self._exec_backend.adopt_network(policy)
+        if self._create_params is None:
+            return
+        self._create_params["allow_internet_access"] = internet
+        if options is None:
+            self._create_params.pop("network", None)
+        else:
+            self._create_params["network"] = options
 
     async def pause(self) -> str:
         """

@@ -104,6 +104,19 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
     def policy(self) -> SandboxPolicy:
         return self._policy
 
+    def adopt_network(self, policy: SandboxPolicy) -> None:
+        """
+        Report ``policy``'s egress (``network`` and the domain lists) from now
+        on, as :meth:`E2BEnvironment.update_network` applied it to the
+        sandbox; the rest of the policy stays.
+        """
+        self._policy = replace(
+            self._policy,
+            network=policy.network,
+            allowed_domains=policy.allowed_domains,
+            denied_domains=policy.denied_domains,
+        )
+
     async def execute(
         self,
         command: str,
