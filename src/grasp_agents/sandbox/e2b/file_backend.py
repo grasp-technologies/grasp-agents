@@ -234,8 +234,8 @@ class E2BFileBackend(FileBackend):
         return resolved
 
     async def stat(self, path: Path) -> FileStat:
-        sb = await self._holder.ensure()
-        info = await sb.files.get_info(wire(path))
+        async with self._holder.use() as sb:
+            info = await sb.files.get_info(wire(path))
         return FileStat(
             mtime=mtime(info),
             mode=_file_mode(info),
@@ -243,30 +243,30 @@ class E2BFileBackend(FileBackend):
         )
 
     async def exists(self, path: Path) -> bool:
-        sb = await self._holder.ensure()
-        return bool(await sb.files.exists(wire(path)))
+        async with self._holder.use() as sb:
+            return bool(await sb.files.exists(wire(path)))
 
     async def parent_exists(self, path: Path) -> bool:
         parent = PurePosixPath(path).parent
         if str(parent) == wire(path):
             return True
-        sb = await self._holder.ensure()
-        return bool(await sb.files.exists(str(parent)))
+        async with self._holder.use() as sb:
+            return bool(await sb.files.exists(str(parent)))
 
     # Both reads take the mtime before the content: a write landing in between
     # then makes the next conditional write refuse, instead of letting an
     # mtime newer than the content pass over that write.
 
     async def read_text(self, path: Path) -> tuple[str, float]:
-        sb = await self._holder.ensure()
-        info = await sb.files.get_info(wire(path))
-        content = await sb.files.read(wire(path), "text")
+        async with self._holder.use() as sb:
+            info = await sb.files.get_info(wire(path))
+            content = await sb.files.read(wire(path), "text")
         return str(content), mtime(info)
 
     async def read_bytes(self, path: Path) -> tuple[bytes, float]:
-        sb = await self._holder.ensure()
-        info = await sb.files.get_info(wire(path))
-        content = await sb.files.read(wire(path), "bytes")
+        async with self._holder.use() as sb:
+            info = await sb.files.get_info(wire(path))
+            content = await sb.files.read(wire(path), "bytes")
         return bytes(content), mtime(info)
 
     async def write_bytes(
@@ -278,24 +278,24 @@ class E2BFileBackend(FileBackend):
         overwrite: bool = True,
     ) -> float:
         del mode, overwrite  # E2B writes always overwrite; no mode on the API
-        sb = await self._holder.ensure()
-        # e2b types write()'s data param as a bare ``IO`` (-> ``IO[Unknown]``).
-        await sb.files.write(wire(path), data)  # pyright: ignore[reportUnknownMemberType]
-        info = await sb.files.get_info(wire(path))
+        async with self._holder.use() as sb:
+            # e2b types write()'s data param as a bare ``IO`` (-> ``IO[Unknown]``).
+            await sb.files.write(wire(path), data)  # pyright: ignore[reportUnknownMemberType]
+            info = await sb.files.get_info(wire(path))
         return mtime(info)
 
     async def delete(self, path: Path) -> None:
-        sb = await self._holder.ensure()
-        await sb.files.remove(wire(path))
+        async with self._holder.use() as sb:
+            await sb.files.remove(wire(path))
 
     async def mkdir(self, path: Path) -> None:
-        sb = await self._holder.ensure()
-        await sb.files.make_dir(wire(path))
+        async with self._holder.use() as sb:
+            await sb.files.make_dir(wire(path))
 
     async def list_dir(self, path: Path, *, recursive: bool = False) -> list[FileEntry]:
         depth = RECURSIVE_DEPTH if recursive else 1
-        sb = await self._holder.ensure()
-        entries = await sb.files.list(wire(path), depth)
+        async with self._holder.use() as sb:
+            entries = await sb.files.list(wire(path), depth)
         out: list[FileEntry] = []
         for e in entries:
             p = type(path)(str(e.path))
@@ -367,9 +367,8 @@ class E2BFileBackend(FileBackend):
             after_context=after_context,
             context=context,
         )
-        stdout, code = await _run_capture(
-            await self._holder.ensure(), cmd, cwd=wire(self._allowed_roots[0])
-        )
+        async with self._holder.use() as sb:
+            stdout, code = await _run_capture(sb, cmd, cwd=wire(self._allowed_roots[0]))
         if code >= 2:
             raise OSError(f"remote grep failed (exit {code}) for pattern {pattern!r}")
         return _parse_grep(

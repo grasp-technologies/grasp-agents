@@ -190,6 +190,11 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         return self._holder.sandbox is not None
 
     async def __aenter__(self) -> Self:
+        # A sandbox E2B removes is replaced on the next call, when there are
+        # create params to start one from.
+        self._holder.replace_expired_with(
+            self._start if self._create_params is not None else None
+        )
         if self._holder.sandbox is not None:
             await self._prepare(self._holder.sandbox, created_here=False)
             self._entered = True
@@ -275,6 +280,9 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         sandbox = self._holder.require()
         try:
             snap = await sandbox.create_snapshot()
+        except Exception as exc:
+            await self._holder.raise_if_expired(sandbox, exc)
+            raise
         finally:
             self._holder.drop_streams()
         return str(snap.snapshot_id)

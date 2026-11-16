@@ -16,6 +16,7 @@ import pytest
 
 pytest.importorskip("e2b")
 
+from grasp_agents.sandbox import E2BSandboxExpiredError
 from grasp_agents.sandbox.e2b import _handle as e2b_handle
 from grasp_agents.sandbox.e2b import environment as e2b_env
 from grasp_agents.sandbox.e2b.config import E2BEnvironmentConfig
@@ -853,3 +854,121 @@ async def test_kernel_survives_a_reconnect_to_the_same_sandbox(
         assert not first.killed
 
     assert reconnected.ran == [("first-ctx0", "x")]
+
+
+# --- a sandbox E2B removed ---------------------------------------------------
+
+
+@pytest.mark.parametrize("lazy", [True, False])
+async def test_a_sandbox_e2b_removed_is_replaced_on_the_next_call(
+    creator: _Creator, lazy: bool
+) -> None:
+    first, second = FakeSandbox(sandbox_id="first"), FakeSandbox(sandbox_id="second")
+    creator._queue.extend([first, second])
+
+    async with e2b_environment(allowed_roots=[WS], lazy=lazy) as env:
+        await env.file_backend.mkdir(Path(f"{WS}/a"))
+        first.expire()  # its keep-alive timeout, say
+
+        # The call that finds out fails plainly; it is not retried in secret.
+        with pytest.raises(E2BSandboxExpiredError, match="first expired"):
+            await env.file_backend.mkdir(Path(f"{WS}/b"))
+        assert not env.started
+
+        await env.file_backend.mkdir(Path(f"{WS}/c"))
+        assert env.started
+
+    assert len(creator.created) == 2
+    assert f"{WS}/b" not in second.files.made_dirs
+    assert f"{WS}/c" in second.files.made_dirs
+    assert second.killed
+
+
+async def test_a_command_in_a_removed_sandbox_fails_plainly(creator: _Creator) -> None:
+    first = FakeSandbox(sandbox_id="first")
+    creator._queue.append(first)
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        await env.exec_backend.execute("true")
+        first.expire()
+        with pytest.raises(E2BSandboxExpiredError):
+            await env.exec_backend.execute("true")
+        assert (await env.exec_backend.execute("true")).returncode == 0
+
+    assert len(creator.created) == 2
+
+
+async def test_a_shell_in_a_removed_sandbox_reopens_with_a_reset(
+    creator: _Creator,
+) -> None:
+    first = FakeSandbox(sandbox_id="first", commands=ShellCommands())
+    second = FakeSandbox(sandbox_id="second", commands=ShellCommands())
+    creator._queue.extend([first, second])
+    holder = BashSessionHolder()
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        session = await holder.get(env.exec_backend)
+        await _run(session, "cd /tmp")
+        first.expire()
+        with pytest.raises(E2BSandboxExpiredError):
+            await _run(session, "pwd")
+        assert session.closed
+
+        assert (await _run(await holder.get(env.exec_backend), "pwd")).returncode == 0
+        assert holder.take_reset()
+
+    assert [pid for pid, _ in second.commands.stdin_writes] == [1]
+
+
+async def test_a_kernel_in_a_removed_sandbox_reopens_with_a_reset(
+    creator: _Creator,
+) -> None:
+    first, second = CodeSandbox(sandbox_id="first"), CodeSandbox(sandbox_id="second")
+    creator._queue.extend([first, second])
+    holder = KernelHolder()
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        kernel = await holder.get(env.exec_backend)
+        await _execute(kernel, "x = 1")
+        first.expire()
+        with pytest.raises(E2BSandboxExpiredError):
+            await _execute(kernel, "x")
+        assert kernel.closed
+
+        reopened = await holder.get(env.exec_backend)
+        assert (await _execute(reopened, "x = 2")).status == "ok"
+        assert holder.take_reset()
+
+    assert second.ran == [("second-ctx0", "x = 2")]
+
+
+async def test_a_removed_sandbox_the_environment_cannot_replace_stays_an_error(
+    creator: _Creator,
+) -> None:
+    wrapped = FakeSandbox(sandbox_id="wrapped")
+    env = E2BEnvironment.from_sandbox(
+        cast("AsyncSandbox", wrapped),
+        policy=SandboxPolicy(allowed_roots=(Path(WS),)),
+    )
+
+    async with env:
+        wrapped.expire()
+        with pytest.raises(E2BSandboxExpiredError, match="cannot start another"):
+            await env.file_backend.mkdir(Path(f"{WS}/a"))
+        with pytest.raises(E2BSandboxExpiredError, match="cannot start another"):
+            await env.file_backend.mkdir(Path(f"{WS}/b"))
+
+    assert creator.created == []
+
+
+async def test_a_failure_the_sandbox_survived_keeps_it(creator: _Creator) -> None:
+    sandbox = FakeSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        await env.file_backend.mkdir(Path(f"{WS}/a"))
+        with pytest.raises(KeyError):  # the fake's missing file
+            await env.file_backend.read_text(Path(f"{WS}/missing.txt"))
+        assert env.started
+
+    assert len(creator.created) == 1

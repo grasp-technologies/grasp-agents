@@ -44,7 +44,7 @@ from grasp_agents.sandbox.exec_backend import (
 from grasp_agents.sandbox.session_protocol import frame_command, parse_exit_code
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from e2b import AsyncCommandHandle, AsyncSandbox
 
@@ -109,6 +109,8 @@ class E2BExecSession(ExecSession):
         backend: str,
         max_output_chars: int,
         get_stream_epoch: Callable[[], int] | None = None,
+        raise_if_expired: Callable[[AsyncSandbox, Exception], Awaitable[None]]
+        | None = None,
     ) -> None:
         # Returns the sandbox the session was opened on while it is still the
         # live one, else None.
@@ -116,6 +118,9 @@ class E2BExecSession(ExecSession):
         # Changes whenever the sandbox dropped its open streams (a pause,
         # snapshot or resume); None means they are never dropped.
         self._get_stream_epoch = get_stream_epoch
+        # Raises E2BSandboxExpiredError when a failure means E2B no longer
+        # has the sandbox.
+        self._raise_if_expired = raise_if_expired
         self._cwd = cwd
         self._env = env
         self._backend = backend
@@ -142,6 +147,10 @@ class E2BExecSession(ExecSession):
         was = self._was_reset
         self._was_reset = False
         return was
+
+    async def _check_expired(self, sb: AsyncSandbox, exc: Exception) -> None:
+        if self._raise_if_expired is not None:
+            await self._raise_if_expired(sb, exc)
 
     def _current_stream_epoch(self) -> int:
         return 0 if self._get_stream_epoch is None else self._get_stream_epoch()
@@ -184,7 +193,8 @@ class E2BExecSession(ExecSession):
             self._handle = await sb.commands.connect(
                 pid, timeout=0, on_stdout=self._on_stdout, on_stderr=self._on_stderr
             )
-        except Exception:
+        except Exception as exc:
+            await self._check_expired(sb, exc)
             logger.warning(
                 "Could not reattach to the output of E2B shell %s on sandbox %s; "
                 "starting a new shell (its state is lost).",
@@ -209,7 +219,11 @@ class E2BExecSession(ExecSession):
             if self._closed or sb is None:
                 raise RuntimeError("shell session is closed; open a new one")
             start = time.monotonic()
-            await self._ensure_started(sb)
+            try:
+                await self._ensure_started(sb)
+            except Exception as exc:
+                await self._check_expired(sb, exc)
+                raise
             assert self._pid is not None
             if self._stream_epoch != self._current_stream_epoch():
                 await self._reattach(sb, self._pid)
@@ -222,6 +236,7 @@ class E2BExecSession(ExecSession):
                 await sb.commands.send_stdin(self._pid, payload)
             except Exception as exc:
                 await self.close()
+                await self._check_expired(sb, exc)
                 yield ExecChunk(stream="stderr", data=str(exc))
                 yield self._result(-1, start, reason=TerminationReason.SIGNAL)
                 return
@@ -240,9 +255,12 @@ class E2BExecSession(ExecSession):
                     )
                     try:
                         stream, data = await asyncio.wait_for(self._queue.get(), wait)
-                    except TimeoutError:
+                    except TimeoutError as exc:
                         await self.close()
                         completed = True
+                        # A sandbox E2B removed mid-command never sends the
+                        # end markers either.
+                        await self._check_expired(sb, exc)
                         yield self._result(
                             -1,
                             start,

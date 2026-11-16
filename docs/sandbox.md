@@ -15,7 +15,7 @@ An agent gets no shell, kernel or filesystem access unless you wire it. Command 
 | `SessionCapable`, `KernelCapable`, `SnapshotCapable` | `sandbox/exec_backend.py`, `sandbox/kernel.py`, `sandbox/environment.py` | Optional capabilities: runtime-checkable `Protocol`s, detected with `isinstance`. |
 | `local_environment`, `LocalEnvironment` | `sandbox/local/environment.py` | Host filesystem + host subprocesses. |
 | `LocalExecBackend`, `SeatbeltExecBackend`, `SrtExecBackend` | `sandbox/local/` | Exec backends per confinement. |
-| `e2b_environment`, `E2BEnvironment`, `E2BExecBackend`, `E2BFileBackend` | `sandbox/e2b/` | E2B cloud sandbox (`grasp-agents[e2b]`). |
+| `e2b_environment`, `E2BEnvironment`, `E2BExecBackend`, `E2BFileBackend`, `E2BSandboxExpiredError` | `sandbox/e2b/` | E2B cloud sandbox (`grasp-agents[e2b]`). |
 | `EnvironmentConfig`, `load_environment_config`; `E2BEnvironmentConfig`, `E2BTemplateConfig` | `sandbox/config.py`, `sandbox/e2b/config.py` | JSON configs. |
 | `Bash`, `BashSession`, `bash_tools` | `tools/bash.py`, `tools/bash_session.py` | Shell tools. |
 
@@ -118,6 +118,7 @@ async with env:                       # creates the sandbox; kills it on exit
 - **Fresh ref.** Before a lazy start, `snapshot()` returns `FRESH_SNAPSHOT_REF` without starting anything. Restoring that ref drops a lazy environment's sandbox until the next call (and forgets a failed start), starts a new sandbox from the configured template on an eager one, and raises on a `from_sandbox` environment, which has nothing to create one from.
 - **Shells and kernels follow their sandbox.** A shell or kernel is bound to the sandbox it was opened on. Once `restore()` or exit replaces that sandbox, it reports `closed` and never addresses the new one, where its pid could belong to another process. The next `BashSession`, `RunPython` or `RunCell` call opens a new one on the live sandbox, starting a lazy one, and tells the model its state was lost. After a rollback that restored a snapshot, a kernel re-attaches to the code context the snapshot kept, with no reset notice; a kernel whose seeded context the live sandbox does not have opens a fresh one and reports the reset.
 - **Streams across a pause.** `pause()`, `snapshot()` (E2B pauses the sandbox while it takes one) and `resume()` drop the sandbox's open connections, command streams included; its processes survive. A shell reattaches to its output before its next command and keeps its state; if it cannot, it kills the old shell, starts a new one and the result tells the model its shell state was lost. Kernels need nothing: each call is a request of its own, so `resume()` to the same sandbox keeps them.
+- **A sandbox E2B removes.** When E2B no longer has the live sandbox (it reached its keep-alive `sandbox_timeout` or the plan's lifetime cap, or was killed from elsewhere), the call that finds out fails with `E2BSandboxExpiredError`, saying the sandbox's files, shells and kernels are gone; the call is not retried. E2B reports such calls like timeouts, so a failure that could mean either is checked against the sandbox's info first. The environment drops the dead sandbox, and the next call starts a new one from the create params, lazy or eager; shells and kernels bound to the dead one reopen with their reset notices. Nothing is restored from a snapshot. An environment from `from_sandbox` has nothing to create one from, so its calls keep raising the error.
 - Python packages are baked into a template; the framework never installs into a sandbox. `E2BTemplateConfig` describes a template (base image + build steps) and builds it idempotently by alias; `E2BEnvironmentConfig` / `load_e2b_config` describe the whole environment.
 
 ## Shell tools
@@ -153,6 +154,7 @@ async with env:                       # creates the sandbox; kills it on exit
 9. E2B's `pause`, `snapshot`, `resume` and `restore` mark every open command stream as dropped; a shell on the same sandbox reattaches to its output before its next command, or replaces itself and reports the reset through `ExecSession.take_reset` (`SandboxHandle.drop_streams`, `E2BExecSession`).
 10. A lazy E2B environment runs one start at a time, and exit, `restore`, `pause` and `resume` hold the same lock as the start. A start keeps its sandbox whenever the environment is still entered and holding no other sandbox, whether or not a caller still awaits it; otherwise it kills the sandbox and raises (`SandboxHandle.ensure`).
 11. An E2B environment never leaves an owned sandbox it stops holding, or one it obtained for a cancelled call, running unheld: `restore` kills the previous one, `resume` of another sandbox lets go of the previous one as exit would, and a cancelled `restore` or `resume` finishes in a task of its own and releases what it obtained (`E2BEnvironment.restore`, `resume`).
+12. A call that fails because E2B no longer has the sandbox raises `E2BSandboxExpiredError` and drops that sandbox from the environment, which starts a new one on the next call when it has create params; a failure the sandbox survived surfaces unchanged (`SandboxHandle.raise_if_expired`).
 
 ## Limitations
 
@@ -163,6 +165,7 @@ async with env:                       # creates the sandbox; kills it on exit
 - An E2B `restore()` loses persistent shell state; kernel state survives only when a rollback re-attaches the context its snapshot kept.
 - On E2B, a command timeout or a `KillTask` kills the shell running the command, and processes it started may keep running in the sandbox. The local backend kills the command's whole process group.
 - On E2B, a one-shot command still running when `pause()` or `snapshot()` drops the sandbox's connections loses the rest of its output: its call fails or times out, while the command itself may keep running. Only persistent shells reattach.
+- When E2B removes a sandbox, only the call that finds out hears that its files are gone. Other agents sharing the environment find out through their shell and kernel reset notices, or not at all if they only use files.
 - No Docker or SSH exec backend ships; implement `ExecutionEnvironment` / `ExecBackend` for other targets.
 
 ## See also

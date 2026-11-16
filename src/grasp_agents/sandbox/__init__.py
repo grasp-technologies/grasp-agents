@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         NetworkConfig,
         load_environment_config,
     )
+    from .e2b._handle import E2BSandboxExpiredError
     from .e2b.config import (
         E2BEnvironmentConfig,
         E2BTemplateConfig,
@@ -57,6 +58,7 @@ _LAZY: dict[str, str] = {
     "load_environment_config": "config",
     "E2BEnvironment": "e2b.environment",
     "FRESH_SNAPSHOT_REF": "e2b.environment",
+    "E2BSandboxExpiredError": "e2b._handle",
     "E2BEnvironmentConfig": "e2b.config",
     "E2BTemplateConfig": "e2b.config",
     "load_e2b_config": "e2b.config",
@@ -94,6 +96,7 @@ __all__ = [
     "E2BEnvironmentConfig",
     "E2BExecBackend",
     "E2BFileBackend",
+    "E2BSandboxExpiredError",
     "E2BTemplateConfig",
     "EnvironmentConfig",
     "ExecBackend",

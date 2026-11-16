@@ -17,7 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from e2b import CommandExitException, TimeoutException
+from e2b import CommandExitException, SandboxNotFoundException, TimeoutException
 
 WS = "/home/user/workspace"
 
@@ -248,6 +248,19 @@ class FakeCommands:
         """A pause or snapshot drops every open connection to the sandbox."""
 
 
+class GoneAPI:
+    """A sandbox API E2B no longer serves: every call fails as on a 502."""
+
+    def __getattr__(self, name: str) -> Any:
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            raise FakeTimeout(
+                "502: The sandbox was not found: This error is likely due to "
+                "sandbox timeout."
+            )
+
+        return call
+
+
 class FakeSandbox:
     def __init__(
         self,
@@ -256,12 +269,24 @@ class FakeSandbox:
         commands: FakeCommands | None = None,
         sandbox_id: str = "sbx_fake",
     ) -> None:
-        self.files = files or FakeFiles()
-        self.commands = commands or FakeCommands()
+        self.files: Any = files or FakeFiles()
+        self.commands: Any = commands or FakeCommands()
         self.sandbox_id = sandbox_id
         self.paused = False
         self.killed = False
         self.snapshotted = False
+        self.gone = False
+
+    def expire(self) -> None:
+        """E2B removes the sandbox (its timeout, or a kill from elsewhere)."""
+        self.gone = True
+        self.files = GoneAPI()
+        self.commands = GoneAPI()
+
+    async def get_info(self) -> Any:
+        if self.gone:
+            raise SandboxNotFoundException(f"Sandbox {self.sandbox_id} not found")
+        return SimpleNamespace(sandbox_id=self.sandbox_id, state="running")
 
     async def pause(self) -> Any:
         self.paused = True
@@ -360,18 +385,25 @@ class CodeSandbox(FakeSandbox):
         self.contexts = set(contexts)
         self.ran: list[tuple[str, str]] = []
 
+    def _serve(self) -> None:
+        if self.gone:
+            raise FakeTimeout("502: This error is likely due to sandbox timeout.")
+
     async def create_code_context(self, cwd: str | None = None) -> Any:
+        self._serve()
         context = SimpleNamespace(id=f"{self.sandbox_id}-ctx{len(self.contexts)}")
         self.contexts.add(context.id)
         return context
 
     async def list_code_contexts(self) -> list[Any]:
+        self._serve()
         return [
             SimpleNamespace(id=context_id, language="python", cwd=WS)
             for context_id in sorted(self.contexts)
         ]
 
     async def run_code(self, code: str, *, context: Any, **kwargs: Any) -> Any:
+        self._serve()
         if context.id not in self.contexts:
             raise RuntimeError(f"no context {context.id} on {self.sandbox_id}")
         self.ran.append((context.id, code))

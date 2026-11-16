@@ -183,6 +183,7 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
                 on_stderr=on_stderr,
             )
         except Exception as exc:
+            await self._holder.raise_if_expired(sb, exc)
             reason = (
                 TerminationReason.OVERALL_TIMEOUT
                 if is_timeout(exc)
@@ -245,8 +246,11 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
                 truncated=truncated,
             )
             return
+        failure = outcome.get("exc")
+        if isinstance(failure, Exception):
+            await self._holder.raise_if_expired(sb, failure)
         yield self._terminal(
-            handle, outcome.get("exc"), runtime_ms=runtime_ms, truncated=truncated
+            handle, failure, runtime_ms=runtime_ms, truncated=truncated
         )
 
     def _terminal(
@@ -328,6 +332,7 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
             backend=self._name,
             max_output_chars=self._max_output_chars,
             get_stream_epoch=lambda: holder.stream_epoch,
+            raise_if_expired=holder.raise_if_expired,
         )
 
     async def open_kernel(
@@ -364,4 +369,5 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
             backend=self._name,
             default_timeout=self._default_timeout,
             context_id=context_id,
+            raise_if_expired=self._holder.raise_if_expired,
         )

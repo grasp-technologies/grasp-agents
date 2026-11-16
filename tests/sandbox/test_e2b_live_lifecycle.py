@@ -21,11 +21,16 @@ import importlib.util
 import os
 import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from grasp_agents.sandbox import e2b_environment
+from grasp_agents.sandbox import E2BSandboxExpiredError, e2b_environment
+from grasp_agents.session_context import SessionContext
+from grasp_agents.tools.bash_common import BashInput
+from grasp_agents.tools.bash_session import BashSession, BashSessionHolder
+from tests._helpers import _make_agent_ctx
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -106,6 +111,43 @@ def live_id(env: E2BEnvironment) -> str:
     sandbox = env._holder.sandbox
     assert sandbox is not None
     return str(sandbox.sandbox_id)
+
+
+# --- a sandbox E2B removed ---------------------------------------------------
+
+
+@_live
+async def test_a_sandbox_killed_from_outside_is_replaced_on_the_call_after() -> None:
+    from e2b import AsyncSandbox
+
+    run = LiveRun()
+    try:
+        async with run.env(lazy=True) as env:
+            ctx = SessionContext[None](environment=env)
+            agent_ctx = _make_agent_ctx()
+            agent_ctx.session_holder = BashSessionHolder()
+            shell = BashSession()
+            note = Path(f"{WS}/note.txt")
+            await env.file_backend.write_bytes(note, b"before", mode=0o644)
+            await shell._run(BashInput(command="cd /tmp"), ctx=ctx, agent_ctx=agent_ctx)
+            first = live_id(env)
+
+            await AsyncSandbox.kill(first)
+
+            with pytest.raises(E2BSandboxExpiredError, match="expired"):
+                await env.file_backend.read_text(note)
+            assert not env.started
+
+            assert not await env.file_backend.exists(note)
+            assert live_id(env) != first
+            result = await shell._run(
+                BashInput(command="pwd"), ctx=ctx, agent_ctx=agent_ctx
+            )
+            assert result.returncode == 0
+            assert "shell session was reset" in result.stderr
+            assert result.stdout.strip() == WS
+    finally:
+        await run.cleanup()
 
 
 # --- restore -----------------------------------------------------------------
