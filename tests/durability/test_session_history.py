@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from grasp_agents.durability import (
     AgentCheckpoint,
@@ -168,7 +169,6 @@ async def test_fs_snapshot_refs_of_one_session_or_every_session(
     # A session key may hold slashes; its records are found all the same.
     await store.save("org/user-7/session", _session("org/user-7", "snap-9"))
     await store.save("org/user-7/agent/a", _refs_head("org/user-7", "a", "snap-8"))
-    await store.save(f"{_SK}/agent/broken", b"{not json")
 
     assert await read_fs_snapshot_refs(store, _SK) == {"snap-1", "snap-2", "snap-3"}
     assert await read_fs_snapshot_refs(store) == {
@@ -178,3 +178,16 @@ async def test_fs_snapshot_refs_of_one_session_or_every_session(
         "snap-8",
         "snap-9",
     }
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_record_fails_the_fs_snapshot_ref_read() -> None:
+    # Its refs would be missing from a sweep's keep set.
+    store = InMemoryCheckpointStore()
+    await store.save(f"{_SK}/session", _session(_SK, "snap-1"))
+    await store.save(f"{_SK}/agent/broken", b"{not json")
+
+    with pytest.raises(ValidationError):
+        await read_fs_snapshot_refs(store, _SK)
+    with pytest.raises(ValidationError):
+        await read_fs_snapshot_refs(store)

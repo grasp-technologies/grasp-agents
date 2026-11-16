@@ -117,7 +117,7 @@ async def end_session(store, session_key):
         await store.delete(key)
 ```
 
-`read_fs_snapshot_refs(store)` without a session key returns the refs every session in the store holds: the keep set for a sweep of the account (see [Sandbox](sandbox.md)).
+`read_fs_snapshot_refs(store)` without a session key returns the refs every session in the store holds: the keep set for a sweep of the account (see [Sandbox](sandbox.md)). It raises on a record it cannot read, so no held ref goes missing from that set.
 
 ## What rollback never undoes
 

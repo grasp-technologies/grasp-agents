@@ -44,7 +44,8 @@ class E2BSweepReport:
     What :func:`sweep_e2b` did, or in a dry run would do: ``killed`` and
     ``deleted`` are acted on (or due); ``in_use`` are snapshots E2B refused
     because a sandbox still uses them; ``kept`` are old enough but held by
-    ``keep_snapshots``.
+    ``keep_snapshots``; ``undated`` are ids of snapshots named with the label
+    whose time is not a date, which are never deleted.
     """
 
     dry_run: bool
@@ -52,6 +53,7 @@ class E2BSweepReport:
     deleted: list[SweptSnapshot] = field(default_factory=list[SweptSnapshot])
     in_use: list[SweptSnapshot] = field(default_factory=list[SweptSnapshot])
     kept: list[SweptSnapshot] = field(default_factory=list[SweptSnapshot])
+    undated: list[str] = field(default_factory=list[str])
 
 
 def _template(ref: str) -> str:
@@ -97,6 +99,9 @@ async def sweep_e2b(
     """
     if older_than < timedelta(0):
         raise ValueError(f"older_than must not be negative, got {older_than}.")
+    if not states:
+        raise ValueError("states must name at least one state: 'paused', 'running'.")
+    wanted = {SandboxState(state) for state in states}
     label = check_label(label)
     opts: ApiParams = {}
     if api_key is not None:
@@ -108,11 +113,13 @@ async def sweep_e2b(
 
     query = SandboxQuery(
         metadata={**(metadata or {}), METADATA_KEY: label},
-        state=[SandboxState(state) for state in states],
+        state=sorted(wanted),
     )
     pages = AsyncSandbox.list(query=query, **opts)
     while pages.has_next:
         for info in await pages.next_items():
+            if info.state not in wanted:
+                continue
             paused = info.state == SandboxState.PAUSED
             age = now - (info.end_at if paused else info.started_at)
             if age <= older_than:
@@ -130,14 +137,18 @@ async def sweep_e2b(
     snapshots = AsyncSandbox.list_snapshots(**opts)
     while snapshots.has_next:
         for snapshot in await snapshots.next_items():
-            taken = next(
-                (
-                    created
-                    for name in snapshot.names
-                    if (created := snapshot_created_at(name, label)) is not None
-                ),
-                None,
-            )
+            try:
+                taken = next(
+                    (
+                        created
+                        for name in snapshot.names
+                        if (created := snapshot_created_at(name, label)) is not None
+                    ),
+                    None,
+                )
+            except ValueError:
+                report.undated.append(snapshot.snapshot_id)
+                continue
             if taken is None or now - taken <= older_than:
                 continue
             swept = SweptSnapshot(snapshot.snapshot_id, now - taken)

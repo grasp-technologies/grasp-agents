@@ -48,6 +48,7 @@ def snapshot_created_at(name: str, label: str) -> datetime | None:
     """
     When the snapshot named ``name`` was taken, if the environment named it
     with ``label``; else ``None``. E2B prefixes names with the team's slug.
+    Raises ``ValueError`` for a name of that shape whose time is not a date.
     """
     bare = name.rsplit("/", 1)[-1]
     found = re.fullmatch(
