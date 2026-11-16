@@ -496,7 +496,9 @@ class E2BEnvironment(
         Suspend the sandbox (filesystem + memory preserved) and return its id.
 
         Resume the *same* sandbox later with :meth:`resume`; until then, calls
-        leave it paused. Distinct from :meth:`snapshot`: pause is
+        leave it paused, unless the environment was built with
+        ``auto_resume=True``: E2B then wakes it on any traffic, so calls
+        resume it too. Distinct from :meth:`snapshot`: pause is
         suspend/resume (no rewind), whereas a snapshot is a persistent
         point-in-time copy you spawn fresh sandboxes from.
         """
@@ -509,7 +511,10 @@ class E2BEnvironment(
                 await sandbox.pause()
             finally:
                 self._holder.drop_streams()
-            self._holder.hold_paused(sandbox_id)
+            lifecycle = (self._create_params or {}).get("lifecycle")
+            if not (lifecycle and lifecycle.get("auto_resume")):
+                # With auto-resume, traffic wakes it anyway: calls resume it.
+                self._holder.hold_paused(sandbox_id)
             return sandbox_id
 
     async def resume(self, sandbox_id: str | None = None) -> None:

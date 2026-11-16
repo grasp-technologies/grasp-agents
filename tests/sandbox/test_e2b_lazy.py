@@ -1452,6 +1452,29 @@ async def test_a_network_update_waits_for_a_restore_and_reaches_its_sandbox(
     assert restored.network_updates == [{"allow_internet_access": True}]
 
 
+async def test_with_auto_resume_calls_resume_a_sandbox_the_environment_paused(
+    creator: _Creator,
+) -> None:
+    sandbox = FakeSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+
+    async with e2b_environment(
+        allowed_roots=[WS],
+        on_timeout="pause",
+        auto_resume=True,
+        sandbox_timeout=0,
+    ) as env:
+        await env.file_backend.mkdir(Path(f"{WS}/a"))
+        await env.pause()
+        await sandbox.connect(timeout=None)  # traffic woke it, as E2B does
+        await env.file_backend.mkdir(Path(f"{WS}/b"))
+        await sandbox.pause()  # by E2B, at the keep-alive it gave on waking
+
+        assert await env.snapshot() == "snap-first"
+
+    assert sandbox.resumes == [None, 0]
+
+
 def _wrapping(sandbox: FakeSandbox) -> E2BEnvironment:
     """An environment over ``sandbox``, whose keep-alive it does not know."""
     return E2BEnvironment.from_sandbox(
