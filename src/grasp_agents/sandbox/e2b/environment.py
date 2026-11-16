@@ -316,7 +316,9 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
 
         Reconnects with the sandbox class the environment creates (the code
         interpreter one with ``code_interpreter=True``) and its configured
-        API key, domain and keep-alive timeout.
+        API key, domain and keep-alive timeout. Resuming another sandbox lets
+        go of the previous one as exit would: an owned one is killed, or
+        paused with ``pause_on_exit``.
 
         Raises ``RuntimeError`` outside ``async with env:``, where nothing
         would kill or pause the sandbox it connects.
@@ -338,10 +340,35 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
             if "domain" in params:
                 opts["domain"] = params["domain"]
             sandbox_cls = _sandbox_cls(self._code_interpreter)
-            self._holder.sandbox = await sandbox_cls.connect(
+            previous = self._holder.sandbox
+            resumed = await sandbox_cls.connect(
                 target, timeout=params.get("timeout"), **opts
             )
+            self._holder.sandbox = resumed
             self._holder.drop_streams()
+            if previous is not None and previous.sandbox_id != resumed.sandbox_id:
+                await self._let_go(previous)
+
+    async def _let_go(self, sandbox: AsyncSandbox) -> None:
+        """
+        Do to a sandbox the environment no longer holds what its exit would:
+        nothing unless owned, else pause it (``pause_on_exit``) or kill it.
+        Failures are logged, not raised.
+        """
+        if not self._owns_sandbox:
+            return
+        if not self._pause_on_exit:
+            await kill_quietly(sandbox)
+            return
+        try:
+            await sandbox.pause()
+        except Exception:
+            logger.warning(
+                "Failed to pause E2B sandbox %s; it may keep running (and "
+                "billing) until its timeout.",
+                sandbox.sandbox_id,
+                exc_info=True,
+            )
 
 
 def e2b_environment(

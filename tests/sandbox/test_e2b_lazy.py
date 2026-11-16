@@ -384,6 +384,59 @@ async def test_resume_waits_for_a_start_in_flight(
     assert f"{WS}/b" in resumed.files.made_dirs
 
 
+async def test_resuming_another_sandbox_kills_the_one_it_replaces(
+    creator: _Creator,
+) -> None:
+    first = FakeSandbox(sandbox_id="first", commands=ShellCommands())
+    creator._queue.append(first)
+    other = FakeSandbox(sandbox_id="other", commands=ShellCommands())
+    creator.reconnects["other"] = other
+    holder = BashSessionHolder()
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        session = await holder.get(env.exec_backend)
+        await _run(session, "true")
+        await env.resume("other")
+        assert first.killed
+        assert session.closed
+
+        await _run(await holder.get(env.exec_backend), "true")
+        assert holder.take_reset()
+
+    assert other.killed  # by the exit
+
+
+async def test_resuming_another_sandbox_pauses_the_one_it_replaces_with_pause_on_exit(
+    creator: _Creator,
+) -> None:
+    first = FakeSandbox(sandbox_id="first")
+    creator._queue.append(first)
+
+    async with e2b_environment(
+        allowed_roots=[WS], lazy=True, pause_on_exit=True
+    ) as env:
+        await env.file_backend.mkdir(Path(f"{WS}/x"))
+        await env.resume("other")
+        assert first.paused
+        assert not first.killed
+
+
+async def test_resuming_another_sandbox_leaves_one_it_does_not_own(
+    creator: _Creator,
+) -> None:
+    wrapped = FakeSandbox(sandbox_id="wrapped")
+    env = E2BEnvironment.from_sandbox(
+        cast("AsyncSandbox", wrapped),
+        policy=SandboxPolicy(allowed_roots=(Path(WS),)),
+    )
+
+    async with env:
+        await env.resume("other")
+
+    assert not wrapped.killed
+    assert not wrapped.paused
+
+
 async def test_start_finding_the_handle_filled_kills_its_sandbox(
     slow_creator: _SlowCreator,
 ) -> None:
@@ -719,5 +772,6 @@ async def test_kernel_survives_a_reconnect_to_the_same_sandbox(
 
         assert await holder.get(env.exec_backend) is kernel
         assert (await _execute(kernel, "x")).status == "ok"
+        assert not first.killed
 
     assert reconnected.ran == [("first-ctx0", "x")]
