@@ -46,6 +46,14 @@ DEFAULT_EXEC_TIMEOUT = 600.0  # matches the local supervisor's overall default
 E2B_DEFAULT_KEEP_ALIVE = 300  # seconds E2B keeps a sandbox created without one
 
 
+def wall_clock() -> float:
+    """
+    Seconds since the epoch. Keep-alive deadlines run on it, not on a
+    monotonic clock, because E2B's keep-alive also runs while the host sleeps.
+    """
+    return time.time()
+
+
 MAX_OUTPUT_CHARS = 1_000_000  # per the local supervisor's per-stream cap
 
 
@@ -219,9 +227,10 @@ class SandboxHandle:
         self._expired: str | None = None
         self._keep_alive = keep_alive
         self._pauses_on_timeout = pauses_on_timeout
-        # The sandbox whose keep-alive is tracked, and the time.monotonic()
-        # reading from which E2B may have paused it.
-        self._pause_due: tuple[str, float] | None = None
+        # Per sandbox id, the wall-clock time from which E2B may have paused
+        # it. Keyed by id so a sandbox created and dropped (a cancelled
+        # restore) never takes the live one's deadline.
+        self._pause_due: dict[str, float] = {}
         # A sandbox the environment paused itself: calls leave it paused.
         self._held_paused: str | None = None
 
@@ -406,11 +415,15 @@ class SandboxHandle:
         """
         self.stream_epoch += 1
 
+    def now(self) -> float:
+        """The wall-clock time keep-alive deadlines are kept in."""
+        return wall_clock()
+
     def keep_alive_from(self, sandbox_id: str, since: float) -> None:
         """
         Record that E2B started ``sandbox_id``'s keep-alive (a create or a
-        resume) no earlier than ``since``, a ``time.monotonic()`` reading
-        taken before the request. It is no longer held paused.
+        resume) no earlier than ``since``, a :meth:`now` reading taken before
+        the request. It is no longer held paused.
         """
         if self._held_paused == sandbox_id:
             self._held_paused = None
@@ -418,7 +431,15 @@ class SandboxHandle:
             keep_alive = (
                 E2B_DEFAULT_KEEP_ALIVE if self._keep_alive is None else self._keep_alive
             )
-            self._pause_due = (sandbox_id, since + keep_alive)
+            self._track(sandbox_id, since + keep_alive)
+
+    def _track(self, sandbox_id: str, due: float) -> None:
+        self._pause_due = {
+            tracked: when
+            for tracked, when in self._pause_due.items()
+            if self.live(tracked) is not None
+        }
+        self._pause_due[sandbox_id] = due
 
     def hold_paused(self, sandbox_id: str) -> None:
         """
@@ -433,12 +454,8 @@ class SandboxHandle:
         if E2B paused it (see :meth:`resume_if_paused`). Before that, and for
         a keep-alive the handle does not track, return at once.
         """
-        due = self._pause_due
-        if (
-            due is not None
-            and due[0] == sandbox.sandbox_id
-            and time.monotonic() >= due[1]
-        ):
+        due = self._pause_due.get(str(sandbox.sandbox_id))
+        if due is not None and self.now() >= due:
             await self.resume_if_paused(sandbox)
 
     async def resume_if_paused(
@@ -461,15 +478,14 @@ class SandboxHandle:
         sandbox_id = str(sandbox.sandbox_id)
         if self.live(sandbox_id) is None or self._held_paused == sandbox_id:
             return False
-        since = time.monotonic()
+        since = self.now()
         try:
             info = await sandbox.get_info()
         except Exception:
             return False
         if info.state != SandboxState.PAUSED:
             if self._pauses_on_timeout:
-                left = info.end_at.timestamp() - time.time()
-                self._pause_due = (sandbox_id, time.monotonic() + max(0.0, left))
+                self._track(sandbox_id, max(self.now(), info.end_at.timestamp()))
             return False
         logger.info("resuming E2B sandbox %s, which E2B paused", sandbox_id)
         try:

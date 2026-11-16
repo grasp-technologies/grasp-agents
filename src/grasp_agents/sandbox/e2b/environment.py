@@ -259,10 +259,11 @@ class E2BEnvironment(
         sandbox_cls = _sandbox_cls(self._code_interpreter)
         logger.info("creating E2B sandbox (%s)", sandbox_cls.__name__)
         t0 = time.monotonic()
+        since = self._holder.now()
         sandbox = await sandbox_cls.create(**self._create_params)
         logger.info("E2B sandbox ready in %.1fs", time.monotonic() - t0)
         await self._prepare(sandbox, created_here=True)
-        self._holder.keep_alive_from(str(sandbox.sandbox_id), t0)
+        self._holder.keep_alive_from(str(sandbox.sandbox_id), since)
         return sandbox
 
     async def _prepare(self, sandbox: AsyncSandbox, *, created_here: bool) -> None:
@@ -373,7 +374,7 @@ class E2BEnvironment(
             **(self._create_params or self._wrapped_create_params()),
             "template": ref,
         }
-        since = time.monotonic()
+        since = self._holder.now()
         sandbox = await _sandbox_cls(self._code_interpreter).create(**params)
         self._holder.keep_alive_from(str(sandbox.sandbox_id), since)
         return sandbox
@@ -543,7 +544,7 @@ class E2BEnvironment(
                 target = str(previous.sandbox_id)
             params: E2BCreateParams = self._create_params or {}
             sandbox_cls = _sandbox_cls(self._code_interpreter)
-            since = time.monotonic()
+            since = self._holder.now()
             resumed = await sandbox_cls.connect(
                 target, timeout=params.get("timeout"), **self._api_params()
             )

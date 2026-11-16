@@ -100,8 +100,11 @@ class _Creator:
         return sandbox
 
     async def connect(self, sandbox_id: str, **opts: Any) -> FakeSandbox:
-        del opts
         sandbox = self.reconnects.get(sandbox_id) or FakeSandbox(sandbox_id=sandbox_id)
+        if sandbox.state == "paused":  # E2B's connect resumes a paused sandbox
+            sandbox.keep_alive(opts.get("timeout"))
+            sandbox.state = "running"
+            sandbox.files, sandbox.commands = sandbox._served
         self.connected.append(sandbox)
         return sandbox
 
@@ -1244,6 +1247,123 @@ async def test_calls_leave_a_sandbox_the_environment_paused(creator: _Creator) -
             await env.file_backend.mkdir(Path(f"{WS}/b"))
 
     assert sandbox.resumes == []
+
+
+class _Clock:
+    """Stands in for the wall clock keep-alive deadlines run on."""
+
+    def __init__(self) -> None:
+        self.now = 2_000_000_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    fake = _Clock()
+    monkeypatch.setattr(e2b_handle, "wall_clock", fake)
+    return fake
+
+
+def _pausing_after(seconds: int) -> E2BEnvironment:
+    return e2b_environment(
+        allowed_roots=[WS], lazy=True, on_timeout="pause", sandbox_timeout=seconds
+    )
+
+
+async def test_the_keep_alive_runs_on_the_wall_clock(
+    creator: _Creator, clock: _Clock
+) -> None:
+    sandbox = FakeSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+
+    async with _pausing_after(100) as env:
+        await env.file_backend.mkdir(Path(f"{WS}/a"))
+        await sandbox.pause()  # by E2B, while the host slept through it
+        clock.now += 101
+        await env.file_backend.mkdir(Path(f"{WS}/b"))
+
+    assert sandbox.resumes == [100]
+
+
+async def test_resume_restarts_the_keep_alive_it_tracks(
+    creator: _Creator, clock: _Clock
+) -> None:
+    sandbox = FakeSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+    creator.reconnects["first"] = sandbox
+
+    async with _pausing_after(100) as env:
+        await env.file_backend.mkdir(Path(f"{WS}/a"))
+        clock.now += 90
+        await env.pause()
+        await env.resume()
+        clock.now += 20  # past the first keep-alive, inside the second
+        await env.file_backend.mkdir(Path(f"{WS}/b"))
+
+    assert sandbox.info_calls == 0
+
+
+async def test_a_restored_sandbox_has_its_keep_alive_tracked(
+    creator: _Creator, clock: _Clock
+) -> None:
+    first, restored = (
+        FakeSandbox(sandbox_id="first"),
+        FakeSandbox(sandbox_id="restored"),
+    )
+    creator._queue.extend([first, restored])
+
+    async with _pausing_after(100) as env:
+        await env.file_backend.mkdir(Path(f"{WS}/a"))
+        clock.now += 50
+        await env.restore("snap-1")
+        await restored.pause()  # by E2B, at the restored sandbox's keep-alive
+        clock.now += 101
+        await env.file_backend.mkdir(Path(f"{WS}/b"))
+
+    assert restored.resumes == [100]
+
+
+async def test_a_cancelled_restore_keeps_the_live_sandboxs_keep_alive(
+    slow_creator: _SlowCreator,
+) -> None:
+    first = FakeSandbox(sandbox_id="first")
+    slow_creator._queue.append(first)
+    slow_creator.gated = {"snap-1"}
+
+    async with e2b_environment(
+        allowed_roots=[WS], on_timeout="pause", sandbox_timeout=0
+    ) as env:
+        restoring = asyncio.create_task(env.restore("snap-1"))
+        await slow_creator.creating.wait()
+        restoring.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await restoring
+        slow_creator.gate.set()
+        async with env._holder.lock:  # until the abandoned create is killed
+            pass
+        await first.pause()  # by E2B, at the live sandbox's keep-alive
+
+        await env.file_backend.mkdir(Path(f"{WS}/b"))
+
+    assert first.resumes == [0]
+
+
+async def test_a_running_sandbox_past_its_estimate_is_checked_once(
+    creator: _Creator,
+) -> None:
+    sandbox = FakeSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+
+    async with _pausing() as env:
+        await env.file_backend.mkdir(Path(f"{WS}/a"))
+        # Something extended the keep-alive past the environment's estimate.
+        sandbox.keep_alive(3600)
+        for name in "bcd":
+            await env.file_backend.mkdir(Path(f"{WS}/{name}"))
+
+    assert sandbox.info_calls == 1
 
 
 def _wrapping(sandbox: FakeSandbox) -> E2BEnvironment:
