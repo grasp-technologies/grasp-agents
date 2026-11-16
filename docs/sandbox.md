@@ -76,7 +76,7 @@ Unenforceable combinations fail at construction, not on the first command — ex
 |---|---|---|---|---|
 | `NONE` | not enforced | enforced | enforced (empty allowlist) | enforced (no internet) |
 | `LOOPBACK` | not enforced | `ValueError` | `NotImplementedError` | `NotImplementedError` |
-| `ALLOWLIST` | not enforced | `ValueError` | enforced (proxy) | `NotImplementedError` |
+| `ALLOWLIST` | not enforced | `ValueError` | enforced (proxy) | enforced (E2B egress rules) |
 | `ALL` | open | open | `NotImplementedError` | open |
 
 ### Environment, limits and Python
@@ -112,6 +112,7 @@ async with env:                       # creates the sandbox; kills it on exit
 
 - The sandbox is created on `async with` and killed on exit (`pause_on_exit=True` pauses instead). `E2BEnvironment.from_sandbox(...)` wraps an existing sandbox. `env.started` says whether a sandbox is live.
 - **Lazy start.** With `lazy=True` (also an `E2BEnvironmentConfig` field), entry creates nothing: the first file or exec call starts the sandbox, once, even when calls race, so a session that never touches it never pays for one. A failed start fails like a failed entry: later calls raise at once, without creating another sandbox, until the environment is re-entered. Exit, `restore()`, `pause()` and `resume()` wait for a start in flight. A start keeps its sandbox while the environment is still entered and holding no other sandbox, even when every call waiting for it was cancelled (a per-call timeout shorter than the start, say): the next call uses it, and exit kills it. A start that finishes after the environment exited or swapped its sandbox kills the sandbox it created. `pause()` before the start raises.
+- **Network.** `network=NetworkPolicy.NONE` (the default) turns the sandbox's internet off and `ALL` on. `ALLOWLIST` lets it reach only `allowed_domains` (also `E2BEnvironmentConfig` fields): exact host names, or `*.`-wildcards for subdomains (`*.pythonhosted.org` covers `files.pythonhosted.org`; `pythonhosted.org` does not). Everything else is blocked, raw IP addresses included. E2B denies only addresses, never hosts, so `denied_domains` (checked first) are enforced by leaving them out of the allowlist; a denied host that an allowed wildcard covers raises `NotImplementedError`. Every create the environment makes, a restore's included, carries the network settings.
 - **What it creates is marked.** Every sandbox the environment creates carries the metadata key `"grasp-agents"`, set to its `label` (default `"default"`; also an `E2BEnvironmentConfig` field), next to your own `metadata`; the environment's key wins over one you pass. E2B snapshots take no metadata, so `snapshot()` names each one `grasp-agents-<label>-<UTC time>-<random>`. The name is unique per snapshot: E2B points a reused name at its newest snapshot, which would change what an earlier ref restores. A label is up to 32 lowercase letters, digits or dashes; deployments that share an E2B team give each its own.
 - **Cleaning up the account.** A process that ends without exiting its environment leaves its sandbox running until its keep-alive ends, one that exits with `pause_on_exit` leaves it paused until something kills it, and a session whose records are gone leaves its snapshots. `sweep_e2b(older_than=..., keep_snapshots=..., label=...)` first kills the sandboxes tagged with `label` (and matching `metadata=`, if given) that have been paused longer than `older_than`, or running too with `states=("paused", "running")`; then it deletes the snapshots named with `label` taken longer ago than `older_than`, except those in `keep_snapshots`. It changes nothing unless `dry_run=False`, and returns an `E2BSweepReport` of what it killed, deleted, kept, or found still in use.
   - Pass `keep_snapshots=await read_fs_snapshot_refs(store)` over every store your sessions use ([Rollback](rollback.md#ending-a-session)). A snapshot a record holds but the set misses is deleted, and restoring it then fails.
@@ -174,6 +175,7 @@ async with env:                       # creates the sandbox; kills it on exit
 - On E2B, a one-shot command still running when `pause()` or `snapshot()` drops the sandbox's connections loses the rest of its output: its call fails or times out, while the command itself may keep running. Only persistent shells reattach.
 - `sweep_e2b` dates a snapshot by the time in its name, so snapshots without such a name (taken by other tools, or before environments named them) are never swept; delete those by hand.
 - When E2B removes a sandbox, only the call that finds out hears that its files are gone. Other agents sharing the environment find out through their shell and kernel reset notices, or not at all if they only use files.
+- An E2B allowlist cannot carve a denied host out of an allowed wildcard; list the allowed hosts one by one instead.
 - No Docker or SSH exec backend ships; implement `ExecutionEnvironment` / `ExecBackend` for other targets.
 
 ## See also

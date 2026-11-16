@@ -27,12 +27,14 @@ from ._handle import (
     wire,
 )
 from ._names import METADATA_KEY, check_label, snapshot_name
+from ._network import e2b_egress
 from .exec import E2BExecBackend
 from .file_backend import E2BFileBackend
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Mapping, Sequence
 
+    from e2b import SandboxNetworkOpts
     from e2b.connection_config import ApiParams
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,7 @@ class E2BCreateParams(TypedDict, total=False):
     envs: dict[str, str] | None
     secure: bool
     allow_internet_access: bool
+    network: SandboxNetworkOpts
     api_key: str
     domain: str
 
@@ -444,6 +447,8 @@ def e2b_environment(
     template: str | None = None,
     sandbox_timeout: int | None = None,
     network: NetworkPolicy = NetworkPolicy.NONE,
+    allowed_domains: Sequence[str] = (),
+    denied_domains: Sequence[str] = (),
     env: Mapping[str, str] | None = None,
     metadata: Mapping[str, str] | None = None,
     api_key: str | None = None,
@@ -472,9 +477,15 @@ def e2b_environment(
             in) and pass its name/ID here. The framework does not pip-install into
             E2B sandboxes; bake requirements into the template.
         sandbox_timeout: Sandbox keep-alive in seconds (E2B default 300).
-        network: ``NONE`` (no internet) or ``ALL`` (internet on). ``ALLOWLIST``
-            / ``LOOPBACK`` raise ``NotImplementedError`` (per-domain egress needs
-            E2B network rules — future work).
+        network: ``NONE`` (no internet), ``ALL`` (internet on) or
+            ``ALLOWLIST`` (only ``allowed_domains``). ``LOOPBACK`` raises
+            ``NotImplementedError``.
+        allowed_domains: With ``ALLOWLIST``, the hosts the sandbox may reach:
+            exact names, or ``*.``-wildcards for their subdomains. All other
+            egress is blocked, raw IP addresses included.
+        denied_domains: Hosts never reachable, checked first. E2B denies only
+            addresses, so a denied host is left out of the allowlist, and one
+            an allowed wildcard covers raises ``NotImplementedError``.
         env: Base environment variables for the sandbox + every command.
         metadata: Custom sandbox metadata. The environment adds its own
             ``"grasp-agents"`` key, set to ``label``.
@@ -509,12 +520,6 @@ def e2b_environment(
         An :class:`E2BEnvironment` to use as ``async with``.
 
     """
-    if network in {NetworkPolicy.ALLOWLIST, NetworkPolicy.LOOPBACK}:
-        raise NotImplementedError(
-            f"E2B example backend does not implement network={network.value!r} "
-            "(per-domain / loopback egress needs E2B network rules). Use "
-            "NetworkPolicy.NONE or NetworkPolicy.ALL."
-        )
     label = check_label(label)
 
     roots = tuple(Path(r) for r in allowed_roots)
@@ -524,8 +529,11 @@ def e2b_environment(
         allow_read=tuple(Path(p) for p in allow_read),
         deny_write=tuple(Path(p) for p in deny_write),
         network=network,
+        allowed_domains=tuple(allowed_domains),
+        denied_domains=tuple(denied_domains),
         env=dict(env) if env else {},
     )
+    internet, network_options = e2b_egress(policy)
 
     create_params: E2BCreateParams = {
         "template": template,
@@ -533,8 +541,10 @@ def e2b_environment(
         "metadata": {**(metadata or {}), METADATA_KEY: label},
         "envs": dict(env) if env else None,
         "secure": secure,
-        "allow_internet_access": network == NetworkPolicy.ALL,
+        "allow_internet_access": internet,
     }
+    if network_options is not None:
+        create_params["network"] = network_options
     if api_key is not None:
         create_params["api_key"] = api_key
     if domain is not None:
