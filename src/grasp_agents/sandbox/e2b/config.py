@@ -259,7 +259,7 @@ class TemplateBase(BaseModel):
 # Template config
 # ---------------------------------------------------------------------------
 
-# One build of a name at a time per event loop: E2B fails a build of a name
+# One build of a name at a time per event loop: E2B cancels a build of a name
 # when another build of it starts.
 _build_locks: weakref.WeakKeyDictionary[
     asyncio.AbstractEventLoop, dict[str, asyncio.Lock]
@@ -340,9 +340,9 @@ class E2BTemplateConfig(BaseModel):
 
         Calls in one process build a name one at a time. Two processes that
         build the same new name at once can still make one of the builds fail,
-        since E2B fails a build when another build of its name starts: that
-        call raises ``BuildException``, and the next call uses the other build,
-        or builds again if the latest build failed.
+        since E2B cancels a build when another build of its name starts: that
+        call raises ``BuildException`` ("build was cancelled"), and the next
+        call uses the other build, or builds again if the latest build failed.
 
         ``templates`` is E2B's template API: by default an
         :class:`E2BTemplateClient` over ``api`` (``api_key``, ``domain``, …).

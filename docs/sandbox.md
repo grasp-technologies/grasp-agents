@@ -188,7 +188,7 @@ async with env:                       # creates the sandbox; kills it on exit
 - When E2B removes a sandbox, only the call that finds out hears that its files are gone. Other agents sharing the environment find out through their shell and kernel reset notices, or not at all if they only use files.
 - An E2B allowlist cannot carve a denied host out of an allowed wildcard; list the allowed hosts one by one instead.
 - Only E2B changes a live environment's network (`NetworkUpdatable`); a local environment's egress is fixed when it is built.
-- Two processes that build the same new template name at once can make one of the builds fail, because E2B fails a build when another build of its name starts. That call raises `BuildException`; the next call uses the other build, or builds again if the latest build failed. Serialize builds across processes yourself when that matters.
+- Two processes that build the same new template name at once can make one of the builds fail, because E2B cancels a build when another build of its name starts. That call raises `BuildException` ("build was cancelled"); the next call uses the other build, or builds again if the latest build failed. Serialize builds across processes yourself when that matters.
 - No Docker or SSH exec backend ships; implement `ExecutionEnvironment` / `ExecBackend` for other targets.
 
 ## See also
