@@ -315,6 +315,12 @@ class CodeSandbox(FakeSandbox):
         self.contexts.add(context.id)
         return context
 
+    async def list_code_contexts(self) -> list[Any]:
+        return [
+            SimpleNamespace(id=context_id, language="python", cwd=WS)
+            for context_id in sorted(self.contexts)
+        ]
+
     async def run_code(self, code: str, *, context: Any, **kwargs: Any) -> Any:
         if context.id not in self.contexts:
             raise RuntimeError(f"no context {context.id} on {self.sandbox_id}")

@@ -487,7 +487,6 @@ async def test_kernel_reopens_on_the_next_sandbox_after_a_fresh_restore(
 async def test_kernel_reattaches_after_a_snapshot_rollback_without_a_reset(
     creator: _Creator,
 ) -> None:
-    pytest.importorskip("e2b_code_interpreter")
     first = CodeSandbox(sandbox_id="first")
     # The snapshot keeps the kernel's memory, so its context lives on there.
     restored = CodeSandbox(sandbox_id="restored", contexts=("first-ctx0",))
@@ -527,6 +526,32 @@ async def test_rollback_past_a_kernel_opens_a_fresh_one(creator: _Creator) -> No
         assert not holder.take_reset()
 
     assert restored.ran == [("restored-ctx0", "x = 2")]
+
+
+async def test_seeded_kernel_opens_a_fresh_context_the_sandbox_lacks(
+    creator: _Creator,
+) -> None:
+    first = CodeSandbox(sandbox_id="first", contexts=("ctx-x",))
+    second = CodeSandbox(sandbox_id="second")
+    creator._queue.extend([first, second])
+    holder = KernelHolder(context_id="ctx-x")  # what a cold resume seeds
+    env = e2b_environment(allowed_roots=[WS], lazy=True)
+
+    async with env:
+        kernel = await holder.get(env.exec_backend)
+        assert (await _execute(kernel, "x = 1")).status == "ok"
+        assert not holder.take_reset()
+
+    # Re-entered without a rebind: the new sandbox never had the seeded context.
+    async with env:
+        reopened = await holder.get(env.exec_backend)
+        assert (await _execute(reopened, "x")).status == "ok"
+        assert holder.take_reset()  # RunCell tells the model its variables are gone
+        assert (await _execute(reopened, "x")).status == "ok"
+        assert not holder.take_reset()
+
+    assert first.ran == [("ctx-x", "x = 1")]
+    assert second.ran == [("second-ctx0", "x"), ("second-ctx0", "x")]
 
 
 async def test_kernel_survives_a_reconnect_to_the_same_sandbox(

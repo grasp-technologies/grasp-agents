@@ -102,7 +102,8 @@ class E2BKernel(KernelSession):
     The kernel is bound to the sandbox it was opened on. Once a restore or an
     exit replaces that sandbox, it counts as closed, and its holder reopens it
     on the live sandbox: re-attached to a seeded context id (a rollback seeds
-    the one its snapshot kept), else fresh.
+    the one its snapshot kept), else fresh. A seeded id the live sandbox has
+    no context for gets a fresh context, reported through :meth:`take_reset`.
     """
 
     def __init__(
@@ -125,6 +126,7 @@ class E2BKernel(KernelSession):
         self._context_id = context_id
         self._context: Context | None = None
         self._closed = False
+        self._was_reset = False
         self._lock = asyncio.Lock()
 
     @property
@@ -160,15 +162,16 @@ class E2BKernel(KernelSession):
         return cast("CodeInterpreterSandbox", sandbox)
 
     async def _bind_context(self, sandbox: CodeInterpreterSandbox) -> Context:
-        """Re-attach to a persisted context id (resume), else create a fresh one."""
+        """
+        Re-attach to the seeded context id if the sandbox has it, else create
+        a fresh context. A seed the sandbox lacks (it was replaced by one
+        that never had the context) is reported as a reset.
+        """
         if self._context_id is not None:
-            from e2b_code_interpreter.models import (  # ruff: ignore[import-outside-top-level]
-                Context,
-            )
-
-            return Context(
-                context_id=self._context_id, language="python", cwd=self._cwd
-            )
+            for context in await sandbox.list_code_contexts():
+                if context.id == self._context_id:
+                    return context
+            self._was_reset = True
         return await sandbox.create_code_context(cwd=self._cwd)
 
     async def execute(
@@ -208,6 +211,11 @@ class E2BKernel(KernelSession):
             execution_count=execution.execution_count,
             runtime_ms=(time.monotonic() - start) * 1000.0,
         )
+
+    def take_reset(self) -> bool:
+        was = self._was_reset
+        self._was_reset = False
+        return was
 
     async def interrupt(self) -> None:
         # E2B interrupts via run_code's own timeout (handled in execute); there

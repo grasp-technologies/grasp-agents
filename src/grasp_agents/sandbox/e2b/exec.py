@@ -321,6 +321,8 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
         :attr:`E2BKernel.context_id`) to **re-attach** to an existing code
         context instead of creating a fresh one — e.g. when resuming a session
         whose sandbox was paused/snapshotted, so the kernel's variables persist.
+        If the sandbox has no such context, the kernel creates a fresh one on
+        its first call and reports a reset (:meth:`E2BKernel.take_reset`).
         """
         sandbox = await self._holder.ensure()
         if not hasattr(sandbox, "run_code"):
