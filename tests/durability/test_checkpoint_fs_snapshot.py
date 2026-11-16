@@ -1568,3 +1568,46 @@ async def test_an_agent_used_as_a_tool_never_deletes_the_templates_snapshots(
     await clone.run(in_args=EchoInput(text="help"))
 
     assert not held & set(env.deleted)
+
+
+async def test_a_chat_after_dropping_every_step_starts_a_new_one(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryCheckpointStore()
+    env = DeletingSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_text_response(f"a{i}") for i in range(1, 4)],
+        store=store,
+        environment=env,
+        fs_snapshot_policy="final",
+    )
+    await agent.run("q1")
+    await agent.run("q2")
+    await agent.drop_rollback_steps(before=3)
+    assert agent.rollback_steps == []
+
+    out = await agent.run("q3")
+
+    assert out.payloads == ["a3"]
+    assert agent.step == 3
+    assert agent.rollback_steps == [3]
+
+
+async def test_a_cold_chat_after_dropping_every_step_is_answered(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryCheckpointStore()
+    env = DeletingSnapshotEnv(tmp_path)
+    agent, _ = _make_agent(
+        [_text_response("a1")], store=store, environment=env, fs_snapshot_policy="final"
+    )
+    await agent.run("q1")
+    await agent.drop_rollback_steps(before=2)
+
+    cold, _ = _make_agent(
+        [_text_response("a2")], store=store, environment=env, fs_snapshot_policy="final"
+    )
+    out = await cold.run("q2")
+
+    assert out.payloads == ["a2"]
+    assert cold.step == 2

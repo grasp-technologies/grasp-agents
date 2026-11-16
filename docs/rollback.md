@@ -57,7 +57,7 @@ While parked, a run with no input is refused (`ProcInputValidationError`): the s
 
 `await agent.read_rollback_anchors()` lists boundaries from the persisted head without loading the transcript, re-spawning tasks or touching mailbox leases — for a UI picking a rewind point from another process.
 
-Boundaries accumulate one per human turn, and under `fs_snapshot_policy="final"` each holds a snapshot. `await agent.drop_rollback_steps(before=n)` forgets the boundaries of the steps before `n`: they can no longer be rolled back to (`rollback_to_step` raises `KeyError`), and the snapshots only they held are deleted (see [Filesystem snapshots](#filesystem-snapshots)). It rewrites the persisted head with the remaining boundaries and leaves the transcript, the head's position and its cached answer alone. How many steps to keep is yours to decide; it runs between runs, on a live or loaded instance.
+Boundaries accumulate one per human turn, and under `fs_snapshot_policy="final"` each holds a snapshot. `await agent.drop_rollback_steps(before=n)` forgets the boundaries of the steps before `n`: they can no longer be rolled back to (`rollback_to_step` raises `KeyError`), and the snapshots only they held are deleted (see [Filesystem snapshots](#filesystem-snapshots)). It rewrites the persisted head with the remaining boundaries and leaves the transcript, the head's position and its cached answer alone. Steps keep counting past the dropped ones: the next chat delivery takes a new step even when no boundary is left. How many steps to keep is yours to decide; it runs between runs, on a live or loaded instance.
 
 ## The session writer
 

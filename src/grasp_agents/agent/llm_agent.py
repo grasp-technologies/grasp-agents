@@ -1560,18 +1560,18 @@ class LLMAgent[InT, OutT, CtxT](
 
     def _mint_step(self) -> int:
         """
-        The next auto-minted step. A current step with no recorded boundary is
-        a rollback's parked step (its boundary was just dropped, and every
-        remaining boundary sits below it) — re-mint it, whatever its number.
-        Otherwise mint one past every recorded boundary: a fresh mint never
-        equals a completed head's step (every stepped delivery archives its
-        boundary before it first persists), so it cannot read as an
-        orchestrator redelivery.
+        The next auto-minted step. A rollback's parked step is re-minted,
+        whatever its number. Otherwise mint one past every recorded boundary
+        and the committed head's step: a fresh mint never equals a completed
+        head's step, so it cannot read as an orchestrator redelivery, even
+        after ``drop_rollback_steps`` dropped every boundary.
         """
-        recorded = {wm.step for wm in self._step_watermarks if wm.step is not None}
-        if self._step is not None and self._step not in recorded:
+        if self._parked_after_rollback and self._step is not None:
             return self._step
-        return max(recorded, default=0) + 1
+        steps = [wm.step for wm in self._step_watermarks if wm.step is not None]
+        if self._committed is not None and self._committed.step is not None:
+            steps.append(self._committed.step)
+        return max(steps, default=0) + 1
 
     def _anchor_human_turn(self, message: "TeamMessage") -> None:
         """
