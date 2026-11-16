@@ -556,7 +556,8 @@ def e2b_environment(
             environment creates: the sandbox metadata's ``"grasp-agents"``
             value and part of every snapshot's name (``"default"`` when
             ``None``). Deployments that share an E2B team give each its own,
-            so cleaning up after one never touches another's.
+            so a sweep (:func:`~grasp_agents.sandbox.sweep_e2b`) of one never
+            touches another's.
 
     Returns:
         An :class:`E2BEnvironment` to use as ``async with``.
