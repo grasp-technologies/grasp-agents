@@ -75,7 +75,9 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
     returns non-zero exits as data (catching ``CommandExitException`` instead
     of letting it raise), and enforces the command timeout itself
     (``timeout=None`` uses ``default_timeout``): a command that runs past it
-    is killed and reported as ``OVERALL_TIMEOUT``. Co-located with the paired
+    is reported as ``OVERALL_TIMEOUT``. A timeout or an early stop kills the
+    shell E2B runs the command in (``/bin/bash -l -c``); processes that shell
+    started may keep running. Co-located with the paired
     :class:`E2BFileBackend` via the shared :class:`SandboxHandle`.
     """
 
@@ -226,9 +228,9 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
                 await asyncio.wait([waiter])
             else:
                 # Timed out, or the consumer stopped early (cancelled / closed
-                # us — e.g. KillTask): kill the remote command so it doesn't
-                # keep running in the sandbox, and stop listening to it, even
-                # if a second cancellation arrives meanwhile.
+                # us — e.g. KillTask): kill the command's shell and stop
+                # listening to it, even if a second cancellation arrives
+                # meanwhile.
                 await _finish_despite_cancellation(_stop_command(handle, waiter))
 
         runtime_ms = (time.monotonic() - start) * 1000

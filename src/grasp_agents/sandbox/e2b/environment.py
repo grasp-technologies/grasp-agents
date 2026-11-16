@@ -396,7 +396,8 @@ def e2b_environment(
             only. Files + commands behave identically either way.
         default_timeout: Per-command wall-clock ceiling when a call passes no
             ``timeout``. The backend enforces it: a command that runs past it
-            is killed and reported as ``OVERALL_TIMEOUT``.
+            is reported as ``OVERALL_TIMEOUT`` and the shell running it is
+            killed; processes that shell started may keep running.
         lazy: Start the sandbox on the first file or exec call instead of on
             ``async with``, so a session that never needs it never pays for
             one. Concurrent first calls share one sandbox; ``snapshot()``
