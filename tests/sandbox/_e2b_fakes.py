@@ -1,9 +1,11 @@
 """
 Test doubles for the E2B backend: a fake ``AsyncSandbox`` with its ``files``
-and ``commands`` APIs, a persistent-shell fake and a code-interpreter fake.
+and ``commands`` APIs, a persistent-shell fake, a code-interpreter fake and a
+fake of E2B's template API.
 
 Cast a fake to ``AsyncSandbox`` and drive it only through the public backend
-API. The fake exception classes subclass the real e2b ``TimeoutException`` /
+API; pass the template fake as ``E2BTemplateConfig.build(templates=...)``. The
+fake exception classes subclass the real e2b ``TimeoutException`` /
 ``CommandExitException`` so the adapter's isinstance checks match.
 """
 
@@ -15,9 +17,19 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from e2b import CommandExitException, SandboxNotFoundException, TimeoutException
+from e2b import (
+    BuildException,
+    CommandExitException,
+    SandboxNotFoundException,
+    TimeoutException,
+)
+
+from grasp_agents.sandbox.e2b.templates import TemplateBuildState
+
+if TYPE_CHECKING:
+    from e2b.template.main import TemplateBuilder, TemplateFinal
 
 WS = "/home/user/workspace"
 
@@ -417,3 +429,57 @@ class CodeSandbox(FakeSandbox):
         self.ran.append((context.id, code))
         logs = SimpleNamespace(stdout=[], stderr=[])
         return SimpleNamespace(logs=logs, results=[], error=None, execution_count=1)
+
+
+# --- template API ---------------------------------------------------------
+
+
+class FakeTemplateAPI:
+    """
+    E2B's template API for one name. Successive lookups of the name's latest
+    build return ``states`` in turn, the last one repeating; ``None`` means no
+    template has the name. A build is recorded, then leaves the name ready, or
+    failed with ``build_error``, which it raises as E2B's ``BuildException``.
+    """
+
+    def __init__(
+        self, *states: TemplateBuildState | None, build_error: str | None = None
+    ) -> None:
+        self._states: list[TemplateBuildState | None] = list(states) or [None]
+        self._build_error = build_error
+        self.lookups = 0
+        self.builds: list[dict[str, Any]] = []
+
+    async def latest_build(self, name: str) -> TemplateBuildState | None:
+        del name
+        self.lookups += 1
+        if len(self._states) > 1:
+            return self._states.pop(0)
+        return self._states[0]
+
+    async def build(
+        self,
+        template: TemplateBuilder | TemplateFinal,
+        name: str,
+        *,
+        tags: list[str] | None,
+        cpu_count: int,
+        memory_mb: int,
+        skip_cache: bool,
+    ) -> None:
+        # A real build takes a while: let concurrent callers run meanwhile.
+        await asyncio.sleep(0)
+        self.builds.append(
+            {
+                "template": template,
+                "name": name,
+                "tags": tags,
+                "cpu_count": cpu_count,
+                "memory_mb": memory_mb,
+                "skip_cache": skip_cache,
+            }
+        )
+        if self._build_error is not None:
+            self._states = [TemplateBuildState("failed", self._build_error)]
+            raise BuildException(self._build_error)
+        self._states = [TemplateBuildState("ready")]

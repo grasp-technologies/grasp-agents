@@ -8,9 +8,10 @@ Two pieces:
 * :class:`E2BTemplateConfig` maps to E2B's programmatic template builder
   (``e2b.Template``): a base (python / image / dockerfile / …) plus an ordered
   list of build :data:`Step` s (pip / apt / run / copy / …). :meth:`build`
-  builds it via the SDK and returns the template ref, **idempotently** — if its
-  ``alias`` already exists the build is skipped. :meth:`to_dockerfile` renders
-  the definition without building (handy for review + tests).
+  returns its ``alias`` once a ready build of it exists: it reuses a ready
+  build, waits for one under way, and builds when the latest build failed or
+  there is none. :meth:`to_dockerfile` renders the definition without building
+  (handy for review + tests).
 * :class:`E2BEnvironmentConfig` is the whole environment: either a prebuilt
   ``template`` ref **or** an inline ``template_build`` (built on demand), plus
   the create-time options (roots, network, timeout, metadata, …). :meth:`build`
@@ -19,7 +20,7 @@ Two pieces:
 Example::
 
     cfg = load_e2b_config("e2b.json")
-    env = await cfg.build()            # builds the template if inline
+    env = await cfg.build()            # builds an inline template unless ready
     async with env as live:            # creates the sandbox
         ...
 
@@ -29,15 +30,19 @@ reuse the alias), never silently on every sandbox create.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import weakref
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
+from e2b import BuildException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from grasp_agents.sandbox.policy import NetworkPolicy
 
 from ._handle import DEFAULT_EXEC_TIMEOUT, DEFAULT_WORKSPACE
 from ._names import LABEL_PATTERN
+from .templates import E2BTemplateAPI, E2BTemplateClient, TemplateBuildState
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -241,6 +246,17 @@ class TemplateBase(BaseModel):
 # Template config
 # ---------------------------------------------------------------------------
 
+# One build of a name at a time per event loop: E2B fails a build of a name
+# when another build of it starts.
+_build_locks: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, dict[str, asyncio.Lock]
+] = weakref.WeakKeyDictionary()
+
+
+def _build_lock(name: str) -> asyncio.Lock:
+    locks = _build_locks.setdefault(asyncio.get_running_loop(), {})
+    return locks.setdefault(name, asyncio.Lock())
+
 
 class E2BTemplateConfig(BaseModel):
     """A declarative E2B template: base + ordered build steps + build params."""
@@ -281,30 +297,86 @@ class E2BTemplateConfig(BaseModel):
 
         return Template.to_dockerfile(self._builder())
 
-    async def build(self, **api: Any) -> str:
+    async def build(
+        self,
+        *,
+        templates: E2BTemplateAPI | None = None,
+        wait_timeout: float = 1800.0,
+        poll_interval: float = 5.0,
+        **api: Any,
+    ) -> str:
         """
-        Build the template and return its ref (alias or template id) for
-        ``create(template=...)``. Idempotent: skips the build when ``alias``
-        already exists (unless ``skip_cache``).
-        """
-        from e2b import AsyncTemplate  # ruff: ignore[import-outside-top-level]
+        Make sure a ready build of the template ``alias`` exists and return
+        ``alias``, the ref for ``create(template=...)``. The latest build of
+        ``alias`` decides what happens:
 
-        if (
-            self.alias
-            and not self.skip_cache
-            and await AsyncTemplate.alias_exists(self.alias, **api)
-        ):
-            return self.alias
-        info = await AsyncTemplate.build(
-            self._builder(),
-            alias=self.alias,
-            tags=self.tags or None,
-            cpu_count=self.cpu_count,
-            memory_mb=self.memory_mb,
-            skip_cache=self.skip_cache,
-            **api,
+        * ready: return at once, without building;
+        * under way: poll it every ``poll_interval`` seconds until it ends,
+          then return, or raise E2B's ``BuildException`` with E2B's reason if
+          it failed; raise ``TimeoutError`` if it is still building after
+          ``wait_timeout`` seconds;
+        * failed, or no template has the name: build the template.
+
+        With ``skip_cache`` it always builds, without E2B's layer cache. A
+        build that fails raises ``BuildException``. A ready build is not
+        compared with this definition: give a changed definition a new
+        ``alias``, or set ``skip_cache``.
+
+        Calls in one process build a name one at a time. Two processes that
+        build the same new name at once can still make one of the builds fail,
+        since E2B fails a build when another build of its name starts: that
+        call raises ``BuildException``, and the next call uses the other build,
+        or builds again if the latest build failed.
+
+        ``templates`` is E2B's template API: by default an
+        :class:`E2BTemplateClient` over ``api`` (``api_key``, ``domain``, …).
+        """
+        name = self.alias
+        if name is None:
+            raise ValueError(
+                "E2BTemplateConfig.build() needs an alias to build the template as."
+            )
+        templates = templates or E2BTemplateClient(**api)
+        async with _build_lock(name):
+            state = None if self.skip_cache else await templates.latest_build(name)
+            if state is not None and state.status == "building":
+                state = await _build_finished(
+                    templates, name, timeout=wait_timeout, poll_interval=poll_interval
+                )
+            if state is not None and state.status == "ready":
+                return name
+            await templates.build(
+                self._builder(),
+                name,
+                tags=self.tags or None,
+                cpu_count=self.cpu_count,
+                memory_mb=self.memory_mb,
+                skip_cache=self.skip_cache,
+            )
+        return name
+
+
+async def _build_finished(
+    templates: E2BTemplateAPI, name: str, *, timeout: float, poll_interval: float
+) -> TemplateBuildState | None:
+    """Poll the build of ``name`` under way until it ends; raise if it failed."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        if loop.time() >= deadline:
+            raise TimeoutError(
+                f"E2B template {name!r} is still building after {timeout:g} s."
+            )
+        await asyncio.sleep(poll_interval)
+        state = await templates.latest_build(name)
+        if state is None or state.status != "building":
+            break
+    if state is not None and state.status == "failed":
+        raise BuildException(
+            f"The build of E2B template {name!r} failed: "
+            f"{state.reason or 'E2B gave no reason'}"
         )
-        return info.alias or info.template_id
+    return state
 
 
 # ---------------------------------------------------------------------------

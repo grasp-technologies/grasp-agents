@@ -1,13 +1,15 @@
 """
 E2B template / environment config (``sandbox/e2b/config.py``).
 
-Schema validation + the config -> Dockerfile mapping run **offline** — no E2B
-key, no build, no network. Gated only on the optional ``e2b`` package being
-importable.
+Schema validation, the config -> Dockerfile mapping and what ``build()`` does
+for each state of a template's latest build run **offline**, against
+``FakeTemplateAPI`` — no E2B key, no build, no network. Gated only on the
+optional ``e2b`` package being importable.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 import pytest
@@ -16,6 +18,7 @@ pytest.importorskip("e2b")
 
 import json
 
+from e2b import BuildException
 from pydantic import ValidationError
 
 from grasp_agents.sandbox.e2b.config import (
@@ -30,6 +33,8 @@ from grasp_agents.sandbox.e2b.config import (
     TemplateBase,
     load_e2b_config,
 )
+from grasp_agents.sandbox.e2b.templates import TemplateBuildState
+from tests.sandbox._e2b_fakes import FakeTemplateAPI
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -113,3 +118,110 @@ def test_load_e2b_config(tmp_path: Path) -> None:
     assert conf.allowed_roots == ["/home/user/ws"]
     # the inline template renders to a Dockerfile offline
     assert "numpy" in conf.template_build.to_dockerfile()
+
+
+# --- build(): what it does for each state of the latest build ---------------
+
+BUILDING = TemplateBuildState("building")
+READY = TemplateBuildState("ready")
+
+
+def _demo() -> E2BTemplateConfig:
+    return E2BTemplateConfig(
+        base=TemplateBase(python="3.12"),
+        steps=[PipInstall(op="pip_install", packages=["six==1.16.0"])],
+        alias="demo",
+        tags=["v1"],
+        cpu_count=4,
+        memory_mb=2048,
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_reuses_a_ready_template() -> None:
+    templates = FakeTemplateAPI(READY)
+    assert await _demo().build(templates=templates) == "demo"
+    assert templates.builds == []
+
+
+@pytest.mark.asyncio
+async def test_build_builds_a_template_no_one_has_built() -> None:
+    templates = FakeTemplateAPI(None)
+    assert await _demo().build(templates=templates) == "demo"
+    [build] = templates.builds
+    assert build["name"] == "demo"
+    assert build["tags"] == ["v1"]
+    assert (build["cpu_count"], build["memory_mb"]) == (4, 2048)
+    assert build["skip_cache"] is False
+
+
+@pytest.mark.asyncio
+async def test_build_waits_for_a_build_under_way() -> None:
+    templates = FakeTemplateAPI(BUILDING, BUILDING, READY)
+    assert await _demo().build(templates=templates, poll_interval=0) == "demo"
+    assert templates.lookups == 3
+    assert templates.builds == []
+
+
+@pytest.mark.asyncio
+async def test_build_rebuilds_a_template_whose_last_build_failed() -> None:
+    templates = FakeTemplateAPI(TemplateBuildState("failed", "exit status 3"))
+    assert await _demo().build(templates=templates) == "demo"
+    assert len(templates.builds) == 1
+
+
+@pytest.mark.asyncio
+async def test_build_raises_e2bs_reason_when_the_awaited_build_fails() -> None:
+    templates = FakeTemplateAPI(
+        BUILDING, TemplateBuildState("failed", "failed to run command: exit status 3")
+    )
+    with pytest.raises(BuildException, match="failed to run command: exit status 3"):
+        await _demo().build(templates=templates, poll_interval=0)
+    assert templates.builds == []
+
+
+@pytest.mark.asyncio
+async def test_build_stops_waiting_after_wait_timeout() -> None:
+    templates = FakeTemplateAPI(BUILDING)
+    with pytest.raises(TimeoutError, match="'demo' is still building"):
+        await _demo().build(templates=templates, wait_timeout=0, poll_interval=0)
+    assert templates.builds == []
+
+
+@pytest.mark.asyncio
+async def test_build_raises_e2bs_error_when_its_own_build_fails() -> None:
+    templates = FakeTemplateAPI(None, build_error="failed to run command")
+    with pytest.raises(BuildException, match="failed to run command"):
+        await _demo().build(templates=templates)
+    # The next call finds the failed build and builds again.
+    with pytest.raises(BuildException):
+        await _demo().build(templates=templates)
+    assert len(templates.builds) == 2
+
+
+@pytest.mark.asyncio
+async def test_skip_cache_builds_without_looking_at_the_last_build() -> None:
+    templates = FakeTemplateAPI(READY)
+    config = _demo().model_copy(update={"skip_cache": True})
+    assert await config.build(templates=templates) == "demo"
+    assert templates.lookups == 0
+    [build] = templates.builds
+    assert build["skip_cache"] is True
+
+
+@pytest.mark.asyncio
+async def test_concurrent_builds_of_one_name_in_a_process_build_once() -> None:
+    templates = FakeTemplateAPI(None)
+    refs = await asyncio.gather(
+        _demo().build(templates=templates), _demo().build(templates=templates)
+    )
+    assert refs == ["demo", "demo"]
+    assert len(templates.builds) == 1
+
+
+@pytest.mark.asyncio
+async def test_build_needs_an_alias() -> None:
+    templates = FakeTemplateAPI(None)
+    with pytest.raises(ValueError, match="alias"):
+        await E2BTemplateConfig().build(templates=templates)
+    assert templates.builds == []
