@@ -76,7 +76,7 @@ Unenforceable combinations fail at construction, not on the first command — ex
 |---|---|---|---|---|
 | `NONE` | not enforced | enforced | enforced (empty allowlist) | enforced (no internet) |
 | `LOOPBACK` | not enforced | `ValueError` | `NotImplementedError` | `NotImplementedError` |
-| `ALLOWLIST` | not enforced | `ValueError` | enforced (proxy) | `NotImplementedError` |
+| `ALLOWLIST` | not enforced | `ValueError` | enforced (proxy) | enforced (E2B egress rules) |
 | `ALL` | open | open | `NotImplementedError` | open |
 
 ### Environment, limits and Python
@@ -112,6 +112,7 @@ async with env:                       # creates the sandbox; kills it on exit
 
 - The sandbox is created on `async with` and killed on exit (`pause_on_exit=True` pauses instead). `E2BEnvironment.from_sandbox(...)` wraps an existing sandbox. `env.started` says whether a sandbox is live.
 - **Lazy start.** With `lazy=True` (also an `E2BEnvironmentConfig` field), entry creates nothing: the first file or exec call starts the sandbox, once, even when calls race, so a session that never touches it never pays for one. A failed start fails like a failed entry: later calls raise at once, without creating another sandbox, until the environment is re-entered. Exit, `restore()`, `pause()` and `resume()` wait for a start in flight. A start keeps its sandbox while the environment is still entered and holding no other sandbox, even when every call waiting for it was cancelled (a per-call timeout shorter than the start, say): the next call uses it, and exit kills it. A start that finishes after the environment exited or swapped its sandbox kills the sandbox it created. `pause()` before the start raises.
+- **Network.** `network=NetworkPolicy.NONE` (the default) turns the sandbox's internet off and `ALL` on. `ALLOWLIST` lets it reach only `allowed_domains` (also `E2BEnvironmentConfig` fields): exact host names, or `*.`-wildcards for subdomains (`*.pythonhosted.org` covers `files.pythonhosted.org`; `pythonhosted.org` does not). Everything else is blocked, raw IP addresses included. E2B denies only addresses, never hosts, so `denied_domains` (checked first) are enforced by leaving them out of the allowlist; a denied host that an allowed wildcard covers raises `NotImplementedError`. Every create the environment makes, a restore's included, carries the network settings.
 - **Keep-alive and pause on timeout.** `sandbox_timeout` is a keep-alive counted from the create or the last resume; calls do not extend it. At its end E2B kills the sandbox (`on_timeout="kill"`, the default). With `on_timeout="pause"` (also an `E2BEnvironmentConfig` field) E2B pauses it instead, keeping its files, processes (shells included) and kernel contexts. Every create the environment makes, a restore's included, carries these settings.
   - **Calls resume it.** The environment knows when the keep-alive ends. From then on, the next call (a file or exec call, a shell command, a cell, a snapshot) first asks E2B whether it paused the sandbox, and if so resumes it in place with a fresh `sandbox_timeout`; shells reattach and keep their state, kernels keep their variables. Calls before the end cost nothing extra. A call that still finds the sandbox paused (an environment from `from_sandbox` does not know its keep-alive) fails, and resumes it for the next call; `E2BSandboxExpiredError` is only for a sandbox E2B no longer has.
   - **`auto_resume=True`**, which needs `"pause"`, also lets any other traffic to the paused sandbox resume it (a server it runs, another client); E2B then gives it its own default keep-alive (300 s), not `sandbox_timeout`.
@@ -180,6 +181,7 @@ async with env:                       # creates the sandbox; kills it on exit
 - On E2B, a one-shot command still running when `pause()`, `snapshot()` or E2B's own pause at the keep-alive drops the sandbox's connections loses the rest of its output: its call fails or times out, while the command itself may keep running. A cell running then is reported as timed out, and a shell command waits out its timeout, which replaces the shell. Only idle persistent shells reattach. The keep-alive ends on schedule whatever the sandbox is doing, so set `sandbox_timeout` to cover the work you expect between pauses.
 - `sweep_e2b` dates a snapshot by the time in its name, so snapshots without such a name (taken by other tools, or before environments named them) are never swept; delete those by hand.
 - When E2B removes a sandbox, only the call that finds out hears that its files are gone. Other agents sharing the environment find out through their shell and kernel reset notices, or not at all if they only use files.
+- An E2B allowlist cannot carve a denied host out of an allowed wildcard; list the allowed hosts one by one instead.
 - No Docker or SSH exec backend ships; implement `ExecutionEnvironment` / `ExecBackend` for other targets.
 
 ## See also

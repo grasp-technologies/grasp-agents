@@ -330,6 +330,8 @@ class E2BEnvironmentConfig(BaseModel):
     allow_read: list[str] = Field(default_factory=list)
     deny_write: list[str] = Field(default_factory=list)
     network: NetworkPolicy = NetworkPolicy.NONE
+    allowed_domains: list[str] = Field(default_factory=list)
+    denied_domains: list[str] = Field(default_factory=list)
     sandbox_timeout: int | None = None
     env: dict[str, str] = Field(default_factory=dict)
     metadata: dict[str, str] = Field(default_factory=dict)
@@ -385,6 +387,8 @@ class E2BEnvironmentConfig(BaseModel):
             template=template,
             sandbox_timeout=self.sandbox_timeout,
             network=self.network,
+            allowed_domains=self.allowed_domains,
+            denied_domains=self.denied_domains,
             env=self.env or None,
             metadata=self.metadata or None,
             api_key=api_key,

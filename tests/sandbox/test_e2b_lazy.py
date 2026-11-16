@@ -34,7 +34,7 @@ from grasp_agents.sandbox.e2b.environment import (
 )
 from grasp_agents.sandbox.exec_backend import ExecResult, TerminationReason
 from grasp_agents.sandbox.kernel import CellResult
-from grasp_agents.sandbox.policy import SandboxPolicy
+from grasp_agents.sandbox.policy import NetworkPolicy, SandboxPolicy
 from grasp_agents.tools.bash_session import BashSessionHolder
 from grasp_agents.tools.notebook_exec import KernelHolder
 from tests.sandbox._e2b_fakes import (
@@ -349,6 +349,25 @@ async def test_config_lazy_defers_the_start(creator: _Creator) -> None:
         assert env.started
 
     assert len(creator.created) == 1
+
+
+async def test_config_passes_the_allowlist(creator: _Creator) -> None:
+    config = E2BEnvironmentConfig(
+        network=NetworkPolicy.ALLOWLIST,
+        allowed_domains=["pypi.org"],
+        denied_domains=["evil.org"],
+    )
+    env = await config.build()
+
+    async with env:
+        await env.file_backend.mkdir(Path(f"{WS}/x"))
+
+    assert env.policy.allowed_domains == ("pypi.org",)
+    assert env.policy.denied_domains == ("evil.org",)
+    assert creator.created[0]["network"] == {
+        "allow_out": ["pypi.org"],
+        "deny_out": ["0.0.0.0/0"],
+    }
 
 
 async def test_config_passes_the_label(creator: _Creator) -> None:
