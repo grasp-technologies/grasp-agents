@@ -259,8 +259,11 @@ class E2BExecSession(ExecSession):
             try:
                 await sb.commands.send_stdin(self._pid, payload)
             except Exception as exc:
-                await self.close()
-                await self._holder.recover(sb, exc)
+                try:
+                    await self._holder.recover(sb, exc)
+                finally:
+                    # After recover: a sandbox E2B paused refuses the kill.
+                    await self.close()
                 yield ExecChunk(stream="stderr", data=str(exc))
                 yield self._result(-1, start, reason=TerminationReason.SIGNAL)
                 return
@@ -280,11 +283,14 @@ class E2BExecSession(ExecSession):
                     try:
                         stream, data = await asyncio.wait_for(self._queue.get(), wait)
                     except TimeoutError as exc:
-                        await self.close()
                         completed = True
-                        # A sandbox E2B removed mid-command never sends the
-                        # end markers either.
-                        await self._holder.recover(sb, exc)
+                        # A sandbox E2B removed or paused mid-command never
+                        # sends the end markers either; resume a paused one
+                        # first, or it refuses the kill.
+                        try:
+                            await self._holder.recover(sb, exc)
+                        finally:
+                            await self.close()
                         yield self._result(
                             -1,
                             start,

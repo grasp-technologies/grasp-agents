@@ -1475,6 +1475,39 @@ async def test_with_auto_resume_calls_resume_a_sandbox_the_environment_paused(
     assert sandbox.resumes == [None, 0]
 
 
+class _PausingShells(ShellCommands):
+    """E2B pauses ``sandbox`` at its keep-alive while ``long_job`` runs."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sandbox: FakeSandbox | None = None
+
+    async def send_stdin(self, pid: int, data: str) -> Any:
+        if "long_job" in data and self.sandbox is not None:
+            self.stdin_writes.append((pid, data))
+            await self.sandbox.pause()
+            return None
+        return await super().send_stdin(pid, data)
+
+
+async def test_a_shell_command_a_pause_cut_off_is_killed_after_resuming(
+    creator: _Creator,
+) -> None:
+    commands = _PausingShells()
+    sandbox = FakeSandbox(sandbox_id="first", commands=commands)
+    commands.sandbox = sandbox
+    creator._queue.append(sandbox)
+    holder = BashSessionHolder()
+
+    async with _pausing_after(3600) as env:
+        await _run(await holder.get(env.exec_backend), "cd /tmp")
+        result = await _run(await holder.get(env.exec_backend), "long_job", timeout=0.2)
+        assert result.reason is TerminationReason.OVERALL_TIMEOUT
+
+    assert sandbox.resumes == [3600]
+    assert commands.killed == [1]
+
+
 def _wrapping(sandbox: FakeSandbox) -> E2BEnvironment:
     """An environment over ``sandbox``, whose keep-alive it does not know."""
     return E2BEnvironment.from_sandbox(
