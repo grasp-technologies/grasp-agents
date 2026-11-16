@@ -7,10 +7,12 @@ Needs ``e2b`` installed, ``E2B_API_KEY`` and network; run unsandboxed:
 ``uv run pytest -m integration tests/sandbox/test_e2b_live_lifecycle.py``.
 
 Every sandbox a test creates carries a metadata tag of its own (key
-:data:`TAG_KEY`), and the test kills every sandbox with that tag, and deletes
-every snapshot it took, in a ``finally``. Sandboxes also get a short keep-alive
-(:data:`KEEP_ALIVE`), so one a failed cleanup leaves behind dies soon; find
-leftovers by listing sandboxes with that metadata key.
+:data:`TAG_KEY`), and its environments a label of their own, which names
+their snapshots. The test kills every sandbox with that tag, and deletes every
+snapshot named with that label or recorded by the test, in a ``finally``.
+Sandboxes also get a short keep-alive (:data:`KEEP_ALIVE`), so one a failed
+cleanup leaves behind dies soon, unless paused; find leftovers by listing
+sandboxes with that metadata key and snapshots named ``grasp-agents-t...``.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import importlib.util
 import os
 import time
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -63,6 +66,7 @@ class LiveRun:
 
     def __init__(self) -> None:
         self.tag = uuid.uuid4().hex
+        self.label = f"t{self.tag[:12]}"
         self.snapshots: list[str] = []
 
     def env(self, **kwargs: Any) -> E2BEnvironment:
@@ -70,6 +74,7 @@ class LiveRun:
             allowed_roots=[WS],
             metadata={TAG_KEY: self.tag},
             sandbox_timeout=KEEP_ALIVE,
+            label=self.label,
             **kwargs,
         )
 
@@ -94,13 +99,27 @@ class LiveRun:
             ids.update(info.sandbox_id for info in await pages.next_items())
         return ids
 
+    async def named(self) -> set[str]:
+        """Ids of the snapshots this test's environments named."""
+        from e2b import AsyncSandbox
+
+        prefix = f"grasp-agents-{self.label}-"
+        pages = AsyncSandbox.list_snapshots()
+        ids: set[str] = set()
+        while pages.has_next:
+            for snapshot in await pages.next_items():
+                names = [name.rsplit("/", 1)[-1] for name in snapshot.names]
+                if any(name.startswith(prefix) for name in names):
+                    ids.add(snapshot.snapshot_id)
+        return ids
+
     async def cleanup(self) -> None:
         from e2b import AsyncSandbox
 
         for sandbox_id in await self.tagged():
             with contextlib.suppress(Exception):
                 await AsyncSandbox.kill(sandbox_id)
-        for snapshot_id in self.snapshots:
+        for snapshot_id in {*self.snapshots, *await self.named()}:
             with contextlib.suppress(Exception):
                 await AsyncSandbox.delete_snapshot(snapshot_id)
 
@@ -343,6 +362,79 @@ async def test_a_sandbox_killed_from_outside_is_replaced_on_the_call_after() -> 
             assert result.returncode == 0
             assert "shell session was reset" in result.stderr
             assert result.stdout.strip() == WS
+    finally:
+        await run.cleanup()
+
+
+# --- what environments leave on the account ---------------------------------
+
+
+@_live
+async def test_sandboxes_are_tagged_and_snapshots_named_and_deletable() -> None:
+    from e2b import AsyncSandbox, SandboxException
+
+    run = LiveRun()
+    try:
+        async with run.env(lazy=True) as env:
+            note = Path(f"{WS}/note.txt")
+            await env.file_backend.write_bytes(note, b"kept", mode=0o644)
+            info = await AsyncSandbox.get_info(live_id(env))
+            assert info.metadata["grasp-agents"] == run.label
+
+            snapshot = await env.snapshot()
+            run.snapshots.append(snapshot)
+            assert await run.named() == {snapshot}
+            await env.restore(snapshot)
+            assert (await env.file_backend.read_text(note))[0] == "kept"
+            # The restored sandbox was created from it, so E2B keeps it.
+            with pytest.raises(SandboxException, match="sandboxes using it"):
+                await AsyncSandbox.delete_snapshot(snapshot)
+
+        assert await AsyncSandbox.delete_snapshot(snapshot)
+        assert await run.named() == set()
+        with pytest.raises(SandboxException):
+            await AsyncSandbox.create(template=snapshot, timeout=30)
+    finally:
+        await run.cleanup()
+
+
+@_live
+async def test_a_sweep_removes_what_an_ended_process_left_but_kept_snapshots() -> None:
+    from grasp_agents.sandbox import sweep_e2b
+
+    run = LiveRun()
+    try:
+        async with run.env(pause_on_exit=True) as env:
+            left_paused = live_id(env)
+            kept = await env.snapshot()
+            dropped = await env.snapshot()
+            run.snapshots += [kept, dropped]
+
+        async def both_listed() -> bool:
+            return await run.named() == {kept, dropped}
+
+        await until(both_listed)
+        dry = await sweep_e2b(
+            older_than=timedelta(0), keep_snapshots={kept}, label=run.label
+        )
+        assert [s.sandbox_id for s in dry.killed] == [left_paused]
+        assert [s.snapshot_id for s in dry.deleted] == [dropped]
+        assert [s.snapshot_id for s in dry.kept] == [kept]
+        assert await run.tagged() == {left_paused}
+
+        report = await sweep_e2b(
+            older_than=timedelta(0),
+            keep_snapshots={kept},
+            label=run.label,
+            dry_run=False,
+        )
+        assert [s.sandbox_id for s in report.killed] == [left_paused]
+        assert [s.snapshot_id for s in report.deleted] == [dropped]
+
+        async def only_the_kept_one() -> bool:
+            return await run.tagged() == set() and await run.named() == {kept}
+
+        await until(only_the_kept_one)
     finally:
         await run.cleanup()
 
