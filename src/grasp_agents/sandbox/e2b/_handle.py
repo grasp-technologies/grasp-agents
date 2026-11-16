@@ -14,10 +14,16 @@ import contextlib
 import logging
 import posixpath
 import shlex
+import time
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
-from e2b import SandboxException, SandboxNotFoundException, TimeoutException
+from e2b import (
+    SandboxException,
+    SandboxNotFoundException,
+    SandboxState,
+    TimeoutException,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -35,6 +41,9 @@ DEFAULT_WORKSPACE = "/home/user/workspace"
 
 
 DEFAULT_EXEC_TIMEOUT = 600.0  # matches the local supervisor's overall default
+
+
+E2B_DEFAULT_KEEP_ALIVE = 300  # seconds E2B keeps a sandbox created without one
 
 
 MAX_OUTPUT_CHARS = 1_000_000  # per the local supervisor's per-stream cap
@@ -166,22 +175,38 @@ class SandboxHandle:
     A lazily started environment *arms* the handle with a factory instead of
     creating the sandbox on entry; :meth:`ensure` then creates it on the first
     file or exec call, once, even when several calls race. The start holds
-    :attr:`lock`, which the environment's exit, restore, pause and resume also
-    take, so those wait for a start in flight.
+    :attr:`lock`, which the environment's exit, restore, pause, resume and
+    snapshot also take, so those wait for a start in flight.
+
+    With ``pauses_on_timeout``, E2B pauses the sandbox at the end of its
+    keep-alive. The environment records when each keep-alive starts
+    (:meth:`keep_alive_from`), and from its end a call first resumes the
+    sandbox if E2B paused it (:meth:`ready`). ``keep_alive`` is the timeout
+    such a resume passes E2B (``None``: E2B's default).
     """
 
     __slots__ = (
         "_expired",
         "_factory",
         "_failure",
+        "_held_paused",
+        "_keep_alive",
         "_lock",
+        "_pause_due",
+        "_pauses_on_timeout",
         "_replacement",
         "_start_task",
         "sandbox",
         "stream_epoch",
     )
 
-    def __init__(self, sandbox: AsyncSandbox | None = None) -> None:
+    def __init__(
+        self,
+        sandbox: AsyncSandbox | None = None,
+        *,
+        keep_alive: int | None = None,
+        pauses_on_timeout: bool = False,
+    ) -> None:
         self.sandbox: AsyncSandbox | None = sandbox
         # Bumped whenever the sandbox drops its open connections; a shell
         # that sees a newer value reattaches to its output.
@@ -192,6 +217,13 @@ class SandboxHandle:
         self._start_task: asyncio.Task[AsyncSandbox] | None = None
         self._replacement: Callable[[], Awaitable[AsyncSandbox]] | None = None
         self._expired: str | None = None
+        self._keep_alive = keep_alive
+        self._pauses_on_timeout = pauses_on_timeout
+        # The sandbox whose keep-alive is tracked, and the time.monotonic()
+        # reading from which E2B may have paused it.
+        self._pause_due: tuple[str, float] | None = None
+        # A sandbox the environment paused itself: calls leave it paused.
+        self._held_paused: str | None = None
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -234,39 +266,63 @@ class SandboxHandle:
         """
         The live sandbox (see :meth:`ensure`) for one call. A failure that
         comes from E2B no longer having it raises
-        :class:`E2BSandboxExpiredError` (see :meth:`raise_if_expired`).
+        :class:`E2BSandboxExpiredError`, and one that comes from E2B having
+        paused it resumes it for the next call (see :meth:`recover`).
         """
         sandbox = await self.ensure()
         try:
             yield sandbox
         except Exception as exc:
-            await self.raise_if_expired(sandbox, exc)
+            await self.recover(sandbox, exc)
             raise
 
-    async def raise_if_expired(self, sandbox: AsyncSandbox, exc: Exception) -> None:
+    async def retrying[T](
+        self, sandbox: AsyncSandbox, call: Callable[[], Awaitable[T]]
+    ) -> T:
         """
-        Raise :class:`E2BSandboxExpiredError` from ``exc`` if ``sandbox`` no
-        longer exists on E2B, after dropping it from the handle while it is
-        still the live one: the next call then starts a new sandbox, if the
-        environment can create one. Return if it exists or E2B cannot tell.
+        Await ``call``, and once more if it failed because E2B had paused
+        ``sandbox``, now resumed (see :meth:`recover`). Only for a call that
+        is harmless to repeat: one running user code may have run up to the
+        pause.
+        """
+        try:
+            return await call()
+        except Exception as exc:
+            if not await self.recover(sandbox, exc):
+                raise
+        return await call()
 
-        E2B reports a call to a removed sandbox the way it reports some
-        timeouts, so a failure that could mean either is checked with the
-        sandbox's info.
+    async def recover(self, sandbox: AsyncSandbox, exc: Exception) -> bool:
+        """
+        Act on ``exc``, a failed call on ``sandbox``, and return True if it
+        resumed the sandbox.
+
+        If E2B no longer has the sandbox, drop it from the handle while it is
+        still the live one (the next call then starts a new sandbox, if the
+        environment can create one) and raise :class:`E2BSandboxExpiredError`
+        from ``exc``. If E2B paused it, resume it (see
+        :meth:`resume_if_paused`). Otherwise, or if E2B cannot tell, return
+        False.
+
+        E2B reports a call to a removed or paused sandbox the way it reports
+        some timeouts, so a failure that could mean either is checked with
+        the sandbox's info.
         """
         if isinstance(exc, E2BSandboxExpiredError) or (
             isinstance(exc, SandboxException)
             and not isinstance(exc, (TimeoutException, SandboxNotFoundException))
         ):
-            return
+            return False
         try:
-            await sandbox.get_info()
+            info = await sandbox.get_info()
         except SandboxNotFoundException:
             pass
         except Exception:
-            return
+            return False
         else:
-            return
+            if info.state == SandboxState.PAUSED:
+                return await self.resume_if_paused(sandbox)
+            return False
         sandbox_id = str(sandbox.sandbox_id)
         if self.live(sandbox_id) is not None:
             self.sandbox = None
@@ -281,7 +337,9 @@ class SandboxHandle:
 
     async def ensure(self) -> AsyncSandbox:
         """
-        Return the live sandbox, starting it first when the handle is armed.
+        Return the live sandbox, starting it first when the handle is armed,
+        or resuming it first if E2B paused it at its keep-alive (see
+        :meth:`ready`).
 
         Concurrent first calls share one start, which runs in a task of its
         own, so cancelling a caller does not cancel it. The start keeps its
@@ -295,8 +353,10 @@ class SandboxHandle:
         A failed start is not retried until the handle is re-armed: later calls
         raise at once instead of creating, and billing, a sandbox each.
         """
-        if self.sandbox is not None:
-            return self.sandbox
+        while (sandbox := self.sandbox) is not None:
+            await self.ready(sandbox)
+            if self.sandbox is sandbox:
+                return sandbox
         if self._factory is None:
             return self.require()
         if self._failure is not None:
@@ -339,6 +399,75 @@ class SandboxHandle:
         client.
         """
         self.stream_epoch += 1
+
+    def keep_alive_from(self, sandbox_id: str, since: float) -> None:
+        """
+        Record that E2B started ``sandbox_id``'s keep-alive (a create or a
+        resume) no earlier than ``since``, a ``time.monotonic()`` reading
+        taken before the request. It is no longer held paused.
+        """
+        if self._held_paused == sandbox_id:
+            self._held_paused = None
+        if self._pauses_on_timeout:
+            keep_alive = (
+                E2B_DEFAULT_KEEP_ALIVE if self._keep_alive is None else self._keep_alive
+            )
+            self._pause_due = (sandbox_id, since + keep_alive)
+
+    def hold_paused(self, sandbox_id: str) -> None:
+        """
+        The environment paused ``sandbox_id`` itself: calls leave it paused
+        until :meth:`keep_alive_from` records a resume.
+        """
+        self._held_paused = sandbox_id
+
+    async def ready(self, sandbox: AsyncSandbox) -> None:
+        """
+        Before a call on ``sandbox``: once its keep-alive is over, resume it
+        if E2B paused it (see :meth:`resume_if_paused`). Before that, and for
+        a keep-alive the handle does not track, return at once.
+        """
+        due = self._pause_due
+        if (
+            due is not None
+            and due[0] == sandbox.sandbox_id
+            and time.monotonic() >= due[1]
+        ):
+            await self.resume_if_paused(sandbox)
+
+    async def resume_if_paused(self, sandbox: AsyncSandbox) -> bool:
+        """
+        Resume ``sandbox`` in place, with the handle's keep-alive, if E2B
+        paused it, it is still the live sandbox and the environment did not
+        pause it itself; return True if it did. A resume drops the sandbox's
+        open streams (:meth:`drop_streams`). Holds :attr:`lock`, so it waits
+        for a start, exit, restore, pause, resume or snapshot in flight.
+        """
+        sandbox_id = str(sandbox.sandbox_id)
+        async with self._lock:
+            if self.live(sandbox_id) is None or self._held_paused == sandbox_id:
+                return False
+            since = time.monotonic()
+            try:
+                info = await sandbox.get_info()
+            except Exception:
+                return False
+            if info.state != SandboxState.PAUSED:
+                if self._pauses_on_timeout:
+                    left = info.end_at.timestamp() - time.time()
+                    self._pause_due = (sandbox_id, time.monotonic() + max(0.0, left))
+                return False
+            logger.info("resuming E2B sandbox %s, which E2B paused", sandbox_id)
+            try:
+                await sandbox.connect(timeout=self._keep_alive)
+            except Exception:
+                logger.warning(
+                    "Failed to resume E2B sandbox %s", sandbox_id, exc_info=True
+                )
+                return False
+            self.drop_streams()
+            self.keep_alive_from(sandbox_id, since)
+            return True
 
     def require(self) -> AsyncSandbox:
         if self.sandbox is None and self._expired is not None:

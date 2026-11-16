@@ -1,5 +1,7 @@
 """
-``e2b_environment(lazy=True)``: the sandbox starts on first use.
+The E2B environment's sandbox lifecycle: a lazy start, restores and resumes
+that swap the sandbox, shells and kernels across them, and sandboxes E2B
+pauses or removes on its own.
 
 Uses the E2B test doubles from ``_e2b_fakes.py`` and patches ``AsyncSandbox``
 in the environment module the same way ``test_e2b.py`` does.
@@ -8,6 +10,7 @@ in the environment module the same way ``test_e2b.py`` does.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -35,6 +38,7 @@ from tests.sandbox._e2b_fakes import (
     CodeSandbox,
     FakeFiles,
     FakeSandbox,
+    FakeTimeout,
     ShellCommands,
 )
 
@@ -65,6 +69,7 @@ class _Creator:
             if self._queue
             else FakeSandbox(sandbox_id=f"sbx_{len(self.created)}")
         )
+        sandbox.keep_alive(kwargs.get("timeout"))
         self.made.append(sandbox)
         await asyncio.sleep(0)
         return sandbox
@@ -385,10 +390,11 @@ async def test_pause_waits_for_a_start_in_flight(
         pausing = asyncio.create_task(env.pause())
         await asyncio.sleep(0)
         slow_creator.gate.set()
-        await first_use
         (started,) = slow_creator.made
         assert await pausing == started.sandbox_id
         assert started.paused
+        with contextlib.suppress(FakeTimeout):  # refused when the pause came first
+            await first_use
 
 
 async def test_resume_waits_for_a_start_in_flight(
@@ -714,12 +720,10 @@ async def test_session_reattaches_its_output_after_a_snapshot(
 async def test_session_reattaches_its_output_after_pause_and_resume(
     creator: _Creator,
 ) -> None:
-    first = FakeSandbox(sandbox_id="first", commands=ShellCommands())
-    creator._queue.append(first)
+    commands = ShellCommands()
+    creator._queue.append(FakeSandbox(sandbox_id="first", commands=commands))
     # resume() reconnects through a new client to the same sandbox and shells.
-    creator.reconnects["first"] = FakeSandbox(
-        sandbox_id="first", commands=first.commands
-    )
+    creator.reconnects["first"] = FakeSandbox(sandbox_id="first", commands=commands)
     holder = BashSessionHolder()
 
     async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
@@ -731,7 +735,7 @@ async def test_session_reattaches_its_output_after_pause_and_resume(
         assert result.reason is TerminationReason.EXIT
         assert not holder.take_reset()
 
-    assert first.commands.connects == [(1, 0)]
+    assert commands.connects == [(1, 0)]
 
 
 async def test_session_replaces_a_shell_whose_output_it_cannot_reattach(
@@ -904,6 +908,157 @@ async def test_kernel_survives_a_reconnect_to_the_same_sandbox(
         assert not first.killed
 
     assert reconnected.ran == [("first-ctx0", "x")]
+
+
+# --- a sandbox E2B paused at its keep-alive ----------------------------------
+
+
+def _pausing() -> E2BEnvironment:
+    """A lazy environment whose sandbox E2B pauses at a keep-alive already over."""
+    return e2b_environment(
+        allowed_roots=[WS], lazy=True, on_timeout="pause", sandbox_timeout=0
+    )
+
+
+async def test_a_call_resumes_a_sandbox_e2b_paused(creator: _Creator) -> None:
+    sandbox = FakeSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+
+    async with _pausing() as env:
+        await env.file_backend.mkdir(Path(f"{WS}/a"))
+        await sandbox.pause()  # by E2B, at the keep-alive
+
+        await env.file_backend.mkdir(Path(f"{WS}/b"))
+        assert (await env.exec_backend.execute("true")).returncode == 0
+
+    assert sandbox.resumes == [0]  # with the environment's keep-alive
+    assert f"{WS}/b" in sandbox.files.made_dirs
+    assert len(creator.created) == 1
+
+
+async def test_calls_before_the_keep_alive_ends_do_not_check_for_a_pause(
+    creator: _Creator,
+) -> None:
+    sandbox = FakeSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+
+    async with e2b_environment(
+        allowed_roots=[WS], lazy=True, on_timeout="pause", sandbox_timeout=3600
+    ) as env:
+        await env.file_backend.mkdir(Path(f"{WS}/a"))
+        await env.exec_backend.execute("true")
+
+    assert sandbox.info_calls == 0
+
+
+async def test_a_shell_resumes_a_sandbox_e2b_paused_and_keeps_its_state(
+    creator: _Creator,
+) -> None:
+    commands = ShellCommands()
+    sandbox = FakeSandbox(sandbox_id="first", commands=commands)
+    creator._queue.append(sandbox)
+    holder = BashSessionHolder()
+
+    async with _pausing() as env:
+        await _run(await holder.get(env.exec_backend), "cd /tmp")
+        await sandbox.pause()
+
+        result = await _run(await holder.get(env.exec_backend), "pwd", timeout=0.5)
+        assert result.reason is TerminationReason.EXIT
+        assert not holder.take_reset()
+
+    assert sandbox.resumes == [0]
+    assert commands.connects == [(1, 0)]
+
+
+async def test_a_kernel_resumes_a_sandbox_e2b_paused_and_keeps_its_context(
+    creator: _Creator,
+) -> None:
+    sandbox = CodeSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+    holder = KernelHolder()
+
+    async with _pausing() as env:
+        await _execute(await holder.get(env.exec_backend), "x = 1")
+        await sandbox.pause()
+
+        assert (await _execute(await holder.get(env.exec_backend), "x")).status == "ok"
+        assert not holder.take_reset()
+
+    assert sandbox.resumes == [0]
+    assert sandbox.ran == [("first-ctx0", "x = 1"), ("first-ctx0", "x")]
+
+
+async def test_a_snapshot_resumes_a_sandbox_e2b_paused(creator: _Creator) -> None:
+    sandbox = FakeSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+
+    async with _pausing() as env:
+        await env.file_backend.mkdir(Path(f"{WS}/a"))
+        await sandbox.pause()
+
+        assert await env.snapshot() == "snap-first"
+
+    assert sandbox.resumes == [0]
+
+
+async def test_calls_leave_a_sandbox_the_environment_paused(creator: _Creator) -> None:
+    sandbox = FakeSandbox(sandbox_id="first")
+    creator._queue.append(sandbox)
+
+    async with _pausing() as env:
+        await env.file_backend.mkdir(Path(f"{WS}/a"))
+        await env.pause()
+
+        with pytest.raises(FakeTimeout):
+            await env.file_backend.mkdir(Path(f"{WS}/b"))
+
+    assert sandbox.resumes == []
+
+
+def _wrapping(sandbox: FakeSandbox) -> E2BEnvironment:
+    """An environment over ``sandbox``, whose keep-alive it does not know."""
+    return E2BEnvironment.from_sandbox(
+        cast("AsyncSandbox", sandbox),
+        policy=SandboxPolicy(allowed_roots=(Path(WS),)),
+    )
+
+
+async def test_a_call_refused_by_a_paused_sandbox_resumes_it_for_the_next(
+    creator: _Creator,
+) -> None:
+    sandbox = FakeSandbox(sandbox_id="wrapped")
+
+    async with _wrapping(sandbox) as env:
+        await sandbox.pause()
+
+        with pytest.raises(FakeTimeout):  # not E2BSandboxExpiredError
+            await env.file_backend.mkdir(Path(f"{WS}/a"))
+        assert env.started
+        await env.file_backend.mkdir(Path(f"{WS}/b"))
+
+    assert sandbox.resumes == [None]  # E2B's own keep-alive
+    assert creator.created == []
+
+
+async def test_a_shell_refused_by_a_paused_sandbox_resumes_it_and_keeps_its_state(
+    creator: _Creator,
+) -> None:
+    commands = ShellCommands()
+    sandbox = FakeSandbox(sandbox_id="wrapped", commands=commands)
+    holder = BashSessionHolder()
+
+    async with _wrapping(sandbox) as env:
+        await _run(await holder.get(env.exec_backend), "cd /tmp")
+        await sandbox.pause()
+        await asyncio.sleep(0)  # the shell's stream ends before the next command
+
+        result = await _run(await holder.get(env.exec_backend), "pwd", timeout=0.5)
+        assert result.reason is TerminationReason.EXIT
+        assert not holder.take_reset()
+
+    assert sandbox.resumes == [None]
+    assert creator.created == []
 
 
 # --- a sandbox E2B removed ---------------------------------------------------

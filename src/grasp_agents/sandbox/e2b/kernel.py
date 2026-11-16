@@ -19,11 +19,12 @@ from grasp_agents.sandbox.kernel import CellOutput, CellResult, KernelSession
 from ._handle import DEFAULT_EXEC_TIMEOUT
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncIterator
 
-    from e2b import AsyncSandbox
     from e2b_code_interpreter import AsyncSandbox as CodeInterpreterSandbox
     from e2b_code_interpreter.models import Context, Execution
+
+    from ._handle import SandboxHandle
 
 
 _RESULT_MIME_ATTRS: tuple[tuple[str, str], ...] = (
@@ -104,26 +105,24 @@ class E2BKernel(KernelSession):
     on the live sandbox: re-attached to a seeded context id (a rollback seeds
     the one its snapshot kept), else fresh. A seeded id the live sandbox has
     no context for gets a fresh context, reported through :meth:`take_reset`.
+    A pause keeps the context: a cell first resumes a sandbox E2B paused at
+    its keep-alive.
     """
 
     def __init__(
         self,
-        get_sandbox: Callable[[], AsyncSandbox | None],
+        holder: SandboxHandle,
+        sandbox_id: str,
         *,
         cwd: str,
         env: dict[str, str] | None,
         backend: str = "e2b",
         default_timeout: float = DEFAULT_EXEC_TIMEOUT,
         context_id: str | None = None,
-        raise_if_expired: Callable[[AsyncSandbox, Exception], Awaitable[None]]
-        | None = None,
     ) -> None:
-        # Returns the sandbox the kernel was opened on while it is still the
-        # live one, else None.
-        self._get_sandbox = get_sandbox
-        # Raises E2BSandboxExpiredError when a failure means E2B no longer
-        # has the sandbox.
-        self._raise_if_expired = raise_if_expired
+        self._holder = holder
+        # The sandbox the kernel was opened on.
+        self._sandbox_id = sandbox_id
         self._cwd = cwd
         self._env = env
         self._backend = backend
@@ -140,7 +139,7 @@ class E2BKernel(KernelSession):
 
     @property
     def closed(self) -> bool:
-        return self._closed or self._get_sandbox() is None
+        return self._closed or self._holder.live(self._sandbox_id) is None
 
     @property
     def context_id(self) -> str | None:
@@ -156,7 +155,7 @@ class E2BKernel(KernelSession):
 
     def _sandbox(self) -> CodeInterpreterSandbox:
         """The live sandbox, narrowed to the code-interpreter type (has run_code)."""
-        sandbox = self._get_sandbox()
+        sandbox = self._holder.live(self._sandbox_id)
         if sandbox is None:
             raise RuntimeError("kernel session is closed; open a new one")
         if not hasattr(sandbox, "run_code"):
@@ -190,6 +189,7 @@ class E2BKernel(KernelSession):
         execution: Execution | None = None
         async with self._lock:
             sandbox = self._sandbox()
+            await self._holder.ready(sandbox)
             try:
                 if self._context is None:
                     self._context = await self._bind_context(sandbox)
@@ -200,13 +200,13 @@ class E2BKernel(KernelSession):
                     timeout=eff_timeout,
                 )
             except TimeoutException as exc:
-                # E2B reports a removed sandbox as a timeout too.
-                await self._check_expired(sandbox, exc)
+                # E2B reports a removed or paused sandbox as a timeout too.
+                await self._holder.recover(sandbox, exc)
                 if self._context is None:
                     raise
                 timed_out = True
             except Exception as exc:
-                await self._check_expired(sandbox, exc)
+                await self._holder.recover(sandbox, exc)
                 raise
 
         if execution is None:
@@ -223,10 +223,6 @@ class E2BKernel(KernelSession):
             execution_count=execution.execution_count,
             runtime_ms=(time.monotonic() - start) * 1000.0,
         )
-
-    async def _check_expired(self, sandbox: AsyncSandbox, exc: Exception) -> None:
-        if self._raise_if_expired is not None:
-            await self._raise_if_expired(sandbox, exc)
 
     def take_reset(self) -> bool:
         was = self._was_reset

@@ -10,7 +10,6 @@ import asyncio
 import contextlib
 import time
 from dataclasses import replace
-from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
 from e2b import AsyncCommandHandle, CommandExitException
@@ -183,7 +182,7 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
                 on_stderr=on_stderr,
             )
         except Exception as exc:
-            await self._holder.raise_if_expired(sb, exc)
+            await self._holder.recover(sb, exc)
             reason = (
                 TerminationReason.OVERALL_TIMEOUT
                 if is_timeout(exc)
@@ -248,7 +247,7 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
             return
         failure = outcome.get("exc")
         if isinstance(failure, Exception):
-            await self._holder.raise_if_expired(sb, failure)
+            await self._holder.recover(sb, failure)
         yield self._terminal(
             handle, failure, runtime_ms=runtime_ms, truncated=truncated
         )
@@ -324,15 +323,13 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
     ) -> E2BExecSession:
         """Open a persistent shell on the sandbox (see :class:`E2BExecSession`)."""
         sandbox = await self._holder.ensure()
-        holder = self._holder
         return E2BExecSession(
-            partial(holder.live, sandbox.sandbox_id),
+            self._holder,
+            str(sandbox.sandbox_id),
             cwd=self._resolve_cwd(cwd),
             env=self._merged_env(env),
             backend=self._name,
             max_output_chars=self._max_output_chars,
-            get_stream_epoch=lambda: holder.stream_epoch,
-            raise_if_expired=holder.raise_if_expired,
         )
 
     async def open_kernel(
@@ -363,11 +360,11 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
                 "(needs the e2b-code-interpreter package, in the 'e2b' extra)."
             )
         return E2BKernel(
-            partial(self._holder.live, sandbox.sandbox_id),
+            self._holder,
+            str(sandbox.sandbox_id),
             cwd=self._resolve_cwd(cwd),
             env=self._merged_env(env),
             backend=self._name,
             default_timeout=self._default_timeout,
             context_id=context_id,
-            raise_if_expired=self._holder.raise_if_expired,
         )

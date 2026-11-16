@@ -249,7 +249,10 @@ class FakeCommands:
 
 
 class GoneAPI:
-    """A sandbox API E2B no longer serves: every call fails as on a 502."""
+    """
+    A sandbox API E2B does not serve, the sandbox being removed or paused:
+    every call fails as on a 502.
+    """
 
     def __getattr__(self, name: str) -> Any:
         async def call(*args: Any, **kwargs: Any) -> Any:
@@ -276,6 +279,12 @@ class FakeSandbox:
         self.killed = False
         self.snapshotted = False
         self.gone = False
+        self.state = "running"
+        self.info_calls = 0
+        self.end_at = dt.datetime.now(dt.UTC) + dt.timedelta(hours=1)
+        # The keep-alive timeout of each connect that resumed it in place.
+        self.resumes: list[int | None] = []
+        self._served: tuple[Any, Any] = (self.files, self.commands)
 
     def expire(self) -> None:
         """E2B removes the sandbox (its timeout, or a kill from elsewhere)."""
@@ -284,19 +293,49 @@ class FakeSandbox:
         self.commands = GoneAPI()
 
     async def get_info(self) -> Any:
+        self.info_calls += 1
         if self.gone:
             raise SandboxNotFoundException(f"Sandbox {self.sandbox_id} not found")
-        return SimpleNamespace(sandbox_id=self.sandbox_id, state="running")
+        return SimpleNamespace(
+            sandbox_id=self.sandbox_id, state=self.state, end_at=self.end_at
+        )
+
+    def keep_alive(self, timeout: int | None) -> None:
+        """Start a keep-alive of ``timeout`` seconds, E2B's 300 by default."""
+        seconds = 300 if timeout is None else timeout
+        self.end_at = dt.datetime.now(dt.UTC) + dt.timedelta(seconds=seconds)
 
     async def pause(self) -> Any:
+        """
+        Pause it, as the environment or E2B (at its keep-alive) does: open
+        streams drop, and calls are refused until a resume.
+        """
         self.paused = True
+        if self.state == "paused":
+            return False
+        self.state = "paused"
         self.commands.drop_streams()
+        self._served = (self.files, self.commands)
+        self.files = self.commands = GoneAPI()
+        return True
+
+    async def connect(self, timeout: int | None = None, **opts: Any) -> Any:
+        """Resume it in place, as the SDK's instance ``connect`` does."""
+        del opts
+        self.resumes.append(timeout)
+        if self.state == "paused":
+            self.files, self.commands = self._served
+            self.state = "running"
+            self.keep_alive(timeout)
+        return self
 
     async def kill(self) -> Any:
         self.killed = True
         return True
 
     async def create_snapshot(self) -> Any:
+        if self.state == "paused":
+            raise SandboxNotFoundException(f"Sandbox {self.sandbox_id} not found")
         # E2B pauses the sandbox while it takes the snapshot.
         self.snapshotted = True
         self.commands.drop_streams()
@@ -403,7 +442,7 @@ class CodeSandbox(FakeSandbox):
         self.ran: list[tuple[str, str]] = []
 
     def _serve(self) -> None:
-        if self.gone:
+        if self.gone or self.state == "paused":
             raise FakeTimeout("502: This error is likely due to sandbox timeout.")
 
     async def create_code_context(self, cwd: str | None = None) -> Any:

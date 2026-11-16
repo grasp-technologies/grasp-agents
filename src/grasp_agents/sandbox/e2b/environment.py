@@ -31,7 +31,7 @@ from .file_backend import E2BFileBackend
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Mapping, Sequence
 
-    from e2b import SandboxLifecycle
+    from e2b import SandboxLifecycle, SnapshotInfo
     from e2b.connection_config import ApiParams
 
 logger = logging.getLogger(__name__)
@@ -234,6 +234,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         sandbox = await sandbox_cls.create(**self._create_params)
         logger.info("E2B sandbox ready in %.1fs", time.monotonic() - t0)
         await self._prepare(sandbox, created_here=True)
+        self._holder.keep_alive_from(str(sandbox.sandbox_id), t0)
         return sandbox
 
     async def _prepare(self, sandbox: AsyncSandbox, *, created_here: bool) -> None:
@@ -275,18 +276,22 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         same sandbox instead, use :meth:`pause` / :meth:`resume`.)
 
         A lazy environment whose sandbox has not started yet returns
-        :data:`FRESH_SNAPSHOT_REF` without starting one.
+        :data:`FRESH_SNAPSHOT_REF` without starting one. A sandbox E2B paused
+        at its keep-alive is resumed first.
         """
         if self._holder.sandbox is None and self._holder.armed:
             return FRESH_SNAPSHOT_REF
-        sandbox = self._holder.require()
-        try:
-            snap = await sandbox.create_snapshot()
-        except Exception as exc:
-            await self._holder.raise_if_expired(sandbox, exc)
-            raise
-        finally:
-            self._holder.drop_streams()
+        sandbox = await self._holder.ensure()
+
+        async def create() -> SnapshotInfo:
+            async with self._holder.lock:
+                try:
+                    return await sandbox.create_snapshot()
+                finally:
+                    self._holder.drop_streams()
+
+        # E2B refuses to snapshot a paused sandbox, without creating one.
+        snap = await self._holder.retrying(sandbox, create)
         return str(snap.snapshot_id)
 
     async def restore(self, ref: str) -> None:
@@ -336,25 +341,31 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
             return await self._start()
         # Create from the snapshot instead of the configured template.
         params: E2BCreateParams = {**(self._create_params or {}), "template": ref}
-        return await _sandbox_cls(self._code_interpreter).create(**params)
+        since = time.monotonic()
+        sandbox = await _sandbox_cls(self._code_interpreter).create(**params)
+        self._holder.keep_alive_from(str(sandbox.sandbox_id), since)
+        return sandbox
 
     async def pause(self) -> str:
         """
         Suspend the sandbox (filesystem + memory preserved) and return its id.
 
-        Resume the *same* sandbox later with :meth:`resume`. Distinct from
-        :meth:`snapshot`: pause is suspend/resume (no rewind), whereas a snapshot
-        is a persistent point-in-time copy you spawn fresh sandboxes from.
+        Resume the *same* sandbox later with :meth:`resume`; until then, calls
+        leave it paused. Distinct from :meth:`snapshot`: pause is
+        suspend/resume (no rewind), whereas a snapshot is a persistent
+        point-in-time copy you spawn fresh sandboxes from.
         """
         async with self._holder.lock:
             if self._holder.sandbox is None and self._holder.armed:
                 raise RuntimeError("Nothing to pause: the sandbox was never started.")
             sandbox = self._holder.require()
+            sandbox_id = str(sandbox.sandbox_id)
             try:
                 await sandbox.pause()
             finally:
                 self._holder.drop_streams()
-            return str(sandbox.sandbox_id)
+            self._holder.hold_paused(sandbox_id)
+            return sandbox_id
 
     async def resume(self, sandbox_id: str | None = None) -> None:
         """
@@ -397,6 +408,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
             if "domain" in params:
                 opts["domain"] = params["domain"]
             sandbox_cls = _sandbox_cls(self._code_interpreter)
+            since = time.monotonic()
             resumed = await sandbox_cls.connect(
                 target, timeout=params.get("timeout"), **opts
             )
@@ -406,6 +418,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
                     await self._let_go(resumed)
                 return
             self._holder.sandbox = resumed
+            self._holder.keep_alive_from(str(resumed.sandbox_id), since)
             self._holder.drop_streams()
             if previous is not None and replaces:
                 await self._let_go(previous)
@@ -500,11 +513,12 @@ def e2b_environment(
         on_timeout: What E2B does with the sandbox at its keep-alive:
             ``"kill"`` removes it with its files, shells and kernels;
             ``"pause"`` pauses it, keeping its files, processes and kernel
-            state. E2B keeps a paused sandbox until it is killed. Sent with
-            every create, including a restore's.
-        auto_resume: With ``on_timeout="pause"``, let any traffic to the
-            paused sandbox resume it (E2B's auto-resume), not only
-            ``resume()``. Needs ``on_timeout="pause"``.
+            state, and the next call resumes it with a fresh keep-alive. E2B
+            keeps a paused sandbox until it is killed. Sent with every create,
+            including a restore's.
+        auto_resume: With ``on_timeout="pause"``, let any other traffic to the
+            paused sandbox resume it too (E2B's auto-resume, with E2B's
+            default keep-alive). Needs ``on_timeout="pause"``.
 
     Returns:
         An :class:`E2BEnvironment` to use as ``async with``.
@@ -546,7 +560,9 @@ def e2b_environment(
     if domain is not None:
         create_params["domain"] = domain
 
-    holder = SandboxHandle()
+    holder = SandboxHandle(
+        keep_alive=sandbox_timeout, pauses_on_timeout=on_timeout == "pause"
+    )
     return E2BEnvironment(
         policy=policy,
         holder=holder,

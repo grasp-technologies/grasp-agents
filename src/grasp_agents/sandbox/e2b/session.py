@@ -23,9 +23,10 @@ another agent's shell.
 A pause, a snapshot (E2B pauses the sandbox while taking it) or a resume drops
 the shell's output stream while the shell keeps running, and so does a pause
 E2B makes on its own at the sandbox's keep-alive. The next command first
-reattaches to the shell's output; if that fails (the shell exited, say), the
-session kills the shell, starts a new one in its place and reports the reset
-through :meth:`E2BExecSession.take_reset`.
+resumes the sandbox if E2B paused it, then reattaches to the shell's output;
+if that fails (the shell exited, say), the session kills the shell, starts a
+new one in its place and reports the reset through
+:meth:`E2BExecSession.take_reset`.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ import asyncio
 import contextlib
 import logging
 import time
+from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
 from grasp_agents.sandbox.exec_backend import (
@@ -44,12 +46,14 @@ from grasp_agents.sandbox.exec_backend import (
 )
 from grasp_agents.sandbox.session_protocol import frame_command, parse_exit_code
 
-from ._handle import consume_outcome
+from ._handle import E2BSandboxExpiredError, consume_outcome
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncIterator
 
     from e2b import AsyncCommandHandle, AsyncSandbox
+
+    from ._handle import SandboxHandle
 
 logger = logging.getLogger(__name__)
 
@@ -105,25 +109,17 @@ class E2BExecSession(ExecSession):
 
     def __init__(
         self,
-        get_sandbox: Callable[[], AsyncSandbox | None],
+        holder: SandboxHandle,
+        sandbox_id: str,
         *,
         cwd: str | None,
         env: dict[str, str] | None,
         backend: str,
         max_output_chars: int,
-        get_stream_epoch: Callable[[], int] | None = None,
-        raise_if_expired: Callable[[AsyncSandbox, Exception], Awaitable[None]]
-        | None = None,
     ) -> None:
-        # Returns the sandbox the session was opened on while it is still the
-        # live one, else None.
-        self._get_sandbox = get_sandbox
-        # Changes whenever the sandbox dropped its open streams (a pause,
-        # snapshot or resume); None means they are never dropped.
-        self._get_stream_epoch = get_stream_epoch
-        # Raises E2BSandboxExpiredError when a failure means E2B no longer
-        # has the sandbox.
-        self._raise_if_expired = raise_if_expired
+        self._holder = holder
+        # The sandbox the session was opened on.
+        self._sandbox_id = sandbox_id
         self._cwd = cwd
         self._env = env
         self._backend = backend
@@ -144,21 +140,18 @@ class E2BExecSession(ExecSession):
     def backend(self) -> str:
         return self._backend
 
+    def _sandbox(self) -> AsyncSandbox | None:
+        """The sandbox the session was opened on while it is the live one."""
+        return self._holder.live(self._sandbox_id)
+
     @property
     def closed(self) -> bool:
-        return self._closed or self._get_sandbox() is None
+        return self._closed or self._sandbox() is None
 
     def take_reset(self) -> bool:
         was = self._was_reset
         self._was_reset = False
         return was
-
-    async def _check_expired(self, sb: AsyncSandbox, exc: Exception) -> None:
-        if self._raise_if_expired is not None:
-            await self._raise_if_expired(sb, exc)
-
-    def _current_stream_epoch(self) -> int:
-        return 0 if self._get_stream_epoch is None else self._get_stream_epoch()
 
     def _follow(self, handle: AsyncCommandHandle) -> None:
         self._handle = handle
@@ -173,7 +166,7 @@ class E2BExecSession(ExecSession):
         and so does the shell exiting.
         """
         ended = self._output is not None and self._output.done()
-        return ended or self._stream_epoch != self._current_stream_epoch()
+        return ended or self._stream_epoch != self._holder.stream_epoch
 
     def _on_stdout(self, data: str) -> None:
         self._queue.put_nowait(("stdout", data))
@@ -184,8 +177,9 @@ class E2BExecSession(ExecSession):
     async def _ensure_started(self, sb: AsyncSandbox) -> None:
         if self._handle is not None:
             return
-        self._stream_epoch = self._current_stream_epoch()
-        handle = await sb.commands.run(
+        self._stream_epoch = self._holder.stream_epoch
+        start = partial(
+            sb.commands.run,
             "/bin/sh",
             background=True,
             cwd=self._cwd,
@@ -197,6 +191,7 @@ class E2BExecSession(ExecSession):
             on_stdout=self._on_stdout,
             on_stderr=self._on_stderr,
         )
+        handle = await self._holder.retrying(sb, start)
         self._follow(handle)
         self._pid = handle.pid
 
@@ -205,17 +200,26 @@ class E2BExecSession(ExecSession):
         Reconnect to the shell's output after its stream was dropped, or
         replace the shell (losing its state) if that fails.
         """
-        epoch = self._current_stream_epoch()
         stale, self._handle = self._handle, None
         if stale is not None:
             with contextlib.suppress(Exception):
                 await stale.disconnect()
-        try:
-            handle = await sb.commands.connect(
+        epoch = self._holder.stream_epoch
+
+        async def connect() -> AsyncCommandHandle:
+            nonlocal epoch
+            epoch = self._holder.stream_epoch
+            return await sb.commands.connect(
                 pid, timeout=0, on_stdout=self._on_stdout, on_stderr=self._on_stderr
             )
-        except Exception as exc:
-            await self._check_expired(sb, exc)
+
+        try:
+            # A sandbox E2B paused without the environment knowing refuses
+            # the connect until it is resumed, which drops streams again.
+            handle = await self._holder.retrying(sb, connect)
+        except E2BSandboxExpiredError:
+            raise
+        except Exception:
             logger.warning(
                 "Could not reattach to the output of E2B shell %s on sandbox %s; "
                 "starting a new shell (its state is lost).",
@@ -237,15 +241,12 @@ class E2BExecSession(ExecSession):
         # the consumer closes this stream when it stops early, releasing it.
         # ruff: disable[yield-in-context-manager-in-async-generator]
         async with self._lock:
-            sb = self._get_sandbox()
+            sb = self._sandbox()
             if self._closed or sb is None:
                 raise RuntimeError("shell session is closed; open a new one")
             start = time.monotonic()
-            try:
-                await self._ensure_started(sb)
-            except Exception as exc:
-                await self._check_expired(sb, exc)
-                raise
+            await self._holder.ready(sb)
+            await self._ensure_started(sb)
             assert self._pid is not None
             if self._output_lost():
                 await self._reattach(sb, self._pid)
@@ -258,7 +259,7 @@ class E2BExecSession(ExecSession):
                 await sb.commands.send_stdin(self._pid, payload)
             except Exception as exc:
                 await self.close()
-                await self._check_expired(sb, exc)
+                await self._holder.recover(sb, exc)
                 yield ExecChunk(stream="stderr", data=str(exc))
                 yield self._result(-1, start, reason=TerminationReason.SIGNAL)
                 return
@@ -282,7 +283,7 @@ class E2BExecSession(ExecSession):
                         completed = True
                         # A sandbox E2B removed mid-command never sends the
                         # end markers either.
-                        await self._check_expired(sb, exc)
+                        await self._holder.recover(sb, exc)
                         yield self._result(
                             -1,
                             start,
@@ -327,7 +328,7 @@ class E2BExecSession(ExecSession):
         )
 
     async def _kill(self) -> None:
-        sb = self._get_sandbox()
+        sb = self._sandbox()
         if self._pid is None or sb is None:
             # The shell went with its sandbox; on the live one the pid may
             # belong to another process.
