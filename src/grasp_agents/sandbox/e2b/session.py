@@ -168,7 +168,7 @@ class E2BExecSession(ExecSession):
             try:
                 await sb.commands.send_stdin(self._pid, payload)
             except Exception as exc:
-                self._closed = True
+                await self.close()
                 yield ExecChunk(stream="stderr", data=str(exc))
                 yield self._result(-1, start, reason=TerminationReason.SIGNAL)
                 return
@@ -188,8 +188,7 @@ class E2BExecSession(ExecSession):
                     try:
                         stream, data = await asyncio.wait_for(self._queue.get(), wait)
                     except TimeoutError:
-                        await self._kill()
-                        self._closed = True
+                        await self.close()
                         completed = True
                         yield self._result(
                             -1,
@@ -213,8 +212,7 @@ class E2BExecSession(ExecSession):
                 if not completed and not self._closed:
                     # Abandoned mid-command (external cancel): kill the shell so
                     # the next run starts clean.
-                    await self._kill()
-                    self._closed = True
+                    await self.close()
         # ruff: enable[yield-in-context-manager-in-async-generator]
 
     def _result(
@@ -245,9 +243,14 @@ class E2BExecSession(ExecSession):
             await sb.commands.kill(self._pid)
 
     async def close(self) -> None:
+        # Always disconnect: the shell's stream has no deadline, so it would
+        # otherwise stay open until its sandbox dies.
         self._closed = True
+        handle, self._handle = self._handle, None
         await self._kill()
-        self._handle = None
+        if handle is not None:
+            with contextlib.suppress(Exception):
+                await handle.disconnect()
 
 
 __all__ = ["E2BExecSession"]

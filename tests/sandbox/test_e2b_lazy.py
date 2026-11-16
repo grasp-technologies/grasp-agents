@@ -464,6 +464,43 @@ async def test_stale_session_never_touches_the_next_sandbox(
     assert second.commands.killed == []
 
 
+async def test_closing_a_session_kills_its_shell_and_disconnects(
+    creator: _Creator,
+) -> None:
+    sandbox = FakeSandbox(sandbox_id="first", commands=ShellCommands())
+    creator._queue.append(sandbox)
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        session = await env.exec_backend.open_session()
+        await _run(session, "true")
+        await session.close()
+
+    assert sandbox.commands.killed == [1]
+    assert sandbox.commands.shells[1].disconnected
+
+
+async def test_a_replaced_session_is_disconnected_without_a_kill(
+    creator: _Creator,
+) -> None:
+    first = FakeSandbox(sandbox_id="first", commands=ShellCommands())
+    restored = FakeSandbox(sandbox_id="restored", commands=ShellCommands())
+    creator._queue.extend([first, restored])
+    holder = BashSessionHolder()
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        await _run(await holder.get(env.exec_backend), "true")
+        await env.restore("snap-1")
+        await _run(await holder.get(env.exec_backend), "true")
+        # The shell has no stream deadline: only a disconnect ends its stream.
+        assert first.commands.shells[1].disconnected
+
+        await holder.close()
+        assert restored.commands.shells[1].disconnected
+
+    assert first.commands.killed == []
+    assert restored.commands.killed == [1]
+
+
 async def test_kernel_reopens_on_the_next_sandbox_after_a_fresh_restore(
     creator: _Creator,
 ) -> None:

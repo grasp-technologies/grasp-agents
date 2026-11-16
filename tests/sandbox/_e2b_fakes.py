@@ -275,6 +275,24 @@ class FakeSandbox:
 # --- persistent shells and code contexts ---------------------------------
 
 
+class ShellHandle:
+    """The output stream of a fake persistent shell, as one client holds it."""
+
+    def __init__(self, pid: int, on_stdout: Any, on_stderr: Any) -> None:
+        self.pid = pid
+        self._on_stdout = on_stdout
+        self._on_stderr = on_stderr
+        self.disconnected = False
+
+    def deliver(self, stdout: str, stderr: str) -> None:
+        if not self.disconnected:
+            self._on_stdout(stdout)
+            self._on_stderr(stderr)
+
+    async def disconnect(self) -> None:
+        self.disconnected = True
+
+
 class ShellCommands(FakeCommands):
     """
     Fake persistent shells, numbered per sandbox from pid 1: a stdin payload
@@ -284,22 +302,25 @@ class ShellCommands(FakeCommands):
 
     def __init__(self) -> None:
         super().__init__()
-        self._shells: dict[int, tuple[Any, Any]] = {}
+        self.shells: dict[int, ShellHandle] = {}
+        self.shell_timeouts: list[float | None] = []
 
     async def run(self, cmd: str, **kwargs: Any) -> Any:
         if not kwargs.get("stdin"):
             return await super().run(cmd, **kwargs)
-        pid = len(self._shells) + 1
-        self._shells[pid] = (kwargs["on_stdout"], kwargs["on_stderr"])
-        return SimpleNamespace(pid=pid)
+        self.shell_timeouts.append(kwargs.get("timeout"))
+        pid = len(self.shells) + 1
+        handle = ShellHandle(pid, kwargs["on_stdout"], kwargs["on_stderr"])
+        self.shells[pid] = handle
+        return handle
 
     async def send_stdin(self, pid: int, data: str) -> Any:
         await super().send_stdin(pid, data)
-        on_stdout, on_stderr = self._shells[pid]
+        if pid in self.killed:
+            raise RuntimeError(f"process {pid} not found")
         found = re.search(r"__GRASP_[0-9a-f]+__", data)
         assert found is not None
-        on_stdout(f"{found.group(0)} 0\n")
-        on_stderr(f"{found.group(0)}\n")
+        self.shells[pid].deliver(f"{found.group(0)} 0\n", f"{found.group(0)}\n")
 
 
 class CodeSandbox(FakeSandbox):

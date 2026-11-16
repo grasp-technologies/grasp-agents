@@ -78,7 +78,10 @@ class BashSessionHolder:
             elif current.closed:
                 # Prior shell died (e.g. killed by a timeout) — a fresh shell
                 # loses cwd / env / shell variables, so flag it for BashSession
-                # to report.
+                # to report. Closing it releases what a dead shell still holds
+                # (an E2B output stream).
+                with contextlib.suppress(Exception):
+                    await current.close()
                 current = await backend.open_session()
                 self._was_reset = True
             self._session = current
@@ -93,7 +96,7 @@ class BashSessionHolder:
     async def close(self) -> None:
         session = self._session
         self._session = None
-        if session is not None and not session.closed:
+        if session is not None:
             await session.close()
 
 
@@ -226,7 +229,7 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
                 result = result.model_copy(update={"stderr": notice + result.stderr})
             return result
         finally:
-            if own_session and not session.closed:
+            if own_session:
                 with contextlib.suppress(Exception):
                     await session.close()
 
