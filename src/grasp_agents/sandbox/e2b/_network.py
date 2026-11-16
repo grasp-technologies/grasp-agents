@@ -38,6 +38,12 @@ def e2b_egress(policy: SandboxPolicy) -> tuple[bool, SandboxNetworkOpts | None]:
     if policy.network is NetworkPolicy.NONE:
         return False, None
     if policy.network is NetworkPolicy.ALL:
+        if policy.denied_domains:
+            raise NotImplementedError(
+                "E2B cannot deny hosts while allowing all other traffic: it "
+                "denies only addresses. Drop denied_domains, or use "
+                "NetworkPolicy.ALLOWLIST with the hosts to allow."
+            )
         return True, None
 
     denied = [domain.lower() for domain in policy.denied_domains]

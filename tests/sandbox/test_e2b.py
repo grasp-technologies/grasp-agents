@@ -840,6 +840,42 @@ async def test_none_and_all_need_no_network_rules(
     assert "network" not in created[0]
 
 
+@pytest.mark.parametrize(
+    ("value", "internet", "has_rules"),
+    [("all", True, False), ("none", False, False), ("allowlist", True, True)],
+)
+async def test_a_network_given_as_a_string_is_read_as_the_policy(
+    monkeypatch: pytest.MonkeyPatch, value: str, internet: bool, has_rules: bool
+) -> None:
+    created = _created_by(monkeypatch)
+
+    async with e2b_environment(
+        allowed_roots=[WS], network=cast("NetworkPolicy", value)
+    ) as env:
+        assert env.policy.network is NetworkPolicy(value)
+        await env.update_network(cast("NetworkPolicy", "none"))
+        assert env.policy.network is NetworkPolicy.NONE
+
+    assert created[0]["allow_internet_access"] is internet
+    assert ("network" in created[0]) is has_rules
+
+
+async def test_an_unknown_network_is_refused() -> None:
+    with pytest.raises(ValueError, match="bogus"):
+        e2b_environment(allowed_roots=[WS], network=cast("NetworkPolicy", "bogus"))
+
+
+async def test_denied_hosts_with_all_traffic_allowed_are_refused() -> None:
+    with pytest.raises(NotImplementedError, match="denied_domains"):
+        e2b_environment(
+            allowed_roots=[WS], network=NetworkPolicy.ALL, denied_domains=["evil.org"]
+        )
+    env = e2b_environment(allowed_roots=[WS])
+    with pytest.raises(NotImplementedError, match="denied_domains"):
+        await env.update_network(NetworkPolicy.ALL, denied_domains=["evil.org"])
+    assert env.policy.network is NetworkPolicy.NONE
+
+
 async def test_a_denied_host_an_allowed_wildcard_covers_is_refused() -> None:
     with pytest.raises(NotImplementedError, match=r"evil\.example\.com"):
         e2b_environment(

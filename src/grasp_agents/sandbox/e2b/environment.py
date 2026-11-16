@@ -372,12 +372,13 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable, NetworkUpdatable):
         network.
 
         Raises ``NotImplementedError``, changing nothing, for a policy E2B
-        cannot enforce (``LOOPBACK``; a denied host an allowed wildcard
-        covers).
+        cannot enforce (``LOOPBACK``; ``denied_domains`` with ``ALL``; a denied
+        host an allowed wildcard covers), and ``ValueError`` for an unknown
+        ``network``.
         """
         policy = replace(
             self._policy,
-            network=network,
+            network=NetworkPolicy(network),
             allowed_domains=tuple(allowed_domains),
             denied_domains=tuple(denied_domains),
         )
@@ -561,9 +562,10 @@ def e2b_environment(
         allowed_domains: With ``ALLOWLIST``, the hosts the sandbox may reach:
             exact names, or ``*.``-wildcards for their subdomains. All other
             egress is blocked, raw IP addresses included.
-        denied_domains: Hosts never reachable, checked first. E2B denies only
-            addresses, so a denied host is left out of the allowlist, and one
-            an allowed wildcard covers raises ``NotImplementedError``.
+        denied_domains: With ``ALLOWLIST``, hosts never reachable, checked
+            first. E2B denies only addresses, so a denied host is left out of
+            the allowlist, and one an allowed wildcard covers raises
+            ``NotImplementedError``, as does any with ``ALL``.
         env: Base environment variables for the sandbox + every command.
         metadata: Custom sandbox metadata. The environment adds its own
             ``"grasp-agents"`` key, set to ``label``.
@@ -606,7 +608,7 @@ def e2b_environment(
         deny_read=tuple(Path(p) for p in deny_read),
         allow_read=tuple(Path(p) for p in allow_read),
         deny_write=tuple(Path(p) for p in deny_write),
-        network=network,
+        network=NetworkPolicy(network),
         allowed_domains=tuple(allowed_domains),
         denied_domains=tuple(denied_domains),
         env=dict(env) if env else {},
