@@ -21,10 +21,11 @@ the new one: its shell's pid there could belong to another process, such as
 another agent's shell.
 
 A pause, a snapshot (E2B pauses the sandbox while taking it) or a resume drops
-the shell's output stream while the shell keeps running. The next command
-first reattaches to the shell's output; if that fails, the session kills the
-shell, starts a new one in its place and reports the reset through
-:meth:`E2BExecSession.take_reset`.
+the shell's output stream while the shell keeps running, and so does a pause
+E2B makes on its own at the sandbox's keep-alive. The next command first
+reattaches to the shell's output; if that fails (the shell exited, say), the
+session kills the shell, starts a new one in its place and reports the reset
+through :meth:`E2BExecSession.take_reset`.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from grasp_agents.sandbox.exec_backend import (
     ExecChunk,
@@ -42,6 +43,8 @@ from grasp_agents.sandbox.exec_backend import (
     TerminationReason,
 )
 from grasp_agents.sandbox.session_protocol import frame_command, parse_exit_code
+
+from ._handle import consume_outcome
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -126,6 +129,8 @@ class E2BExecSession(ExecSession):
         self._backend = backend
         self._max_output_chars = max_output_chars
         self._handle: AsyncCommandHandle | None = None
+        # Ends when the shell's output stream does.
+        self._output: asyncio.Task[Any] | None = None
         self._pid: int | None = None
         self._stream_epoch = 0
         self._queue: asyncio.Queue[tuple[Literal["stdout", "stderr"], str]] = (
@@ -155,6 +160,21 @@ class E2BExecSession(ExecSession):
     def _current_stream_epoch(self) -> int:
         return 0 if self._get_stream_epoch is None else self._get_stream_epoch()
 
+    def _follow(self, handle: AsyncCommandHandle) -> None:
+        self._handle = handle
+        self._output = asyncio.ensure_future(handle.wait())
+        self._output.add_done_callback(consume_outcome)
+
+    def _output_lost(self) -> bool:
+        """
+        True once the shell's output stream was dropped, whether the
+        environment announced it (a newer stream epoch) or the stream ended
+        on its own: E2B ends it when it pauses the sandbox at its keep-alive,
+        and so does the shell exiting.
+        """
+        ended = self._output is not None and self._output.done()
+        return ended or self._stream_epoch != self._current_stream_epoch()
+
     def _on_stdout(self, data: str) -> None:
         self._queue.put_nowait(("stdout", data))
 
@@ -165,7 +185,7 @@ class E2BExecSession(ExecSession):
         if self._handle is not None:
             return
         self._stream_epoch = self._current_stream_epoch()
-        self._handle = await sb.commands.run(
+        handle = await sb.commands.run(
             "/bin/sh",
             background=True,
             cwd=self._cwd,
@@ -177,7 +197,8 @@ class E2BExecSession(ExecSession):
             on_stdout=self._on_stdout,
             on_stderr=self._on_stderr,
         )
-        self._pid = self._handle.pid
+        self._follow(handle)
+        self._pid = handle.pid
 
     async def _reattach(self, sb: AsyncSandbox, pid: int) -> None:
         """
@@ -190,7 +211,7 @@ class E2BExecSession(ExecSession):
             with contextlib.suppress(Exception):
                 await stale.disconnect()
         try:
-            self._handle = await sb.commands.connect(
+            handle = await sb.commands.connect(
                 pid, timeout=0, on_stdout=self._on_stdout, on_stderr=self._on_stderr
             )
         except Exception as exc:
@@ -206,6 +227,7 @@ class E2BExecSession(ExecSession):
             self._was_reset = True
             await self._ensure_started(sb)
             return
+        self._follow(handle)
         self._stream_epoch = epoch
 
     async def run(
@@ -225,7 +247,7 @@ class E2BExecSession(ExecSession):
                 await self._check_expired(sb, exc)
                 raise
             assert self._pid is not None
-            if self._stream_epoch != self._current_stream_epoch():
+            if self._output_lost():
                 await self._reattach(sb, self._pid)
 
             # Fresh queue per command — the shell is idle between commands, so

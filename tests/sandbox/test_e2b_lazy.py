@@ -754,6 +754,44 @@ async def test_session_replaces_a_shell_whose_output_it_cannot_reattach(
     assert [pid for pid, _ in commands.stdin_writes] == [1, 2]
 
 
+async def test_session_reattaches_its_output_after_e2b_drops_it_on_its_own(
+    creator: _Creator,
+) -> None:
+    commands = ShellCommands()
+    creator._queue.append(FakeSandbox(sandbox_id="first", commands=commands))
+    holder = BashSessionHolder()
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        await _run(await holder.get(env.exec_backend), "cd /tmp")
+        # E2B paused the sandbox at its keep-alive and traffic resumed it,
+        # all without the environment taking part, before the next command.
+        commands.drop_streams()
+        await asyncio.sleep(0)
+
+        result = await _run(await holder.get(env.exec_backend), "pwd", timeout=0.5)
+        assert result.reason is TerminationReason.EXIT
+        assert not holder.take_reset()
+
+    assert commands.connects == [(1, 0)]
+
+
+async def test_session_replaces_a_shell_that_exited(creator: _Creator) -> None:
+    commands = ShellCommands()
+    creator._queue.append(FakeSandbox(sandbox_id="first", commands=commands))
+    holder = BashSessionHolder()
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        await _run(await holder.get(env.exec_backend), "cd /tmp")
+        commands.exit_shell(1)
+        await asyncio.sleep(0)
+
+        result = await _run(await holder.get(env.exec_backend), "pwd", timeout=0.5)
+        assert result.reason is TerminationReason.EXIT
+        assert holder.take_reset()  # BashSession tells the model its shell reset
+
+    assert [pid for pid, _ in commands.stdin_writes] == [1, 2]
+
+
 async def test_kernel_reopens_on_the_next_sandbox_after_a_fresh_restore(
     creator: _Creator,
 ) -> None:

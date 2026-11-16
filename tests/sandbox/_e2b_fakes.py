@@ -307,7 +307,10 @@ class FakeSandbox:
 
 
 class ShellHandle:
-    """The output stream of a fake persistent shell, as one client holds it."""
+    """
+    The output stream of a fake persistent shell, as one client holds it:
+    ``wait`` returns once the stream ends.
+    """
 
     def __init__(self, pid: int, on_stdout: Any, on_stderr: Any) -> None:
         self.pid = pid
@@ -315,14 +318,23 @@ class ShellHandle:
         self._on_stderr = on_stderr
         self.disconnected = False
         self.dropped = False
+        self._ended = asyncio.Event()
 
     def deliver(self, stdout: str, stderr: str) -> None:
         if not (self.disconnected or self.dropped):
             self._on_stdout(stdout)
             self._on_stderr(stderr)
 
+    def drop(self) -> None:
+        self.dropped = True
+        self._ended.set()
+
+    async def wait(self) -> Any:
+        await self._ended.wait()
+
     async def disconnect(self) -> None:
         self.disconnected = True
+        self._ended.set()
 
 
 class ShellCommands(FakeCommands):
@@ -374,7 +386,12 @@ class ShellCommands(FakeCommands):
 
     def drop_streams(self) -> None:
         for handle in self.shells.values():
-            handle.dropped = True
+            handle.drop()
+
+    def exit_shell(self, pid: int) -> None:
+        """The shell exits (the model ran ``exit``), ending its stream."""
+        self.killed.append(pid)
+        self.shells[pid].drop()
 
 
 class CodeSandbox(FakeSandbox):
