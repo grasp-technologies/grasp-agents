@@ -51,6 +51,7 @@ from tests.sandbox._e2b_fakes import (
     FakeCommands,
     FakeEntry,
     FakeFiles,
+    FakeHandle,
     FakeSandbox,
     FakeTimeout,
 )
@@ -418,6 +419,56 @@ async def test_abandoned_stream_kills_and_disconnects() -> None:
     await stream.aclose()
     assert cmds.handles[0].killed
     assert cmds.handles[0].disconnected
+
+
+class _SlowKillHandle(FakeHandle):
+    """A command whose kill request is in flight until ``release`` is set."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.killing = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def kill(self) -> Any:
+        self.killing.set()
+        await self.release.wait()
+        return await super().kill()
+
+
+class _SlowKillCommands(FakeCommands):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+
+    async def run(self, cmd: str, **kwargs: Any) -> Any:
+        await super().run(cmd, **kwargs)
+        handle = _SlowKillHandle(
+            hang=True, on_stdout=kwargs["on_stdout"], on_stderr=kwargs["on_stderr"]
+        )
+        self.handles[-1] = handle
+        self.started.set()
+        return handle
+
+
+async def test_a_second_cancel_during_cleanup_still_stops_the_command() -> None:
+    cmds = _SlowKillCommands()
+    backend = _env(FakeSandbox(commands=cmds)).exec_backend
+    before = asyncio.all_tasks()
+    call = asyncio.create_task(backend.execute("python train.py"))
+    await cmds.started.wait()
+    handle = cmds.handles[0]
+    assert isinstance(handle, _SlowKillHandle)
+
+    call.cancel()  # e.g. KillTask
+    await handle.killing.wait()
+    call.cancel()  # e.g. the run's timeout, while the kill is in flight
+    handle.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+
+    assert handle.killed
+    assert handle.disconnected
+    assert [t for t in asyncio.all_tasks() - before if not t.done()] == []
 
 
 async def test_cancel_while_starting_propagates() -> None:

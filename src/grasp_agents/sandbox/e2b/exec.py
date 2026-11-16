@@ -11,7 +11,7 @@ import contextlib
 import time
 from dataclasses import replace
 from functools import partial
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from e2b import AsyncCommandHandle, CommandExitException
 
@@ -38,10 +38,33 @@ from .kernel import E2BKernel
 from .session import E2BExecSession
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import AsyncIterator, Coroutine, Mapping
     from pathlib import Path
 
     from grasp_agents.sandbox.policy import SandboxPolicy
+
+
+async def _stop_command(handle: AsyncCommandHandle, waiter: asyncio.Task[None]) -> None:
+    with contextlib.suppress(Exception):
+        await handle.kill()
+    with contextlib.suppress(Exception):
+        await handle.disconnect()
+    waiter.cancel()
+    await asyncio.wait([waiter])
+
+
+async def _finish_despite_cancellation(cleanup: Coroutine[Any, Any, None]) -> None:
+    """Run ``cleanup`` to its end even if the caller is cancelled, then re-raise."""
+    task = asyncio.ensure_future(cleanup)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+    task.result()
 
 
 class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
@@ -199,15 +222,14 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
                     break
                 yield item
         finally:
-            # Timed out, or the consumer stopped early (cancelled / closed us —
-            # e.g. KillTask): kill the remote command so it doesn't keep running
-            # in the sandbox, and stop listening to it.
-            if not completed:
-                with contextlib.suppress(Exception):
-                    await handle.kill()
-                await handle.disconnect()
-                waiter.cancel()
-            await asyncio.wait([waiter])
+            if completed:
+                await asyncio.wait([waiter])
+            else:
+                # Timed out, or the consumer stopped early (cancelled / closed
+                # us — e.g. KillTask): kill the remote command so it doesn't
+                # keep running in the sandbox, and stop listening to it, even
+                # if a second cancellation arrives meanwhile.
+                await _finish_despite_cancellation(_stop_command(handle, waiter))
 
         runtime_ms = (time.monotonic() - start) * 1000
         if timed_out:
