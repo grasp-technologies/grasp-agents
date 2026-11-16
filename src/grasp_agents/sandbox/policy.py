@@ -36,6 +36,7 @@ class NetworkPolicy(StrEnum):
 # credentials — API keys, tokens, cloud secrets. Security-first and deliberately
 # broad; pass ``env_scrub=()`` to disable or an explicit list to override.
 # Explicitly-provided ``env`` (and ``policy.env``) is never scrubbed.
+# cspell:ignore CREDS KUBECONFIG
 DEFAULT_ENV_SCRUB: tuple[str, ...] = (
     "*_API_KEY",
     "*_APIKEY",
