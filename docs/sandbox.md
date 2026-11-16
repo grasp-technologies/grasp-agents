@@ -18,9 +18,10 @@ An agent gets no shell, kernel or filesystem access unless you wire it. Command 
 | `e2b_environment`, `E2BEnvironment`, `E2BExecBackend`, `E2BFileBackend`, `E2BSandboxExpiredError` | `sandbox/e2b/` | E2B cloud sandbox (`grasp-agents[e2b]`). |
 | `sweep_e2b`, `E2BSweepReport` | `sandbox/e2b/cleanup.py` | Remove what E2B environments left on the account. |
 | `EnvironmentConfig`, `load_environment_config`; `E2BEnvironmentConfig`, `E2BTemplateConfig` | `sandbox/config.py`, `sandbox/e2b/config.py` | JSON configs. |
+| `E2BTemplateAPI`, `E2BTemplateClient`, `TemplateBuildState` | `sandbox/e2b/templates.py` | E2B's template API as `E2BTemplateConfig.build()` uses it. |
 | `Bash`, `BashSession`, `bash_tools` | `tools/bash.py`, `tools/bash_session.py` | Shell tools. |
 
-Import the sandbox names from `grasp_agents.sandbox`, except `ExecSession` / `SessionCapable` (`grasp_agents.sandbox.exec_backend`) and `KernelSession` / `KernelCapable` (`grasp_agents.sandbox.kernel`). The shell tools come from `grasp_agents.tools`.
+Import the sandbox names from `grasp_agents.sandbox`, except `ExecSession` / `SessionCapable` (`grasp_agents.sandbox.exec_backend`), `KernelSession` / `KernelCapable` (`grasp_agents.sandbox.kernel`) and the template API types (`grasp_agents.sandbox.e2b.templates`). The shell tools come from `grasp_agents.tools`.
 
 ## Wiring
 
@@ -128,7 +129,12 @@ async with env:                       # creates the sandbox; kills it on exit
 - **Shells and kernels follow their sandbox.** A shell or kernel is bound to the sandbox it was opened on. Once `restore()` or exit replaces that sandbox, it reports `closed` and never addresses the new one, where its pid could belong to another process. The next `BashSession`, `RunPython` or `RunCell` call opens a new one on the live sandbox, starting a lazy one, and tells the model its state was lost. After a rollback that restored a snapshot, a kernel re-attaches to the code context the snapshot kept, with no reset notice; a kernel whose seeded context the live sandbox does not have opens a fresh one and reports the reset.
 - **Streams across a pause.** `pause()`, `snapshot()` (E2B pauses the sandbox while it takes one) and `resume()` drop the sandbox's open connections, command streams included; its processes survive. A shell reattaches to its output before its next command and keeps its state; if it cannot, it kills the old shell, starts a new one and the result tells the model its shell state was lost. Kernels need nothing: each call is a request of its own, so `resume()` to the same sandbox keeps them.
 - **A sandbox E2B removes.** When E2B no longer has the live sandbox (it reached its keep-alive `sandbox_timeout` or the plan's lifetime cap, or was killed from elsewhere), the call that finds out fails with `E2BSandboxExpiredError`, saying the sandbox's files, shells and kernels are gone; the call is not retried. E2B reports such calls like timeouts, so a failure that could mean either is checked against the sandbox's info first. The environment drops the dead sandbox, and the next call starts a new one from the create params, lazy or eager; shells and kernels bound to the dead one reopen with their reset notices. Nothing is restored from a snapshot. An environment from `from_sandbox` has nothing to create one from, so its calls keep raising the error.
-- Python packages are baked into a template; the framework never installs into a sandbox. `E2BTemplateConfig` describes a template (base image + build steps) and builds it idempotently by alias; `E2BEnvironmentConfig` / `load_e2b_config` describe the whole environment.
+- **Templates.** Python packages are baked into a template; the framework never installs into a sandbox. `E2BTemplateConfig` describes a template (a base plus build steps), and `E2BEnvironmentConfig` / `load_e2b_config` the whole environment. The base (`TemplateBase`) is at most one of: an existing E2B `template` (name or id), a `python`, `debian`, `ubuntu` or `node` image, any `image`, or a `dockerfile`; with none, E2B's base image. A `template` base reuses that template's cached layers, so a few `pip_install` steps on top of `code-interpreter-v1` build in about 20 seconds; `to_dockerfile()` cannot render it. `E2BTemplateConfig.build()` returns the template's `alias` once a ready build of it exists, and decides by the latest build of that name on E2B:
+  - Ready: it returns at once, without building.
+  - Under way, in this process or another: it polls every `poll_interval` seconds (default 5) until the build ends, then returns, or raises E2B's `BuildException` with E2B's reason. A build still running after `wait_timeout` seconds (default 1800) raises `TimeoutError`.
+  - Failed, or no template has the name: it builds, and raises `BuildException` if that build fails.
+
+  `skip_cache=True` always builds, without E2B's layer cache. A ready build is not compared with the definition, so give a changed definition a new `alias`. `build()` needs an `alias`, and a name that belongs to another team raises E2B's `TemplateException`. `templates=` takes any `E2BTemplateAPI`; the default `E2BTemplateClient` calls E2B with the `api_key` and `domain` you pass.
 
 ## Shell tools
 
@@ -167,6 +173,7 @@ async with env:                       # creates the sandbox; kills it on exit
 13. Every sandbox an E2B environment creates, a restore's included, carries the `"grasp-agents"` metadata key set to its label, and every snapshot it takes gets a name of its own that carries the label and the UTC time (`e2b_environment`, `E2BEnvironment.snapshot`).
 14. `sweep_e2b` touches only sandboxes tagged with its label and snapshots named with it, kills sandboxes before it deletes snapshots, deletes only snapshots older than `older_than` that `keep_snapshots` does not hold, and changes nothing in a dry run (`sweep_e2b`).
 15. `update_network` changes the live sandbox's egress and records the policy in one step under the environment's lock, so no sandbox the environment creates afterwards starts with the old one; a policy E2B cannot enforce raises and changes nothing (`E2BEnvironment.update_network`).
+16. `E2BTemplateConfig.build()` returns a template name only once the latest build of that name is ready, and within a process it checks and builds one name at a time (`E2BTemplateConfig.build`).
 
 ## Limitations
 
@@ -181,6 +188,7 @@ async with env:                       # creates the sandbox; kills it on exit
 - When E2B removes a sandbox, only the call that finds out hears that its files are gone. Other agents sharing the environment find out through their shell and kernel reset notices, or not at all if they only use files.
 - An E2B allowlist cannot carve a denied host out of an allowed wildcard; list the allowed hosts one by one instead.
 - Only E2B changes a live environment's network (`NetworkUpdatable`); a local environment's egress is fixed when it is built.
+- Two processes that build the same new template name at once can make one of the builds fail, because E2B cancels a build when another build of its name starts. That call raises `BuildException` ("build was cancelled"); the next call uses the other build, or builds again if the latest build failed. Serialize builds across processes yourself when that matters.
 - No Docker or SSH exec backend ships; implement `ExecutionEnvironment` / `ExecBackend` for other targets.
 
 ## See also

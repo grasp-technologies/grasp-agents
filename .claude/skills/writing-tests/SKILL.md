@@ -25,7 +25,7 @@ end-to-end live runs go in `tests/integration/`.
 | Retry paths | `FailFirstLLM` |
 | A bare `AgentContext` / `AgentLoop` | `_make_agent_ctx(...)`, `_make_agent_loop(...)` |
 | Snapshot-capable environment | `FakeSnapshotEnv(root)` |
-| E2B sandbox doubles (files, commands, persistent shells, code contexts, a sandbox E2B removed) | `tests/sandbox/_e2b_fakes.py` |
+| E2B sandbox doubles (files, commands, persistent shells, code contexts, a sandbox E2B removed) and `FakeTemplateAPI`, a scripted template API for `E2BTemplateConfig.build(templates=...)` | `tests/sandbox/_e2b_fakes.py` |
 | Sandbox capability probes | `process_is_sandboxed()`, `srt_can_run()`, `exec_confinement()` |
 | Team tests | `_agent(name, responses)`, `_send(to, message, call_id)`, `_until(pred)` |
 
@@ -98,7 +98,12 @@ The tool-call name must match the tool's registered `name` (here `"add"`).
   environments with a `label` of its own, which names their snapshots. Its
   `cleanup()`, called in a `finally`, kills every tagged sandbox and deletes every
   snapshot named with that label or recorded by the test. Find leftovers by that
-  metadata key and by snapshot names starting `grasp-agents-t`.
+  metadata key and by snapshot names starting `grasp-agents-t`. The template
+  build test (`tests/sandbox/test_e2b_config.py`) builds over
+  `code-interpreter-v1`, which takes about 20 seconds, names its template
+  `grasp-agents-t<hex>` and deletes it in a `finally`; look for leftovers among
+  the team's templates with that prefix. Never delete templates a test did not
+  create.
 - Some tests pin a specific model on purpose (feature-support pairs, a nonexistent
   model for error paths). Keep those pins.
 - **Diagnosing failures.** HTTP 429 with `insufficient_quota` is an account
