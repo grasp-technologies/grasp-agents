@@ -19,12 +19,19 @@ The shell lives in the sandbox the session was opened on. Once a restore or an
 exit replaces that sandbox, the session counts as closed and never addresses
 the new one: its shell's pid there could belong to another process, such as
 another agent's shell.
+
+A pause, a snapshot (E2B pauses the sandbox while taking it) or a resume drops
+the shell's output stream while the shell keeps running. The next command
+first reattaches to the shell's output; if that fails, the session kills the
+shell, starts a new one in its place and reports the reset through
+:meth:`E2BExecSession.take_reset`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from typing import TYPE_CHECKING, Literal
 
@@ -40,6 +47,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
     from e2b import AsyncCommandHandle, AsyncSandbox
+
+logger = logging.getLogger(__name__)
 
 
 class _StreamScanner:
@@ -99,21 +108,27 @@ class E2BExecSession(ExecSession):
         env: dict[str, str] | None,
         backend: str,
         max_output_chars: int,
+        get_stream_epoch: Callable[[], int] | None = None,
     ) -> None:
         # Returns the sandbox the session was opened on while it is still the
         # live one, else None.
         self._get_sandbox = get_sandbox
+        # Changes whenever the sandbox dropped its open streams (a pause,
+        # snapshot or resume); None means they are never dropped.
+        self._get_stream_epoch = get_stream_epoch
         self._cwd = cwd
         self._env = env
         self._backend = backend
         self._max_output_chars = max_output_chars
         self._handle: AsyncCommandHandle | None = None
         self._pid: int | None = None
+        self._stream_epoch = 0
         self._queue: asyncio.Queue[tuple[Literal["stdout", "stderr"], str]] = (
             asyncio.Queue()
         )
         self._lock = asyncio.Lock()
         self._closed = False
+        self._was_reset = False
 
     @property
     def backend(self) -> str:
@@ -123,16 +138,24 @@ class E2BExecSession(ExecSession):
     def closed(self) -> bool:
         return self._closed or self._get_sandbox() is None
 
+    def take_reset(self) -> bool:
+        was = self._was_reset
+        self._was_reset = False
+        return was
+
+    def _current_stream_epoch(self) -> int:
+        return 0 if self._get_stream_epoch is None else self._get_stream_epoch()
+
+    def _on_stdout(self, data: str) -> None:
+        self._queue.put_nowait(("stdout", data))
+
+    def _on_stderr(self, data: str) -> None:
+        self._queue.put_nowait(("stderr", data))
+
     async def _ensure_started(self, sb: AsyncSandbox) -> None:
         if self._handle is not None:
             return
-
-        def on_stdout(data: str) -> None:
-            self._queue.put_nowait(("stdout", data))
-
-        def on_stderr(data: str) -> None:
-            self._queue.put_nowait(("stderr", data))
-
+        self._stream_epoch = self._current_stream_epoch()
         self._handle = await sb.commands.run(
             "/bin/sh",
             background=True,
@@ -142,10 +165,38 @@ class E2BExecSession(ExecSession):
             # timeout would cancel whichever task happened to open it.
             timeout=0,
             stdin=True,
-            on_stdout=on_stdout,
-            on_stderr=on_stderr,
+            on_stdout=self._on_stdout,
+            on_stderr=self._on_stderr,
         )
         self._pid = self._handle.pid
+
+    async def _reattach(self, sb: AsyncSandbox, pid: int) -> None:
+        """
+        Reconnect to the shell's output after its stream was dropped, or
+        replace the shell (losing its state) if that fails.
+        """
+        epoch = self._current_stream_epoch()
+        stale, self._handle = self._handle, None
+        if stale is not None:
+            with contextlib.suppress(Exception):
+                await stale.disconnect()
+        try:
+            self._handle = await sb.commands.connect(
+                pid, timeout=0, on_stdout=self._on_stdout, on_stderr=self._on_stderr
+            )
+        except Exception:
+            logger.warning(
+                "Could not reattach to the output of E2B shell %s on sandbox %s; "
+                "starting a new shell (its state is lost).",
+                pid,
+                sb.sandbox_id,
+                exc_info=True,
+            )
+            await self._kill()
+            self._was_reset = True
+            await self._ensure_started(sb)
+            return
+        self._stream_epoch = epoch
 
     async def run(
         self, command: str, *, timeout: float | None = None
@@ -160,6 +211,8 @@ class E2BExecSession(ExecSession):
             start = time.monotonic()
             await self._ensure_started(sb)
             assert self._pid is not None
+            if self._stream_epoch != self._current_stream_epoch():
+                await self._reattach(sb, self._pid)
 
             # Fresh queue per command — the shell is idle between commands, so
             # the callbacks deliver only this command's output.

@@ -91,6 +91,11 @@ class BashSessionHolder:
         """Return and clear the 'session was reset since last command' flag."""
         was = self._was_reset
         self._was_reset = False
+        session = self._session
+        if session is not None:
+            # A session that replaced its shell in place (the holder never
+            # saw it closed) reports through its own flag.
+            was = session.take_reset() or was
         return was
 
     async def close(self) -> None:

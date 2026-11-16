@@ -18,6 +18,12 @@ class _FakeSession:
     def __init__(self) -> None:
         self.closed = False
         self.close_calls = 0
+        self.was_reset = False
+
+    def take_reset(self) -> bool:
+        was = self.was_reset
+        self.was_reset = False
+        return was
 
     async def close(self) -> None:
         self.closed = True
@@ -88,3 +94,16 @@ async def test_holder_close_closes_a_session_that_already_counts_as_closed() -> 
     s1.closed = True
     await holder.close()
     assert s1.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_in_place_shell_replacement_surfaces_through_holder() -> None:
+    # A session that replaced its shell itself stays open, so the holder
+    # must pick up the session's own reset flag.
+    holder = BashSessionHolder()
+    backend = _FakeBackend()
+    s1 = await holder.get(backend)
+    s1.was_reset = True
+    assert holder.take_reset() is True
+    assert holder.take_reset() is False
+    assert len(backend.opened) == 1

@@ -244,6 +244,9 @@ class FakeCommands:
     async def kill(self, pid: int) -> Any:
         self.killed.append(pid)
 
+    def drop_streams(self) -> None:
+        """A pause or snapshot drops every open connection to the sandbox."""
+
 
 class FakeSandbox:
     def __init__(
@@ -262,13 +265,16 @@ class FakeSandbox:
 
     async def pause(self) -> Any:
         self.paused = True
+        self.commands.drop_streams()
 
     async def kill(self) -> Any:
         self.killed = True
         return True
 
     async def create_snapshot(self) -> Any:
+        # E2B pauses the sandbox while it takes the snapshot.
         self.snapshotted = True
+        self.commands.drop_streams()
         return FakeSnapshotInfo(snapshot_id=f"snap-{self.sandbox_id}")
 
 
@@ -283,9 +289,10 @@ class ShellHandle:
         self._on_stdout = on_stdout
         self._on_stderr = on_stderr
         self.disconnected = False
+        self.dropped = False
 
     def deliver(self, stdout: str, stderr: str) -> None:
-        if not self.disconnected:
+        if not (self.disconnected or self.dropped):
             self._on_stdout(stdout)
             self._on_stderr(stderr)
 
@@ -297,13 +304,16 @@ class ShellCommands(FakeCommands):
     """
     Fake persistent shells, numbered per sandbox from pid 1: a stdin payload
     echoes its end markers on both streams, as ``/bin/sh`` would. A pid only
-    reaches a shell started on the same sandbox.
+    reaches a shell started on the same sandbox. A dropped stream delivers
+    nothing until ``connect`` reattaches it, unless ``refuse_connect``.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, refuse_connect: bool = False) -> None:
         super().__init__()
         self.shells: dict[int, ShellHandle] = {}
         self.shell_timeouts: list[float | None] = []
+        self.connects: list[tuple[int, float | None]] = []
+        self._refuse_connect = refuse_connect
 
     async def run(self, cmd: str, **kwargs: Any) -> Any:
         if not kwargs.get("stdin"):
@@ -321,6 +331,25 @@ class ShellCommands(FakeCommands):
         found = re.search(r"__GRASP_[0-9a-f]+__", data)
         assert found is not None
         self.shells[pid].deliver(f"{found.group(0)} 0\n", f"{found.group(0)}\n")
+
+    async def connect(
+        self,
+        pid: int,
+        *,
+        timeout: float | None = 60,
+        on_stdout: Any = None,
+        on_stderr: Any = None,
+    ) -> ShellHandle:
+        self.connects.append((pid, timeout))
+        if self._refuse_connect or pid in self.killed or pid not in self.shells:
+            raise RuntimeError(f"process {pid} not found")
+        handle = ShellHandle(pid, on_stdout, on_stderr)
+        self.shells[pid] = handle
+        return handle
+
+    def drop_streams(self) -> None:
+        for handle in self.shells.values():
+            handle.dropped = True
 
 
 class CodeSandbox(FakeSandbox):

@@ -116,7 +116,8 @@ async with env:                       # creates the sandbox; kills it on exit
 - Persistent shells (`BashSession`) are supported. A shell runs until it is closed, a command in it times out (which kills it), or its sandbox is replaced; it has no lifetime cap of its own. Kernels (`RunPython`, `RunCell`) need `code_interpreter=True`.
 - **Snapshots vs pause.** `snapshot()` creates a persistent E2B snapshot and returns its id; `restore(ref)` spawns a fresh sandbox from it — a true rewind, used by `fs_snapshot_policy` ([Rollback](rollback.md)). `pause()` / `resume()` suspend and reconnect the *same* sandbox; no rewind. `resume()` reconnects with the class the environment creates sandboxes with (the code-interpreter one with `code_interpreter=True`) and its configured API key, domain and keep-alive timeout.
 - **Fresh ref.** Before a lazy start, `snapshot()` returns `FRESH_SNAPSHOT_REF` without starting anything. Restoring that ref drops a lazy environment's sandbox until the next call (and forgets a failed start), starts a new sandbox from the configured template on an eager one, and raises on a `from_sandbox` environment, which has nothing to create one from.
-- **Shells and kernels follow their sandbox.** A shell or kernel is bound to the sandbox it was opened on. Once `restore()` or exit replaces that sandbox, it reports `closed` and never addresses the new one, where its pid could belong to another process. The next `BashSession`, `RunPython` or `RunCell` call opens a new one on the live sandbox, starting a lazy one, and tells the model its state was lost. After a rollback that restored a snapshot, a kernel re-attaches to the code context the snapshot kept, with no reset notice; a kernel whose seeded context the live sandbox does not have opens a fresh one and reports the reset. `resume()` to the same sandbox keeps them.
+- **Shells and kernels follow their sandbox.** A shell or kernel is bound to the sandbox it was opened on. Once `restore()` or exit replaces that sandbox, it reports `closed` and never addresses the new one, where its pid could belong to another process. The next `BashSession`, `RunPython` or `RunCell` call opens a new one on the live sandbox, starting a lazy one, and tells the model its state was lost. After a rollback that restored a snapshot, a kernel re-attaches to the code context the snapshot kept, with no reset notice; a kernel whose seeded context the live sandbox does not have opens a fresh one and reports the reset.
+- **Streams across a pause.** `pause()`, `snapshot()` (E2B pauses the sandbox while it takes one) and `resume()` drop the sandbox's open connections, command streams included; its processes survive. A shell reattaches to its output before its next command and keeps its state; if it cannot, it kills the old shell, starts a new one and the result tells the model its shell state was lost. Kernels need nothing: each call is a request of its own, so `resume()` to the same sandbox keeps them.
 - Python packages are baked into a template; the framework never installs into a sandbox. `E2BTemplateConfig` describes a template (base image + build steps) and builds it idempotently by alias; `E2BEnvironmentConfig` / `load_e2b_config` describe the whole environment.
 
 ## Shell tools
@@ -136,7 +137,7 @@ async with env:                       # creates the sandbox; kills it on exit
 
 - Needs a `SessionCapable` backend (local, Seatbelt, `srt` and E2B all are).
 - Serial and foreground-only: no backgrounding. A timeout closes the whole session; there is no per-command interrupt.
-- When the shell has to be reopened (it died, a timeout killed it, or the E2B sandbox it ran in was replaced), the next result tells the model its shell state was lost.
+- When the shell has to be reopened (it died, a timeout killed it, the E2B sandbox it ran in was replaced, or its output could not be reattached after an E2B pause or snapshot), the next result tells the model its shell state was lost.
 - Outside an agent loop each call opens a throwaway session.
 
 ## Contracts
@@ -149,7 +150,8 @@ async with env:                       # creates the sandbox; kills it on exit
 6. One-shot resource limits never apply to persistent shells or kernels (`SupervisorLimits`).
 7. An E2B command timeout ends the command, not the task awaiting it: the backend passes E2B no command deadline and enforces its own on the output stream (`E2BExecBackend.stream`).
 8. An E2B shell or kernel addresses only the sandbox it was opened on, compared by sandbox id; once another sandbox or none is live, it reports `closed` (`SandboxHandle.live`, `E2BExecSession`, `E2BKernel`).
-9. A lazy E2B environment runs one start at a time, and exit, `restore`, `pause` and `resume` hold the same lock as the start. A start keeps its sandbox only while the environment is still armed and empty and a caller still awaits it; otherwise it kills the sandbox and raises (`SandboxHandle.ensure`).
+9. E2B's `pause`, `snapshot`, `resume` and `restore` mark every open command stream as dropped; a shell on the same sandbox reattaches to its output before its next command, or replaces itself and reports the reset through `ExecSession.take_reset` (`SandboxHandle.drop_streams`, `E2BExecSession`).
+10. A lazy E2B environment runs one start at a time, and exit, `restore`, `pause` and `resume` hold the same lock as the start. A start keeps its sandbox only while the environment is still armed and empty and a caller still awaits it; otherwise it kills the sandbox and raises (`SandboxHandle.ensure`).
 
 ## Limitations
 
@@ -158,6 +160,7 @@ async with env:                       # creates the sandbox; kills it on exit
 - Seatbelt cannot express per-domain egress; use `srt`.
 - Only E2B offers filesystem snapshots; there is no local snapshot backend.
 - An E2B `restore()` loses persistent shell state; kernel state survives only when a rollback re-attaches the context its snapshot kept.
+- On E2B, a one-shot command still running when `pause()` or `snapshot()` drops the sandbox's connections loses the rest of its output: its call fails or times out, while the command itself may keep running. Only persistent shells reattach.
 - No Docker or SSH exec backend ships; implement `ExecutionEnvironment` / `ExecBackend` for other targets.
 
 ## See also

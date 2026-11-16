@@ -296,12 +296,14 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
     ) -> E2BExecSession:
         """Open a persistent shell on the sandbox (see :class:`E2BExecSession`)."""
         sandbox = await self._holder.ensure()
+        holder = self._holder
         return E2BExecSession(
-            partial(self._holder.live, sandbox.sandbox_id),
+            partial(holder.live, sandbox.sandbox_id),
             cwd=self._resolve_cwd(cwd),
             env=self._merged_env(env),
             backend=self._name,
             max_output_chars=self._max_output_chars,
+            get_stream_epoch=lambda: holder.stream_epoch,
         )
 
     async def open_kernel(

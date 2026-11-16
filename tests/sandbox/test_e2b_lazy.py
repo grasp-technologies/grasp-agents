@@ -22,7 +22,7 @@ from grasp_agents.sandbox.e2b.environment import (
     E2BEnvironment,
     e2b_environment,
 )
-from grasp_agents.sandbox.exec_backend import ExecResult
+from grasp_agents.sandbox.exec_backend import ExecResult, TerminationReason
 from grasp_agents.sandbox.kernel import CellResult
 from grasp_agents.sandbox.policy import SandboxPolicy
 from grasp_agents.tools.bash_session import BashSessionHolder
@@ -499,6 +499,68 @@ async def test_a_replaced_session_is_disconnected_without_a_kill(
 
     assert first.commands.killed == []
     assert restored.commands.killed == [1]
+
+
+async def test_session_reattaches_its_output_after_a_snapshot(
+    creator: _Creator,
+) -> None:
+    sandbox = FakeSandbox(sandbox_id="first", commands=ShellCommands())
+    creator._queue.append(sandbox)
+    holder = BashSessionHolder()
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        await _run(await holder.get(env.exec_backend), "cd /tmp")
+        await env.snapshot()
+
+        result = await _run(await holder.get(env.exec_backend), "pwd", timeout=0.5)
+        assert result.reason is TerminationReason.EXIT
+        assert not holder.take_reset()  # the same shell: its state is kept
+
+    assert sandbox.commands.connects == [(1, 0)]
+    assert [pid for pid, _ in sandbox.commands.stdin_writes] == [1, 1]
+
+
+async def test_session_reattaches_its_output_after_pause_and_resume(
+    creator: _Creator,
+) -> None:
+    first = FakeSandbox(sandbox_id="first", commands=ShellCommands())
+    creator._queue.append(first)
+    # resume() reconnects through a new client to the same sandbox and shells.
+    creator.reconnects["first"] = FakeSandbox(
+        sandbox_id="first", commands=first.commands
+    )
+    holder = BashSessionHolder()
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        await _run(await holder.get(env.exec_backend), "cd /tmp")
+        await env.pause()
+        await env.resume()
+
+        result = await _run(await holder.get(env.exec_backend), "pwd", timeout=0.5)
+        assert result.reason is TerminationReason.EXIT
+        assert not holder.take_reset()
+
+    assert first.commands.connects == [(1, 0)]
+
+
+async def test_session_replaces_a_shell_whose_output_it_cannot_reattach(
+    creator: _Creator,
+) -> None:
+    commands = ShellCommands(refuse_connect=True)
+    creator._queue.append(FakeSandbox(sandbox_id="first", commands=commands))
+    holder = BashSessionHolder()
+
+    async with e2b_environment(allowed_roots=[WS], lazy=True) as env:
+        await _run(await holder.get(env.exec_backend), "cd /tmp")
+        await env.snapshot()
+
+        result = await _run(await holder.get(env.exec_backend), "pwd", timeout=0.5)
+        assert result.reason is TerminationReason.EXIT
+        assert holder.take_reset()  # BashSession tells the model its shell reset
+
+    assert commands.killed[0] == 1
+    assert commands.shells[1].disconnected
+    assert [pid for pid, _ in commands.stdin_writes] == [1, 2]
 
 
 async def test_kernel_reopens_on_the_next_sandbox_after_a_fresh_restore(

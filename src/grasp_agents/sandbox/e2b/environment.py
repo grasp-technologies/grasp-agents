@@ -235,7 +235,11 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         """
         if self._holder.sandbox is None and self._holder.armed:
             return FRESH_SNAPSHOT_REF
-        snap = await self._holder.require().create_snapshot()
+        sandbox = self._holder.require()
+        try:
+            snap = await sandbox.create_snapshot()
+        finally:
+            self._holder.drop_streams()
         return str(snap.snapshot_id)
 
     async def restore(self, ref: str) -> None:
@@ -268,6 +272,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
                 }
                 sandbox_cls = _sandbox_cls(self._code_interpreter)
                 self._holder.sandbox = await sandbox_cls.create(**params)
+            self._holder.drop_streams()
             if previous is not None and self._owns_sandbox:
                 with contextlib.suppress(Exception):
                     await previous.kill()
@@ -284,7 +289,10 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
             if self._holder.sandbox is None and self._holder.armed:
                 raise RuntimeError("Nothing to pause: the sandbox was never started.")
             sandbox = self._holder.require()
-            await sandbox.pause()
+            try:
+                await sandbox.pause()
+            finally:
+                self._holder.drop_streams()
             return str(sandbox.sandbox_id)
 
     async def resume(self, sandbox_id: str | None = None) -> None:
@@ -315,6 +323,7 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
             self._holder.sandbox = await sandbox_cls.connect(
                 target, timeout=params.get("timeout"), **opts
             )
+            self._holder.drop_streams()
 
 
 def e2b_environment(

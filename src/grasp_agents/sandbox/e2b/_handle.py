@@ -150,10 +150,14 @@ class SandboxHandle:
         "_start_task",
         "_waiting",
         "sandbox",
+        "stream_epoch",
     )
 
     def __init__(self, sandbox: AsyncSandbox | None = None) -> None:
         self.sandbox: AsyncSandbox | None = sandbox
+        # Bumped whenever the sandbox drops its open connections; a shell
+        # that sees a newer value reattaches to its output.
+        self.stream_epoch = 0
         self._factory: Callable[[], Awaitable[AsyncSandbox]] | None = None
         self._failure: Exception | None = None
         self._lock = asyncio.Lock()
@@ -238,6 +242,15 @@ class SandboxHandle:
                 "sandbox, or every call waiting for it was cancelled, while it "
                 "was starting."
             )
+
+    def drop_streams(self) -> None:
+        """
+        Record that the sandbox dropped every open connection, command
+        streams included: E2B does so when it pauses the sandbox, also for
+        the duration of a snapshot, and a resume reconnects through a new
+        client.
+        """
+        self.stream_epoch += 1
 
     def require(self) -> AsyncSandbox:
         if self.sandbox is None:
