@@ -39,6 +39,7 @@ from .types import (
     RunStatus,
     Trial,
     Usage,
+    content_digest,
 )
 
 if TYPE_CHECKING:
@@ -109,18 +110,22 @@ def leave_out_sealed[InT, RefT](
 
 
 def check_sealed(
-    dataset: Dataset[Any, Any], sealed: frozenset[str], *, known: bool = True
+    dataset: Dataset[Any, Any],
+    sealed: frozenset[str],
+    *,
+    require_splits: bool = True,
 ) -> None:
     """
-    Sealed splits must exist (unless ``known=False``), and a selection must
-    include each sealed split it touches whole: a subset would report its
-    examples' results one by one (``--ids <sealed id>``).
+    Sealed splits must be splits of the dataset (unless ``require_splits`` is
+    false), and a selection must include each sealed split it touches whole:
+    a subset would report its examples' results one by one
+    (``--ids <sealed id>``).
     """
     if not sealed:
         return
     splits = set(dataset.origin.splits)
     unknown = sorted(sealed - splits)
-    if unknown and known:
+    if unknown and require_splits:
         raise ValueError(
             f"Sealed splits {unknown} are not splits of {dataset.name!r} "
             f"(splits: {sorted(splits) or 'none'})"
@@ -514,7 +519,6 @@ def _rescored_examples(
     paired: list[str] = []
     missing: list[str] = []
     changed: list[str] = []
-    hidden = 0
     for example_id, old in by_id.items():
         new = dataset.get(example_id)
         if new is not None and canonical_json(new.record.input) == canonical_json(
@@ -522,7 +526,7 @@ def _rescored_examples(
         ):
             paired.append(example_id)
         elif sealed.intersection(old.splits):
-            hidden += 1
+            continue  # counted, not listed: see rescore
         else:
             (missing if new is None else changed).append(example_id)
     kept = [s for s in parent.dataset.selection if s.startswith("split=")]
@@ -532,7 +536,7 @@ def _rescored_examples(
     chosen = set(paired)
     if {e.id for e in start} - chosen:
         start = start.select([e.id for e in start if e.id in chosen])
-    unpaired = {"missing": missing, "input_changed": changed, "sealed": hidden}
+    unpaired: dict[str, Any] = {"missing": missing, "input_changed": changed}
     return start, unpaired
 
 
@@ -578,6 +582,9 @@ async def rescore(
     reference, splits and metadata (trials whose example changed are scored
     from scratch); the child records that version, so it is pushed to it,
     and lists the examples it could not pair in ``metadata["unpaired"]``.
+    Only the given scorers count then (the parent's others are listed in
+    ``metadata["dropped_scorers"]``), and a sealed split is scored only when
+    the parent ran it and every one of its examples pairs.
 
     Stored examples and outputs are re-validated as ``input_type`` /
     ``reference_type`` / ``output_type`` before scorers see them. A parent
@@ -601,15 +608,32 @@ async def rescore(
     source, unpaired = _rescored_examples(parent, typed, dataset)
     selected = source.split(split) if split is not None else source
     if dataset is not None:
-        # Sealed splits as the parent had them: run whole, or left out.
+        # Sealed splits as the parent had them, and only whole: a split some
+        # of whose examples could not be paired is left out.
         selected = leave_out_sealed(
-            selected, sealed, include_sealed=any(t.sealed for t in parent.trials)
+            selected,
+            sealed,
+            include_sealed=any(sealed.intersection(e.splits) for e in parent.examples),
+        )
+        partial = frozenset(
+            s
+            for s in sealed
+            if (members := {e.id for e in selected if s in e.splits})
+            and members != {e.id for e in selected.origin if s in e.splits}
+        )
+        if partial:
+            selected = selected.exclude_splits(partial)
+        kept_ids = {e.id for e in selected}
+        unpaired["sealed"] = sum(
+            1
+            for e in parent.examples
+            if sealed.intersection(e.splits) and e.id not in kept_ids
         )
     if ids:
         selected = selected.select(ids)
     if len(selected) == 0:
         raise ValueError(f"The selection from run {parent.id} has no examples")
-    check_sealed(selected, sealed, known=False)
+    check_sealed(selected, sealed, require_splits=False)
     if dataset is not None:
         dataset_ref = selected.ref()
     elif selected.selection:
@@ -627,12 +651,20 @@ async def rescore(
     previous = {info.name: info for info in parent.scorers}
     given = {e.name for e in scorers}
     replaced = {
-        e.name for e in scorers if rerun or previous.get(e.name) != e.describe()
+        e.name
+        for e in scorers
+        if rerun or not e.describe().matches(previous.get(e.name))
     }
     everything = {info.name for info in parent.scorers} | given
-    scorer_infos = [i for i in parent.scorers if i.name not in given] + [
-        e.describe() for e in scorers
-    ]
+    kept_infos = [i for i in parent.scorers if i.name not in given]
+    dropped: list[str] = []
+    if dataset is not None:
+        # Against another dataset version only the given scorers count: the
+        # others' scores would be missing on every example that changed.
+        dropped = [i.name for i in kept_infos]
+        replaced |= set(dropped)
+        kept_infos = []
+    scorer_infos = [*kept_infos, *(e.describe() for e in scorers)]
     config = parent.config.model_copy(
         update={
             "score": True,
@@ -653,6 +685,8 @@ async def rescore(
     child_metadata = {**parent.metadata, **(metadata or {})}
     if dataset is not None:
         child_metadata["unpaired"] = unpaired
+        if dropped:
+            child_metadata["dropped_scorers"] = dropped
     child = EvaluationRun(
         id=new_run_id(child_name),
         name=child_name,
@@ -680,6 +714,24 @@ async def rescore(
     if run_store is not None:
         run_store.create(child)
     examples = {e.id: e for e in selected}
+    old_examples = {e.id: e for e in parent.examples}
+    descriptive = {
+        *parent.dataset.descriptive_metadata,
+        *dataset_ref.descriptive_metadata,
+    }
+
+    def moved(example: Example[Any, Any], parent_trial: Trial) -> bool:
+        # Changed content, metadata keys either side declared descriptive aside.
+        if example.content_hash == parent_trial.example_hash:
+            return False
+        old = old_examples.get(example.id)
+        return (
+            not descriptive
+            or old is None
+            or content_digest(*old.record, descriptive=descriptive)
+            != content_digest(*example.record, descriptive=descriptive)
+        )
+
     executor = Executor(
         child,
         store=run_store,
@@ -693,8 +745,8 @@ async def rescore(
     async def work(parent_trial: Trial) -> None:
         async with semaphore:
             example = examples[parent_trial.example_id]
-            moved = example.content_hash != parent_trial.example_hash
-            trial = _without(parent_trial, everything if moved else replaced)
+            changed = moved(example, parent_trial)
+            trial = _without(parent_trial, everything if changed else replaced)
             trial.example_hash = example.content_hash
             trial.sealed = bool(sealed.intersection(example.splits))
             events = events_by_key.get(trial.key, [])

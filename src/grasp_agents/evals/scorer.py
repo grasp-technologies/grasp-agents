@@ -19,7 +19,7 @@ from typing import Any, Literal, Protocol, cast, overload
 from grasp_agents.session_context import SessionContext
 from grasp_agents.types.events import Event
 
-from ._util import code_hash, identity_hash, qualified_name
+from ._util import identity_hash, qualified_name, source_identity
 from .types import ComponentInfo, Example, Score, ScoreReason, Trial, Usage
 
 type ScalarScore = bool | int | float | str
@@ -156,7 +156,7 @@ class Scorer[InT, OutT, RefT](ABC):
             config=self.config(),
             annotator=self.annotator,
             fingerprint=identity_hash(self.identity),
-            source=code_hash(type(self)),
+            source=source_identity(type(self)),
         )
 
     @abstractmethod
@@ -209,7 +209,7 @@ class FunctionScorer[InT, OutT, RefT](Scorer[InT, OutT, RefT]):
     def describe(self) -> ComponentInfo:
         info = super().describe()
         info.kind = qualified_name(self._fn)
-        info.source = code_hash(self._fn)
+        info.source = source_identity(self._fn)
         return info
 
     @property

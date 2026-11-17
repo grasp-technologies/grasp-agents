@@ -301,7 +301,7 @@ class TestValidationGates:
         assert find_validation(store, [good_judge], "good") is not None
         # Same name, version and configuration; the function's code changed.
         module = importlib.import_module("grasp_agents.evals.scorer")
-        monkeypatch.setattr(module, "code_hash", lambda _: "v2:edited")
+        monkeypatch.setattr(module, "source_identity", lambda _: "v2:edited")
         assert find_validation(store, [good_judge], "good") is None
 
     @pytest.mark.asyncio

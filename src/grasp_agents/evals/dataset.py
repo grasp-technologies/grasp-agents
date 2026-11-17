@@ -245,12 +245,12 @@ class Dataset[InT, RefT]:
 
     def with_descriptive_metadata(self, keys: Collection[str]) -> "Dataset[InT, RefT]":
         """This dataset with ``keys`` declared descriptive (see the class)."""
+        if sorted(set(keys)) == self.descriptive_metadata:
+            return self
         if self._origin is not None:
             raise DatasetError(
                 "Declare descriptive metadata on the whole dataset, before selecting"
             )
-        if sorted(set(keys)) == self.descriptive_metadata:
-            return self
         return Dataset(
             self._examples,
             name=self.name,

@@ -920,7 +920,7 @@ def find_validation(
         h
         for h in headers.values()
         if (scorer := validated_scorer(h)) is not None
-        and scorer in identities
+        and any(i.matches(scorer) for i in identities)
         and h.completed
         and not h.invalid_reason
         and _agreement_config(h, score) is not None

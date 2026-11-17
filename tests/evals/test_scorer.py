@@ -8,7 +8,14 @@ from typing import Any
 import pytest
 
 from grasp_agents.evals import FunctionScorer, Score, ScoreContext, ScoreReason, scorer
-from grasp_agents.evals._util import CODE_SCHEME, code_hash, code_scheme
+from grasp_agents.evals._util import (
+    CODE_SCHEME,
+    UNKNOWN_SOURCE,
+    _parsed_text,
+    code_hash,
+    code_scheme,
+    identity_hash,
+)
 from grasp_agents.evals.scorer import normalize_scores
 
 
@@ -152,3 +159,246 @@ def test_lower_is_better_names_the_scores() -> None:
     assert FunctionScorer(defects, lower_is_better=True).lower_is_better == {"defects"}
     assert scorer(lower_is_better={"a", "b"})(defects).lower_is_better == {"a", "b"}
     assert not FunctionScorer(defects).lower_is_better
+
+
+def _hashes(
+    tmp_path: Path,
+    files: dict[str, str],
+    values: tuple[str, str],
+    attr: str = "score",
+) -> list[str | None]:
+    """``code_hash(main.<attr>)`` with ``$X`` in ``files`` set to each value."""
+    names = {
+        rel.removesuffix(".py").removesuffix("/__init__").replace("/", ".")
+        for rel in files
+    }
+    found: list[str | None] = []
+    for tag, value in zip("ab", values, strict=True):
+        root = tmp_path / tag
+        for rel, text in files.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(textwrap.dedent(text).replace("$X", value))
+        sys.path.insert(0, str(root))
+        try:
+            found.append(code_hash(getattr(importlib.import_module("main"), attr)))
+        finally:
+            sys.path.remove(str(root))
+            for name in names:
+                sys.modules.pop(name, None)
+    return found
+
+
+_DEPENDENCIES: dict[str, tuple[dict[str, str], tuple[str, str], str]] = {
+    "constant list": (
+        {"main.py": "WORDS = [$X]\ndef score(ctx):\n    return ctx in WORDS\n"},
+        ('"yes"', '"yes", "ok"'),
+        "score",
+    ),
+    "constant dict": (
+        {"main.py": 'RUBRIC = {"a": $X}\ndef score(ctx):\n    return RUBRIC[ctx]\n'},
+        ("1", "2"),
+        "score",
+    ),
+    "compiled pattern": (
+        {
+            "main.py": """
+                import re
+                PAT = re.compile($X)
+                def score(ctx):
+                    return bool(PAT.search(ctx))
+                """
+        },
+        ('r"\\d+"', 'r"\\w+"'),
+        "score",
+    ),
+    "class attribute": (
+        {
+            "main.py": """
+                PROMPT = $X
+                class Judge:
+                    prompt = PROMPT
+                    def score(self, ctx):
+                        return self.prompt in ctx
+                """
+        },
+        ('"strict"', '"lenient"'),
+        "Judge",
+    ),
+    "method default": (
+        {
+            "main.py": """
+                LIMIT = $X
+                class Judge:
+                    def score(self, ctx, limit=LIMIT):
+                        return ctx > limit
+                """
+        },
+        ("0.5", "0.9"),
+        "Judge",
+    ),
+    "inherited method": (
+        {
+            "base.py": """
+                class Base:
+                    def score(self, ctx):
+                        return ctx == $X
+                """,
+            "main.py": "from base import Base\nclass Judge(Base):\n    pass\n",
+        },
+        ("1", "2"),
+        "Judge",
+    ),
+    "dotted module path": (
+        {
+            "pkg/__init__.py": "",
+            "pkg/sub.py": "def norm(x):\n    return x + $X\n",
+            "main.py": """
+                import pkg.sub
+                def score(ctx):
+                    return pkg.sub.norm(ctx)
+                """,
+        },
+        ("1", "2"),
+        "score",
+    ),
+    "instance settings": (
+        {
+            "main.py": """
+                class Checker:
+                    def __init__(self, words):
+                        self.words = words
+                    def __call__(self, x):
+                        return x in self.words
+                CHECK = Checker(words=($X,))
+                def score(ctx):
+                    return CHECK(ctx)
+                """
+        },
+        ('"a"', '"a", "b"'),
+        "score",
+    ),
+    "wrapping decorator": (
+        {
+            "decos.py": """
+                import functools
+                def normalized(fn):
+                    @functools.wraps(fn)
+                    def wrapper(ctx):
+                        return fn(ctx.$X())
+                    return wrapper
+                """,
+            "main.py": """
+                from decos import normalized
+                @normalized
+                def score(ctx):
+                    return ctx == "a"
+                """,
+        },
+        ("lower", "strip"),
+        "score",
+    ),
+    "cached helper": (
+        {
+            "main.py": """
+                import functools
+                @functools.cache
+                def rubric():
+                    return $X
+                def score(ctx):
+                    return rubric() in ctx
+                """
+        },
+        ('"strict"', '"lenient"'),
+        "score",
+    ),
+    "helper first reached deep": (
+        {
+            "helper.py": "def check(x):\n    return x == $X\n",
+            "main.py": """
+                from helper import check
+                def score(ctx):
+                    return a1(ctx) and check(ctx)
+                def a1(x): return a2(x)
+                def a2(x): return a3(x)
+                def a3(x): return a4(x)
+                def a4(x): return check(x)
+                """,
+        },
+        ("1", "2"),
+        "score",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(_DEPENDENCIES))
+def test_a_changed_dependency_changes_the_code_hash(tmp_path: Path, case: str) -> None:
+    files, values, attr = _DEPENDENCIES[case]
+    first, second = _hashes(tmp_path, files, values, attr)
+    assert first is not None
+    assert second is not None
+    assert first != second
+
+
+def test_library_callables_count_by_name_and_state_by_type(tmp_path: Path) -> None:
+    files = {
+        "main.py": """
+            import json
+            cache = {}
+            def make(normalize=str.strip, dump=json.dumps):
+                def inner(ctx):
+                    cache[ctx] = dump(normalize(ctx))
+                    return cache[ctx] $X "a"
+                return inner
+            score = make()
+            """
+    }
+    first, second = _hashes(tmp_path, files, ("==", "!="))
+    assert first is not None
+    assert first != second
+    sys.path.insert(0, str(tmp_path / "a"))
+    try:
+        main = importlib.import_module("main")
+        before = code_hash(main.score)
+        main.score(" x ")
+        assert code_hash(main.score) == before
+    finally:
+        sys.path.remove(str(tmp_path / "a"))
+        sys.modules.pop("main", None)
+
+
+def test_code_without_source_never_matches() -> None:
+    namespace: dict[str, Any] = {}
+    exec("def judge(ctx):\n    return True\n", namespace)  # ruff: ignore[exec-builtin]
+    info = FunctionScorer(namespace["judge"]).describe()
+    assert info.source == UNKNOWN_SOURCE
+    assert not info.matches(info)
+    with pytest.raises(ValueError, match="source is unavailable"):
+        identity_hash([namespace["judge"]])
+    assert identity_hash([len]) != identity_hash([str.strip])
+
+
+def test_directory_identities_ignore_caches_and_hidden_files(tmp_path: Path) -> None:
+    prompts = tmp_path / "prompts"
+    prompts.mkdir()
+    (prompts / "judge.md").write_text("Grade strictly.")
+    before = identity_hash([prompts])
+    (prompts / "__pycache__").mkdir()
+    (prompts / "__pycache__" / "x.cpython-312.pyc").write_bytes(b"\x00")
+    (prompts / ".DS_Store").write_bytes(b"\x00")
+    assert identity_hash([prompts]) == before
+    (prompts / "judge.md").write_text("Grade leniently.")
+    assert identity_hash([prompts]) != before
+
+
+def test_parsed_code_leaves_out_empty_fields() -> None:
+    # Python versions differ in which empty AST fields they spell out.
+    text = _parsed_text("def f(x):\n    return x\n")
+    assert "type_params" not in text
+    assert "decorator_list" not in text
+
+
+def test_library_scorers_record_no_source() -> None:
+    from grasp_agents.evals.validation import LabelAgreement
+
+    assert LabelAgreement(scores=["q"]).describe().source is None

@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from ._util import code_scheme
+from ._util import UNKNOWN_SOURCE, code_scheme
 from .metrics import (
     Measure,
     Reducer,
@@ -223,6 +223,7 @@ def _warnings(
     *,
     n_changed: int,
     n_paired: int,
+    n_unshared: int,
     errored_one_side: int,
 ) -> list[str]:
     warnings: list[str] = []
@@ -238,12 +239,12 @@ def _warnings(
             "No example could be paired: the runs share no example id with "
             "unchanged content."
         )
-    if base.dataset.fingerprint != candidate.dataset.fingerprint or n_changed:
+    if n_changed:
         warnings.append(
             "The runs evaluated different dataset content; only shared examples with "
             f"unchanged content are compared ({n_changed} changed examples skipped)."
         )
-    elif base.dataset.selected_fingerprint != candidate.dataset.selected_fingerprint:
+    elif n_unshared:
         warnings.append(
             "The runs evaluated different subsets of the dataset "
             f"({', '.join(base.dataset.selection) or 'all'} vs "
@@ -265,11 +266,24 @@ def _warnings(
                 f"Scorer {scorer.name!r} changed its configuration without a "
                 "version bump: score differences may come from the instrument."
             )
+        elif old.fingerprint != scorer.fingerprint and code_scheme(
+            old.fingerprint
+        ) != code_scheme(scorer.fingerprint):
+            warnings.append(
+                f"Scorer {scorer.name!r}: the runs recorded its declared identity "
+                "with different versions of grasp-evals, so whether it changed is "
+                "unknown."
+            )
         elif old.fingerprint != scorer.fingerprint:
             warnings.append(
                 f"Scorer {scorer.name!r} changed its prompt, model, settings or "
                 "declared identity without a version bump: score differences may "
                 "come from the instrument."
+            )
+        elif UNKNOWN_SOURCE in {old.source, scorer.source}:
+            warnings.append(
+                f"Scorer {scorer.name!r}: its code could not be read, so whether it "
+                "changed is unknown."
             )
         elif old.source and scorer.source and old.source != scorer.source:
             if code_scheme(old.source) != code_scheme(scorer.source):
@@ -592,6 +606,9 @@ def compare(
         candidate,
         n_changed=pairs.n_changed,
         n_paired=len(pairs.paired),
+        n_unshared=len(pairs.base_views)
+        + len(pairs.candidate_views)
+        - 2 * (len(pairs.paired) + pairs.n_changed),
         errored_one_side=errored_one_side,
     )
     if where and not paired:

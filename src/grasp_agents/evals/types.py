@@ -19,7 +19,7 @@ from pydantic_core import PydanticSerializationError, to_jsonable_python
 
 from grasp_agents.utils.errors import format_error_chain, root_cause
 
-from ._util import canonical_json, short_hash, to_jsonable
+from ._util import UNKNOWN_SOURCE, canonical_json, short_hash, to_jsonable
 
 type ScoreValue = bool | float | str
 
@@ -415,9 +415,17 @@ class ComponentInfo(BaseModel):
     fingerprint: str | None = None
     # Scorers only: hash of the scorer's code (its function or class, and the
     # user-code helpers and constants they refer to), tagged with the hashing
-    # scheme. Outside the config hash; rescoring re-runs a scorer whose code
-    # changed, and comparisons warn about it.
+    # scheme; ``None`` for library code and ``"unknown"`` for user code
+    # without readable source. Outside the config hash; rescoring re-runs a
+    # scorer whose code changed, and comparisons warn about it.
     source: str | None = None
+
+    def matches(self, other: "ComponentInfo | None") -> bool:
+        """
+        Whether ``other`` is the same component. Code whose source could not
+        be read never matches, since it may have changed.
+        """
+        return other is not None and self == other and self.source != UNKNOWN_SOURCE
 
     @field_validator("config")
     @classmethod

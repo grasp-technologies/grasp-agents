@@ -863,7 +863,7 @@ class TestRescoreRules:
         run = await evaluate(double, _numbers(3), [judged], store=store)
         # (The package exports a function named like the module.)
         module = importlib.import_module("grasp_agents.evals.scorer")
-        monkeypatch.setattr(module, "code_hash", lambda _: "v2:edited")
+        monkeypatch.setattr(module, "source_identity", lambda _: "v2:edited")
         await rescore(run.id, [judged], store=store, output_type=int)
         assert len(calls) == 6
 

@@ -30,11 +30,11 @@ from ._execution import (
     run_all,
 )
 from ._util import (
-    code_hash,
     identity_hash,
     new_run_id,
     qualified_name,
     short_hash,
+    source_identity,
     utc_now,
 )
 from .metrics import Metric, MetricsSpec, PassRate
@@ -138,7 +138,7 @@ class PairwiseJudge[InT, OutT, RefT](ABC):
             config=self.config(),
             annotator=self.annotator,
             fingerprint=identity_hash(self.identity),
-            source=code_hash(type(self)),
+            source=source_identity(type(self)),
         )
 
     @abstractmethod
@@ -169,7 +169,7 @@ class FunctionPairwiseJudge[InT, OutT, RefT](PairwiseJudge[InT, OutT, RefT]):
     def describe(self) -> ComponentInfo:
         info = super().describe()
         info.kind = qualified_name(self._fn)
-        info.source = code_hash(self._fn)
+        info.source = source_identity(self._fn)
         return info
 
     @property
@@ -227,10 +227,18 @@ class OrderSwapped[InT, OutT, RefT](Scorer[InT, Mapping[str, OutT], RefT]):
         self.annotator = judge.annotator
 
     def config(self) -> dict[str, Any]:
-        return {
-            "judge": self.judge.describe().model_dump(),
-            "both_orders": self.both_orders,
-        }
+        judge = self.judge.describe().model_dump(exclude={"fingerprint", "source"})
+        return {"judge": judge, "both_orders": self.both_orders}
+
+    def describe(self) -> ComponentInfo:
+        # The judge's prompt and code identify this scorer as they identify
+        # the judge, so changes to them read as such rather than as a
+        # different configuration.
+        judge = self.judge.describe()
+        info = super().describe()
+        info.fingerprint = judge.fingerprint
+        info.source = judge.source
+        return info
 
     async def score(
         self, ctx: ScoreContext[InT, Mapping[str, OutT], RefT]

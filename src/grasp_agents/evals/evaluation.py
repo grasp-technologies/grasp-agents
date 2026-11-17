@@ -387,7 +387,8 @@ class Evaluation:
                 dataset, phoenix_url=phoenix_url, cache_dir=cache_dir
             )
         )
-        if self.descriptive_metadata and data.origin is data:
+        if self.descriptive_metadata:
+            # Raises for a selection made before the keys were declared.
             data = data.with_descriptive_metadata(self.descriptive_metadata)
         if check:
             problems = await self.dataset_problems(

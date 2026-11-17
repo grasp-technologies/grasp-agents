@@ -232,8 +232,11 @@ task = ProcessorTask(
   - `--dataset <newer file or phoenix:...@VER>` scores the stored outputs against a
     newer dataset version (a fixed reference, renamed splits) instead of rerunning
     the task. Examples pair by id where the input is unchanged; trials whose
-    reference or metadata changed are scored from scratch. The child carries the
-    new version, so it pushes to it; `metadata.unpaired` lists what could not pair.
+    reference or metadata changed (descriptive keys aside) are scored from scratch.
+    Only the given scorers count (`metadata.dropped_scorers` lists the parent's
+    others), and a sealed split is scored only when all its examples pair. The child
+    carries the new version, so it pushes to it; `metadata.unpaired` lists what could
+    not pair.
 - **Python.** Prefer `evaluation.rescore(run)`. The bare `rescore()` needs
   `output_type=` (plus `input_type=` and `reference_type=`) and `metrics=`. Without
   them it falls back to plain JSON outputs and default metrics.
@@ -375,10 +378,13 @@ Each item gives the wrong assumption, what actually happens, and what to do.
     **Do:** give explicit ids and write files with `Dataset.save`.
 17. **"Rescore notices my scorer changed."** Reuse compares name, version, config,
     fingerprint and code. The code covers the scorer's function or class (docstrings,
-    comments and layout ignored), its bound constants, and the user-code helpers,
-    classes and module-level constants it refers to, a few levels deep. It does not
-    cover data files, constants reached only through mutable objects, or code behind
-    a dynamic lookup (`getattr`, a registry).
+    comments and layout ignored) and, a few levels deep, the user code it reaches:
+    helpers, base classes, decorators, defaults, closures, class and object
+    attributes, module globals. Constants, patterns and frozen records count by
+    value; lists, dicts and sets only under a constant's name (`RUBRIC`); other
+    mutable values by type. It does not cover data files, user code installed into
+    site-packages, or code behind a dynamic lookup (`getattr`, a registry). Code
+    without readable source (compiled from a string) never counts as unchanged.
 
     **Do:** list prompt files and other inputs in `identity=[Path(...), ...]`; bump
     `version` or pass `--rerun` for anything else. After upgrading grasp-evals, every

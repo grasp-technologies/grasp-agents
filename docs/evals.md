@@ -94,12 +94,20 @@ thread. Bump `version` whenever a scorer's semantics change: runs are
 comparable only under the same scorer versions.
 
 A scorer's identity (`describe()`) also covers its code — its function or
-class without docstrings, comments or layout, plus the user-code helpers,
-classes and module-level constants it refers to, followed a few levels deep —
-and anything listed in `identity=[...]`: strings (a prompt, a model id),
-`Path`s (a prompt or rubric file, or a directory), functions. A change to any
-of them makes `rescore` run the scorer again, voids judge validations and is
-flagged by `compare`. `lower_is_better=True` (or a set of score names) marks
+class without docstrings, comments or layout, and, followed a few levels
+deep, the user code it reaches: helpers and classes it calls (through modules
+too, `pkg.sub.norm`), base classes, decorators, and the values it is bound
+with (defaults, closures, class attributes, public attributes of objects it
+uses, module globals) — and anything listed in `identity=[...]`: strings (a
+prompt, a model id), `Path`s (a prompt or rubric file, or a directory, caches
+and hidden files aside), functions. Constants, compiled patterns and frozen
+records count by value, and so do lists, dicts and sets of plain data under a
+constant's name (`RUBRIC`, `_WORDS`); other mutable values (caches, clients)
+count by type only. Library code (grasp-agents, installed packages, the
+standard library) counts by name, so upgrading it changes nothing. A change
+to any of these makes `rescore` run the scorer again, voids judge
+validations and is flagged by `compare`. Code whose source cannot be read
+(compiled from a string) records `source="unknown"`, which never matches. `lower_is_better=True` (or a set of score names) marks
 scores whose lower values are better, such as a defect share;
 `Mean(..., higher_is_better=False)` does the same from a metric, also for
 recorded measurements. Runs record each score's direction in
@@ -184,7 +192,9 @@ scorers keep their scores. `split=` and `ids=` make a child of those
 examples' trials only; `dataset=` scores the outputs against another version
 of the dataset, pairing examples by id where the input is unchanged (the
 child records that version and its splits, and lists unpaired examples in
-`metadata["unpaired"]`). Runs are addressed by id, unique id prefix, run
+`metadata["unpaired"]`). Only the given scorers count then (the parent's
+others are listed in `metadata["dropped_scorers"]`); a sealed split is scored
+only when the parent ran it and all of its examples pair. Runs are addressed by id, unique id prefix, run
 directory, `latest` or `latest:<name>`.
 
 A run records the process executing it (`EvaluationRun.process`: host, pid).
@@ -386,6 +396,11 @@ The `evals` skill in `.claude/skills/evals/` lists these and more, with fixes.
   again.
 - Trials share the host: no per-trial sandbox or environment is created unless
   your `ctx_factory` builds one.
+- Code identity reads source files when a scorer is described, so a file
+  edited without reloading the module counts as changed. User code installed
+  into site-packages (a non-editable install) counts as library code: by
+  name only. Code reached through dynamic lookups (`getattr`, a registry) is
+  not followed.
 
 ## See also
 

@@ -26,6 +26,7 @@ from grasp_agents.evals import (
     evaluate,
     pairwise,
     render_comparison_markdown,
+    rescore,
     scorer,
 )
 from grasp_agents.evals.compare import regressions
@@ -475,7 +476,7 @@ class TestGate:
         base = await evaluate(good, _dataset(4), [correct], store=store)
         # (The package exports a function named like the module.)
         module = importlib.import_module("grasp_agents.evals.scorer")
-        monkeypatch.setattr(module, "code_hash", lambda _: "v2:edited")
+        monkeypatch.setattr(module, "source_identity", lambda _: "v2:edited")
         candidate = await evaluate(good, _dataset(4), [correct], store=store)
         assert any("changed its code" in w for w in compare(base, candidate).warnings)
 
@@ -872,6 +873,7 @@ class TestDescriptiveMetadata:
         result = compare(base, candidate)
         assert result.n_paired_examples == 4
         assert result.n_changed_examples == 0
+        assert not any("different" in w for w in result.warnings)
         judged = await pairwise(
             base, candidate, FunctionPairwiseJudge(_always_first), store=store
         )
@@ -880,3 +882,27 @@ class TestDescriptiveMetadata:
             flawed, self._data(note="checked twice"), [correct], store=store
         )
         assert compare(base, undeclared).n_paired_examples == 0
+
+    @pytest.mark.asyncio
+    async def test_rescoring_ignores_reworded_descriptive_keys(
+        self, store: LocalRunStore
+    ) -> None:
+        calls: list[str] = []
+
+        @scorer(name="correct")
+        def counted(ctx: Ctx) -> bool:
+            calls.append(ctx.example.id)
+            return ctx.output == ctx.reference
+
+        declared = self._data(note="first").with_descriptive_metadata(["note"])
+        parent = await evaluate(good, declared, [counted], store=store)
+        calls.clear()
+        child = await rescore(
+            parent,
+            [counted],
+            dataset=self._data(note="reworded"),
+            store=store,
+            output_type=int,
+        )
+        assert calls == []
+        assert child.counts.trials_done == 4

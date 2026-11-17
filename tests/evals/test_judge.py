@@ -243,7 +243,7 @@ class TestProcessorPairwiseJudge:
         consistent = run.metric("pass_rate(longer.position_consistent)")
         assert consistent is not None
         assert consistent.value == 1.0
-        assert run.scorers[0].config["judge"]["fingerprint"] is not None
+        assert run.scorers[0].fingerprint is not None
 
     @pytest.mark.asyncio
     async def test_pairwise_judge_usage_reaches_the_trial(
