@@ -110,10 +110,14 @@ class TestCompare:
             ]
         )
         base = await evaluate(
-            flawed, dataset, [correct], sealed_splits=["test"], store=store
+            flawed,
+            dataset.split("test"),
+            [correct],
+            sealed_splits=["test"],
+            store=store,
         )
         candidate = await evaluate(
-            good, dataset, [correct], sealed_splits=["test"], store=store
+            good, dataset.split("test"), [correct], sealed_splits=["test"], store=store
         )
         target = compare(base, candidate).target("correct")
         assert target is not None
@@ -461,9 +465,7 @@ class TestGate:
         assert any("no values for ['correct']" in w for w in result.warnings)
         assert "the candidate has no values for correct" in regressions(result)
         # Naming other targets leaves it out of the gate.
-        assert not any(
-            "correct" in f for f in regressions(result, targets=["error"])
-        )
+        assert not any("correct" in f for f in regressions(result, targets=["error"]))
 
     @pytest.mark.asyncio
     async def test_changed_scorer_code_is_flagged(
@@ -496,9 +498,7 @@ class TestGate:
 
         base = await evaluate(good, _dataset(4), [judged("a")], store=store)
         candidate = await evaluate(good, _dataset(4), [judged("b")], store=store)
-        assert any(
-            "declared identity" in w for w in compare(base, candidate).warnings
-        )
+        assert any("declared identity" in w for w in compare(base, candidate).warnings)
 
     @pytest.mark.asyncio
     async def test_clustered_runs_compare_on_clustered_errors(

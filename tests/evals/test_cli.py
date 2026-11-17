@@ -66,7 +66,14 @@ def test_run_show_compare_rescore(
 ) -> None:
     root = str(tmp_path / "evals")
     code, base = _run_json(
-        capsys, "--root", root, "run", f"{module}:buggy", "--json", "-q"
+        capsys,
+        "--root",
+        root,
+        "run",
+        f"{module}:buggy",
+        "--include-sealed",
+        "--json",
+        "-q",
     )
     assert code == 0
     assert base["metrics"]["pass_rate(correct)"]["value"] == pytest.approx(5 / 6)
@@ -78,6 +85,7 @@ def test_run_show_compare_rescore(
         root,
         "run",
         f"{module}:buggy",
+        "--include-sealed",
         "--json",
         "-q",
         "--fail-under",
@@ -92,6 +100,7 @@ def test_run_show_compare_rescore(
         root,
         "run",
         f"{module}:fixed",
+        "--include-sealed",
         "--json",
         "-q",
         "--baseline",
@@ -221,7 +230,11 @@ def test_errors_are_json_documents_with_usage_codes(
         (["run", str(tmp_path / "missing.py:spec")], "No spec file"),
         (["run", f"{module}:nope"], "no attribute"),
         (["run", f"{module}:buggy", "--split", "tset"], "No split 'tset'"),
-        (["run", f"{module}:buggy", "--ids", "x4"], "sealed split"),
+        (["run", f"{module}:buggy", "--ids", "x4"], "exclude_splits=test"),
+        (
+            ["run", f"{module}:buggy", "--include-sealed", "--ids", "x4"],
+            "sealed split",
+        ),
     ]:
         code, payload = _run_json(capsys, "--root", root, *args, "--json", "-q")
         assert code == 2, args
@@ -288,7 +301,15 @@ def test_progress_can_be_json_lines(
     tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     code = main(
-        ["--root", str(tmp_path), "run", f"{module}:buggy", "--progress", "json"]
+        [
+            "--root",
+            str(tmp_path),
+            "run",
+            f"{module}:buggy",
+            "--include-sealed",
+            "--progress",
+            "json",
+        ]
     )
     assert code == 0
     events = [json.loads(line) for line in capsys.readouterr().err.splitlines()[:6]]

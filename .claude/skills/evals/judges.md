@@ -88,7 +88,7 @@ The loop:
 | Point | Behavior |
 |---|---|
 | Splits | It needs a `test` split by default (`sealed_splits=("test",)`); otherwise `ValueError`, even with `--split dev`. Pass `sealed_splits=()` when the labels have no test split |
-| Which run counts | Only runs with sealed (test) trials count for gates. A run *without* `--split` includes the test split, so it counts as the final test run |
+| Which run counts | Only runs with sealed (test) trials count for gates: `--split test` (or `--include-sealed`). A run without `--split` leaves the test split out |
 | Task | The judge is the task (`ScorerTask`), so a judge failure is a *task error* here, not a scorer failure. It counts as missing |
 | Recorded scores | `<s>.agrees` (bool), `<s>.judge`, `<s>.label` (text) |
 | Metrics | `accuracy(s)`, `kappa(s)`, `tpr(s)`, `tnr(s)`, `confusion(s)`, plus `consistency(s)` when `repetitions > 1`, and `error_rate`, grouped per split |

@@ -220,6 +220,7 @@ async def _cmd_run(args: argparse.Namespace) -> int:
         sample=args.sample,
         seed=args.seed,
         limit=args.limit,
+        include_sealed=args.include_sealed,
         repetitions=args.repetitions,
         concurrency=args.concurrency,
         timeout_s=args.timeout,
@@ -827,6 +828,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--seed", type=int, default=0)
     run.add_argument(
         "--limit", type=_non_negative_int, help="first N examples (after other filters)"
+    )
+    run.add_argument(
+        "--include-sealed",
+        action="store_true",
+        help="also run sealed splits (left out unless --split names one)",
     )
     run.add_argument("-r", "--repetitions", type=_positive_int)
     run.add_argument("-c", "--concurrency", type=_positive_int)

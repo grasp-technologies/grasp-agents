@@ -379,16 +379,20 @@ Each item gives the wrong assumption, what actually happens, and what to do.
     **Do:** use `FunctionTask(fn)` or `lambda: FunctionTask(fn)`. A `FunctionTask`
     passes the `TrialContext` only if the function has a second required positional
     parameter or a parameter named `trial`.
-19. **"Sealed means excluded."** A run without `--split` evaluates sealed splits too,
-    and their trials count in the headline metrics.
-    - **What sealing does:** it hides per-example results in reports, `show`, `compare`,
-      progress lines and Phoenix trial pushes. It also forces a selection to take a
-      sealed split whole: `--ids/--limit/--sample` inside it raises
-      `SealedSelectionError` (exit 2).
+19. **"Sealed means hidden, so a run without `--split` covers everything."** A run
+    leaves sealed splits out unless `--split` names one or `--include-sealed` is
+    passed (`include_sealed=True` in Python, also for `evaluate()`). The report says
+    "Left out: sealed splits ...". `--ids <sealed id>` without either is "not in the
+    selected subset (exclude_splits=test)".
+    - **What sealing does when a sealed split runs:** it hides per-example results in
+      reports, `show`, `compare`, progress lines and Phoenix trial pushes. It also
+      forces a selection to take a sealed split whole: `--ids/--limit/--sample` inside
+      it raises `SealedSelectionError` (exit 2).
     - **What it isn't:** access control. The dataset file, `examples.jsonl`,
       `trials.jsonl`, traces and `datasets push` all contain the examples.
+    - **Resume:** a run made with `--include-sealed` resumes only with it.
 
-    **Do:** iterate with `--split dev`.
+    **Do:** iterate without `--split` or with `--split dev`; run `--split test` once.
 20. **"Paths are relative to the spec file."** Relative dataset paths resolve against
     the current directory, and so does the store (`./.evals`, unless `$GRASP_EVALS_DIR`
     or `--root` is set). `--root` must come *before* the subcommand. Validation-gate

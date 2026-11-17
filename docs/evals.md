@@ -124,11 +124,15 @@ validation_gates=, ...)` packages all of this. `task` may be a factory and
 importing a definition builds no clients. Run it with `await ev.run(split=...)`
 or `grasp-evals run module_or_file.py:attr`.
 
-**Sealed splits.** For a split listed in `sealed_splits`, reports, `show`,
-`compare` and Phoenix pushes give only aggregates, and a run touching the split
-must include all of it (no `--ids`, `--limit` or `--sample` inside it). This
-keeps an agent iterating through the CLI from fitting to held-out examples. It
-is not access control: the dataset file and run records contain the examples.
+**Sealed splits.** A split listed in `sealed_splits` is left out of a run
+unless the selection names it (`--split test`, `dataset.split("test")`) or the
+run opts in (`--include-sealed`, `include_sealed=True`); the run report and
+`run_summary` (`dataset.sealed_left_out`) say which sealed splits were left
+out. When a sealed split is run, reports, `show`, `compare` and Phoenix pushes
+give only aggregates, and the run must include all of it (no `--ids`,
+`--limit` or `--sample` inside it). This keeps an agent iterating through the
+CLI from fitting to held-out examples. It is not access control: the dataset
+file and run records contain the examples.
 
 ## Runs and storage
 
@@ -212,7 +216,7 @@ A judge is validated like any other system:
 
 | Command | Does |
 |---|---|
-| `run SPEC [--split --ids --sample --limit -r -c --timeout --max-cost --resume --baseline --fail-under M=V --fail-on-regression --push]` | run an `Evaluation` |
+| `run SPEC [--split --ids --sample --limit --include-sealed -r -c --timeout --max-cost --resume --baseline --fail-under M=V --fail-on-regression --push]` | run an `Evaluation` |
 | `rescore RUN [--spec SPEC --rerun --allow-unvalidated]` | score stored outputs again (`--spec` defaults to the run's recorded spec) |
 | `show RUN [--failures --trials --outputs --example ID]` | inspect a run |
 | `compare BASE CANDIDATE [--fail-on-regression --gate T --min-effect X]` | paired comparison |
@@ -261,7 +265,8 @@ the spec module (`init_tracing` + `init_phoenix`; see
   Return `bool` for pass/fail, and always read `error_rate`.
 - A run is invalid only when no trial ran, every trial failed, or
   `max_error_rate` is exceeded; set `max_error_rate` to fail on errors.
-- A run without `--split` includes sealed splits in its headline metrics.
+- A run without `--split` leaves sealed splits out; a judge validation counts
+  for its gate only once it ran the sealed split (`--split test`).
 - In an `Evaluation`, pass `task=FunctionTask(fn)`: a bare function is treated
   as a zero-argument factory.
 - Bare `rescore()` and `pairwise()` re-validate stored outputs only with

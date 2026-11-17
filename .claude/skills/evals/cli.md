@@ -51,7 +51,8 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 | Option | Meaning |
 |---|---|
 | `--dataset PATH\|phoenix:NAME[@VER]` | Overrides the spec's dataset |
-| `--split S`, `--ids a,b`, `--sample N --seed S`, `--limit N` | Applied in this order: split → ids → sample → limit. An empty selection is an error |
+| `--split S`, `--ids a,b`, `--sample N --seed S`, `--limit N` | Applied in this order: split → (sealed splits left out) → ids → sample → limit. An empty selection is an error |
+| `--include-sealed` | Keep the sealed splits, which are otherwise left out unless `--split` names one |
 | `-r`, `-c`, `--timeout`, `--max-cost` | Override the spec's repetitions, concurrency, per-trial task timeout and budget |
 | `--no-score` | Runs the task only. The validation gate is skipped; scores come later with `--resume` (into a `retry` child) |
 | `--resume RUN [--force]` | Continue (see SKILL.md pitfall 12). Pass the same selection and `-r` as the original run |

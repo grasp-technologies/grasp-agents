@@ -15,7 +15,7 @@ from ._util import SPEC_MODULE_PREFIX, short_hash
 from .dataset import Dataset, DatasetCheck, DatasetError, DatasetProblem
 from .metrics import MetricsSpec, default_metrics
 from .runner import evaluate as evaluate_task
-from .runner import rescore
+from .runner import leave_out_sealed, rescore
 from .scorer import Scorer
 from .store import LocalRunStore, RunStore
 from .task import Task, as_task
@@ -113,10 +113,12 @@ class Evaluation:
     max_error_rate: float | None = None
     group_by: Sequence[str] = ()
     cluster_by: str | None = None
-    # Held-out splits: reports, ``show``, ``compare`` and Phoenix pushes give
-    # only their aggregates, and a run must include each one whole. This keeps
-    # an agent iterating through the CLI from fitting to their examples; it is
-    # not access control — the dataset file and run records contain them.
+    # Held-out splits: left out of a run unless it names one (``split=``) or
+    # includes them (``include_sealed=True``); reports, ``show``, ``compare``
+    # and Phoenix pushes give only their aggregates, and a run must include
+    # each one whole. This keeps an agent iterating through the CLI from
+    # fitting to their examples; it is not access control — the dataset file
+    # and run records contain them.
     sealed_splits: Sequence[str] = ()
     # Integrity checks run on the dataset before every run.
     dataset_checks: Mapping[str, DatasetCheck] | Sequence[DatasetCheck] = ()
@@ -241,11 +243,16 @@ class Evaluation:
         sample: int | None = None,
         seed: int = 0,
         limit: int | None = None,
+        include_sealed: bool = False,
         check: bool = True,
         phoenix_url: str | None = None,
         cache_dir: str | Path | None = None,
     ) -> Dataset[Any, Any]:
-        """The dataset subset a run would evaluate (after integrity checks)."""
+        """
+        The dataset subset a run would evaluate (after integrity checks):
+        ``split``, then ``ids``, ``sample`` and ``limit``. Sealed splits are
+        left out unless ``split`` names one or ``include_sealed``.
+        """
         data = (
             dataset
             if isinstance(dataset, Dataset)
@@ -264,6 +271,9 @@ class Evaluation:
                 )
         if split is not None:
             data = data.split(split)
+        data = leave_out_sealed(
+            data, frozenset(self.sealed_splits), include_sealed=include_sealed
+        )
         if ids:
             data = data.select(ids)
         if sample is not None:
@@ -286,6 +296,7 @@ class Evaluation:
         sample: int | None = None,
         seed: int = 0,
         limit: int | None = None,
+        include_sealed: bool = False,
         repetitions: int | None = None,
         concurrency: int | None = None,
         timeout_s: float | None = None,
@@ -316,6 +327,7 @@ class Evaluation:
             sample=sample,
             seed=seed,
             limit=limit,
+            include_sealed=include_sealed,
             check=check,
             phoenix_url=phoenix_url,
             # Pulled datasets are cached next to the runs.
@@ -343,6 +355,7 @@ class Evaluation:
             group_by=self.group_by,
             cluster_by=self.cluster_by,
             sealed_splits=self.sealed_splits,
+            include_sealed=include_sealed,
             score=score,
             store=store,
             persist=persist,

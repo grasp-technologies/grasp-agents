@@ -44,6 +44,7 @@ async def test_reports_never_list_sealed_examples() -> None:
         _data(),
         [correct],
         sealed_splits=["test"],
+        include_sealed=True,
         group_by=["band"],
         persist=False,
     )
@@ -60,7 +61,12 @@ async def test_reports_never_list_sealed_examples() -> None:
 @pytest.mark.asyncio
 async def test_sealed_trials_expose_nothing_identifying() -> None:
     run = await evaluate(
-        wrong_on_odd, _data(), [correct], sealed_splits=["test"], persist=False
+        wrong_on_odd,
+        _data(),
+        [correct],
+        sealed_splits=["test"],
+        include_sealed=True,
+        persist=False,
     )
     sealed = next(t for t in run.trials if t.sealed)
     assert trial_summary(sealed) == {
@@ -99,6 +105,7 @@ async def test_groups_with_a_few_sealed_members_are_hidden() -> None:
         data,
         [correct],
         sealed_splits=["test"],
+        include_sealed=True,
         group_by=["band"],
         persist=False,
     )

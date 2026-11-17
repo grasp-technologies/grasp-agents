@@ -237,7 +237,12 @@ class TestEvaluate:
             ]
         )
         run = await evaluate(
-            double, dataset, [correct], sealed_splits=["test"], persist=False
+            double,
+            dataset,
+            [correct],
+            sealed_splits=["test"],
+            include_sealed=True,
+            persist=False,
         )
         assert {t.example_id: t.sealed for t in run.trials} == {
             "dev": False,
@@ -529,8 +534,17 @@ class TestSelectionGuards:
                 data.select(["n0", "n3"]),
                 [correct],
                 sealed_splits=["test"],
+                include_sealed=True,
                 persist=False,
             )
+        unsealed = await evaluate(
+            double,
+            data.select(["n0", "n3"]),
+            [correct],
+            sealed_splits=["test"],
+            persist=False,
+        )
+        assert [t.example_id for t in unsealed.trials] == ["n0"]
         whole = await evaluate(
             double, data.split("test"), [correct], sealed_splits=["test"], persist=False
         )

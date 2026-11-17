@@ -155,7 +155,7 @@ class TestJudgeValidation:
         validation = judge_validation(
             good_judge, _labels(tmp_path / "labels.jsonl"), input_type=str
         )
-        run = await validation.run(store=store)
+        run = await validation.run(store=store, include_sealed=True)
         values = {m.name: m.value for m in run.metrics}
         # TP: good!, very good!; FP: good., good enough.; FN: bad!, not bad!
         assert values["accuracy(good)"] == pytest.approx(4 / 8)
@@ -403,7 +403,7 @@ class TestValidationGates:
         self, tmp_path: Path, store: LocalRunStore
     ) -> None:
         run = await judge_validation(good_judge, _labels(tmp_path / "l.jsonl")).run(
-            store=store
+            store=store, include_sealed=True
         )
         everything = summarize_validation(run, "good", sealed_only=False)
         assert everything.accuracy.n == 8
@@ -679,7 +679,7 @@ class TestValidationCoverage:
         self, tmp_path: Path, store: LocalRunStore
     ) -> None:
         run = await judge_validation(good_judge, _labels(tmp_path / "l.jsonl")).run(
-            store=store
+            store=store, include_sealed=True
         )
         accuracy = run.metric("accuracy(good)")
         assert accuracy is not None

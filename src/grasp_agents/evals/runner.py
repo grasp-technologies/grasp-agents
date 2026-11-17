@@ -81,6 +81,30 @@ def _check_scorers(
         declared_directions(scorers, metrics)
 
 
+def leave_out_sealed[InT, RefT](
+    dataset: Dataset[InT, RefT], sealed: frozenset[str], *, include_sealed: bool
+) -> Dataset[InT, RefT]:
+    """
+    ``dataset`` without the examples of sealed splits, unless its selection
+    names a sealed split (``split=test``) or ``include_sealed``.
+    """
+    if include_sealed or not sealed:
+        return dataset
+    named = {
+        s.removeprefix("split=") for s in dataset.selection if s.startswith("split=")
+    }
+    if named & sealed or not any(sealed.intersection(e.splits) for e in dataset):
+        return dataset
+    kept = dataset.exclude_splits(sealed)
+    if len(kept) == 0:
+        raise SealedSelectionError(
+            f"Every selected example of {dataset.name!r} is in a sealed split "
+            f"({', '.join(sorted(sealed))}); name the split to evaluate it, or "
+            "include sealed splits"
+        )
+    return kept
+
+
 def check_sealed(dataset: Dataset[Any, Any], sealed: frozenset[str]) -> None:
     """
     Sealed splits must exist, and a selection must include each sealed split
@@ -139,8 +163,8 @@ def _resume_record(
         raise ResumeError(
             f"Cannot resume {previous.id}: the task, scorers, selected examples or "
             "repetitions differ from the original run. Pass the same selection "
-            "(split, ids, limit, sample) and repetitions as the original run, or "
-            "start a new one."
+            "(split, ids, limit, sample, include_sealed) and repetitions as the "
+            "original run, or start a new one."
         )
     if sorted(previous.config.sealed_splits) != sorted(config.sealed_splits):
         raise ResumeError(
@@ -246,6 +270,7 @@ async def evaluate[InT, OutT, RefT](
     group_by: Sequence[str] = (),
     cluster_by: str | None = None,
     sealed_splits: Sequence[str] = (),
+    include_sealed: bool = False,
     score: bool = True,
     capture_events: bool = True,
     store: RunStore | None = None,
@@ -274,6 +299,10 @@ async def evaluate[InT, OutT, RefT](
     ``force=True`` overrides) and stops if an agent answers with a model the
     run did not use.
 
+    Examples of ``sealed_splits`` are left out unless the dataset's selection
+    names a sealed split (``dataset.split("test")``) or ``include_sealed``; a
+    run that includes a sealed split includes all of it.
+
     ``max_cost_usd`` stops scheduling new trials once spent (the run ends
     ``partial``); trials already running finish, so the total can exceed it
     by about one trial's cost each. ``max_error_rate`` marks a run with too
@@ -292,6 +321,7 @@ async def evaluate[InT, OutT, RefT](
     scorer_list: list[Scorer[Any, Any, Any]] = list(scorers)
     _check_scorers(scorer_list, metrics)
     sealed = frozenset(sealed_splits)
+    dataset = leave_out_sealed(dataset, sealed, include_sealed=include_sealed)
     check_sealed(dataset, sealed)
     run_store = resolve_store(store, persist)
     dataset_ref = dataset.ref()

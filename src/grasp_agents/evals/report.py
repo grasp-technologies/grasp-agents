@@ -48,6 +48,17 @@ def _confidence_label(metrics: Iterable[MetricResult]) -> str:
     return "CI"
 
 
+def sealed_left_out(run: EvaluationRun) -> list[str]:
+    """The sealed splits the run's selection left out."""
+    sealed = set(run.config.sealed_splits)
+    left: list[str] = []
+    for step in run.dataset.selection:
+        if step.startswith("exclude_splits="):
+            names = step.removeprefix("exclude_splits=").split(",")
+            left.extend(n for n in names if n in sealed and n not in left)
+    return left
+
+
 def sealed_groups(run: EvaluationRun) -> set[str]:
     """Group labels not to report: some, but too few, held-out examples."""
     by_id = {e.id: e for e in run.examples}
@@ -207,6 +218,12 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
         lines.append(
             f"- **Sealed:** {sealed} trials in held-out splits are reported in "
             "aggregate only"
+        )
+    left_out = sealed_left_out(run)
+    if left_out:
+        lines.append(
+            f"- **Left out:** sealed splits {', '.join(left_out)} (name one with "
+            "--split, or --include-sealed, to run it)"
         )
 
     if run.metrics:
@@ -378,6 +395,7 @@ def run_summary(run: EvaluationRun) -> dict[str, Any]:
             "selected": run.dataset.selected_size,
             "size": run.dataset.size,
             "selection": run.dataset.selection,
+            "sealed_left_out": sealed_left_out(run),
         },
         "task": {"name": run.task.name, "version": run.task.version},
         "scorers": {e.name: e.version for e in run.scorers},
