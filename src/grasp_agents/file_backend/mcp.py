@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import stat as stat_module
 from typing import TYPE_CHECKING, Any, cast
 
 from grasp_agents.mcp.resource_index import AnyUrl, MCPResourceIndex
@@ -51,7 +52,7 @@ except ImportError as _err:
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
+    from pathlib import Path, PurePosixPath
 
     from mcp.types import ContentBlock
 
@@ -184,33 +185,50 @@ class MCPFileBackend(FileBackend):
         return resolved
 
     async def stat(self, path: Path) -> FileStat:
+        """
+        Stat ``path`` from the resource index, with POSIX file-type bits.
+
+        A path with no resource of its own but resources under it is an
+        implicit directory. A path with neither reports ``mode=0`` and
+        ``size=-1``.
+        """
         entry = await self._index.get(self._to_uri(path))
         if entry is None:
+            if await self._has_resources_under(normalize_posix(path)):
+                return FileStat(mtime=0.0, mode=stat_module.S_IFDIR | 0o755)
             return FileStat(mtime=0.0, mode=0, size=-1)
         return FileStat(
             mtime=entry.mtime_seconds,
-            mode=0o644,
+            mode=(
+                stat_module.S_IFDIR | 0o755
+                if entry.is_dir
+                else stat_module.S_IFREG | 0o644
+            ),
             size=max(entry.size, 0),
         )
 
     async def exists(self, path: Path) -> bool:
-        return await self._index.get(self._to_uri(path)) is not None
+        """
+        Whether ``path`` is a listed resource or an implicit directory (a
+        path with resources under it), as :meth:`stat` reports them.
+        """
+        return await self._exists(normalize_posix(path))
 
     async def parent_exists(self, path: Path) -> bool:
-        # MCP resources are flat; a directory "exists" iff at least one
-        # listed resource sits under it. Sufficient for the Write-tool
-        # parent-existence check, which only needs to refuse silent
-        # parent-creation.
         parent = normalize_posix(path).parent
-        if str(parent) == str(normalize_posix(path)):
+        if parent == normalize_posix(path):
             return True
-        if await self._index.get(self._index.make_uri(parent)) is not None:
-            return True
-        children = await self._index.list_under(parent)
-        return len(children) > 0
+        return await self._exists(parent)
 
     async def read_text(self, path: Path) -> tuple[str, float]:
         uri = self._to_uri(path)
+        # Report the mtime from the SAME surface the staleness guard later
+        # consults via ``stat`` (the list index) — mixing it with the
+        # read-meta surface causes spurious edit refusals whenever the two
+        # disagree. Read-meta is the fallback for files the index doesn't
+        # know yet. Look the entry up before reading, so a listing fetched
+        # now cannot carry an mtime newer than the content.
+        entry = await self._index.get(uri)
         session = self._client.session
         try:
             result = await session.read_resource(AnyUrl(uri))
@@ -218,12 +236,6 @@ class MCPFileBackend(FileBackend):
             raise OSError(f"MCP resources/read for {uri!r} failed: {exc}") from exc
         for content in result.contents:
             if isinstance(content, TextResourceContents):
-                # Report the mtime from the SAME surface the staleness guard
-                # later consults via ``stat`` (the list index) — mixing it
-                # with the read-meta surface causes spurious edit refusals
-                # whenever the two disagree. Read-meta is the fallback for
-                # files the index doesn't know yet.
-                entry = await self._index.get(uri)
                 if entry is not None:
                     mtime = entry.mtime_seconds
                 else:
@@ -352,6 +364,16 @@ class MCPFileBackend(FileBackend):
         )
 
     # ---- Internals ----------------------------------------------------------
+
+    async def _exists(self, path: PurePosixPath) -> bool:
+        if await self._index.get(self._index.make_uri(path)) is not None:
+            return True
+        return await self._has_resources_under(path)
+
+    async def _has_resources_under(self, path: PurePosixPath) -> bool:
+        # MCP resources are flat: a directory exists only through the
+        # resources listed under it.
+        return bool(await self._index.list_under(path))
 
     async def _check_expected_mtime(self, path: Path, expected_mtime: float) -> None:
         """

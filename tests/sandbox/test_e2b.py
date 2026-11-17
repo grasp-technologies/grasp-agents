@@ -47,7 +47,15 @@ from grasp_agents.sandbox.e2b import environment as e2b_env
 from grasp_agents.sandbox.e2b import file_backend as e2b_file_backend
 from grasp_agents.sandbox.exec_backend import ExecChunk, ExecResult, TerminationReason
 from grasp_agents.session_context import SessionContext
-from grasp_agents.tools.file_edit import DeleteInput, DeleteTool
+from grasp_agents.tools.file_edit import DeleteInput, DeleteTool, NullRedactor
+from grasp_agents.tools.file_search import (
+    GlobInput,
+    GlobResult,
+    GlobTool,
+    GrepInput,
+    GrepResult,
+    GrepTool,
+)
 from grasp_agents.types.events import ToolErrorInfo
 from tests.sandbox._e2b_fakes import (
     WS,
@@ -56,6 +64,7 @@ from tests.sandbox._e2b_fakes import (
     FakeEntry,
     FakeFiles,
     FakeHandle,
+    FakeResult,
     FakeSandbox,
     FakeTimeout,
 )
@@ -403,6 +412,61 @@ async def test_grep_no_match_returns_empty() -> None:
     backend = _env(FakeSandbox(commands=cmds)).file_backend
     res = await backend.grep(Path(WS), "needle")
     assert res.files == []
+
+
+class _GrepCommands:
+    """Answers ``grep -l`` with ``files`` and any other grep with ``stdout``."""
+
+    def __init__(self, *, files: list[str], stdout: str) -> None:
+        self._files = files
+        self._stdout = stdout
+
+    async def run(self, cmd: str, **kwargs: Any) -> FakeResult:
+        del kwargs
+        if "-l" in shlex.split(cmd):
+            return FakeResult("".join(f"{name}\0" for name in self._files), 0)
+        return FakeResult(self._stdout, 0)
+
+
+def _read_guarded_ctx(fake: FakeSandbox) -> SessionContext[Any]:
+    fake.files.infos[WS] = FakeEntry(name="workspace", path=WS, type_value="dir")
+    policy = SandboxPolicy(
+        allowed_roots=(Path(WS),), deny_read=(Path(f"{WS}/private"),)
+    )
+    env = E2BEnvironment.from_sandbox(cast("AsyncSandbox", fake), policy=policy)
+    return SessionContext[Any](file_backend=env.file_backend)
+
+
+async def test_grep_tool_drops_unreadable_results() -> None:
+    commands = _GrepCommands(
+        files=[f"{WS}/a.py", f"{WS}/private/key.py"],
+        stdout=(
+            f"{WS}/a.py\x001:needle public\n{WS}/private/key.py\x001:needle SECRET\n"
+        ),
+    )
+    ctx = _read_guarded_ctx(FakeSandbox(commands=commands))
+    tool = GrepTool(redactor=NullRedactor())
+    listed = await tool.run(GrepInput(pattern="needle"), ctx=ctx)
+    content = await tool.run(
+        GrepInput(pattern="needle", output_mode="content"), ctx=ctx
+    )
+    assert isinstance(listed, GrepResult)
+    assert isinstance(content, GrepResult)
+    assert listed.output == f"{WS}/a.py"
+    assert content.output == f"{WS}/a.py:1:needle public"
+
+
+async def test_glob_tool_drops_unreadable_files() -> None:
+    fake = FakeSandbox()
+    fake.files.listing[WS] = [
+        FakeEntry(name="a.py", path=f"{WS}/a.py"),
+        FakeEntry(name="key.py", path=f"{WS}/private/key.py"),
+    ]
+    result = await GlobTool().run(
+        GlobInput(pattern="**/*.py"), ctx=_read_guarded_ctx(fake)
+    )
+    assert isinstance(result, GlobResult)
+    assert result.files == [f"{WS}/a.py"]
 
 
 async def test_grep_multiline_unsupported() -> None:

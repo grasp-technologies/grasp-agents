@@ -43,6 +43,7 @@ from .injection import (
 )
 from .loader import (
     INDEX_FILE_NAME,
+    MAX_FRONTMATTER_CHARS,
     MAX_INDEX_BYTES,
     MAX_INDEX_LINES,
     MAX_MEMORY_FILES,
@@ -84,6 +85,7 @@ __all__ = [
     "GRASP_HOME_DIR_NAME",
     "GRASP_MEMORY_ENV",
     "INDEX_FILE_NAME",
+    "MAX_FRONTMATTER_CHARS",
     "MAX_INDEX_BYTES",
     "MAX_INDEX_LINES",
     "MAX_MEMORY_FILES",

@@ -46,6 +46,13 @@ Don't end replies with a recap. **Why:** ... **How to apply:** ...
 
 - `name` (required, at most 64 characters: lowercase letters, digits, `-`, `_`)
   and `description` (required, at most 2048 characters).
+- The frontmatter is plain YAML of at most 4,096 characters
+  (`MAX_FRONTMATTER_CHARS`). Anchors and aliases are refused, as is nesting too
+  deep to parse, so a hostile file can neither exhaust memory nor stop the
+  load.
+- A topic file whose frontmatter is missing, too long, refused or invalid is
+  logged and skipped. The error names the field and the problem, never the
+  offending value.
 - `type` names the kind of memory. The instructions offer the provider's
   `memory_types` (by default `user`, `feedback`, `project`, `reference`). Any
   value is kept, and headings and the selector's manifest show it as written,
@@ -173,6 +180,9 @@ See [Security](security.md).
    (`check_memory_instructions`).
 6. A memory's `type` reaches the prompt only as one line of at most 64
    characters (`MemoryFrontmatter.type_label`).
+7. Frontmatter over 4,096 characters, with YAML anchors or aliases, or nested
+   too deeply raises `MemoryFormatError`, and no `MemoryFormatError` quotes the
+   values it refuses (`parse_memory_md`). Loading the memdir skips such files.
 
 ## Limitations
 

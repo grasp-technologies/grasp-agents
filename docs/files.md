@@ -45,8 +45,8 @@ agent = LLMAgent[str, str, None]("editor", llm=llm, ctx=ctx, tools=toolkit.tools
 | `Edit` | Replaces `old_string` with `new_string` in an existing file, using the fuzzy chain below. More than one match needs `replace_all=True`; otherwise it refuses and reports the count and strategy. |
 | `Delete` | Removes one file (never a directory). |
 | `Copy` | Copies a file or a directory tree without passing its content through the model (see [Copy](#copy)). Opt-in: `FileToolkit(include_copy=True)`. |
-| `Glob` | Glob search returning the 250 most recently modified matches, newest first (`truncated` says whether more matched). Hidden directories are skipped unless `FileToolkit(glob_include_hidden=True)`; common build/cache directories (`node_modules`, `__pycache__`, `dist`, …) below the search path are always skipped. |
-| `Grep` | Regex search with modes `files_with_matches` (default), `count`, `content` (with `-A` / `-B` / `-C`, line numbers). `LocalFileBackend` runs `rg`, which must be on `PATH`; `InMemoryFileBackend` searches in Python (`grep_texts`). Notes from the backend (a mount it could not search, a search cut short by its time budget) follow the results. Paginated with `head_limit` (250) and `offset`. |
+| `Glob` | Glob search returning the 250 most recently modified matches, newest first (`truncated` says whether more matched). Hidden directories are skipped unless `FileToolkit(glob_include_hidden=True)`; common build/cache directories (`node_modules`, `__pycache__`, `dist`, …) below the search path are always skipped. Matches the agent may not `Read` are left out ([Search and read access](#search-and-read-access)). |
+| `Grep` | Regex search with modes `files_with_matches` (default), `count`, `content` (with `-A` / `-B` / `-C`, line numbers). `LocalFileBackend` runs `rg`, which must be on `PATH`; `InMemoryFileBackend` searches in Python (`grep_texts`). Results from files the agent may not `Read` are left out, and the totals count only what is left. Notes from the backend (a mount it could not search, a search cut short by its time budget) follow the results. Paginated with `head_limit` (250) and `offset`. |
 | `ReadImage` | Returns a PNG / JPEG / GIF / WebP file as an image the model can see (up to 5 MB). |
 | `NotebookRead`, `NotebookEdit` | Cell-structured notebook access (see [Notebooks](notebooks.md)). |
 
@@ -102,12 +102,18 @@ A per-session opt-in bypasses the dotfile list for one path: `agent.agent_ctx.fi
 
 `Read` output passes through a `SecretRedactor` (default `DefaultSecretRedactor`: AWS keys, GitHub tokens, OpenAI / Anthropic keys, JWTs, private-key blocks → `<REDACTED:KIND>`). Pass `FileToolkit(redactor=NullRedactor())` to disable it, or your own callable.
 
+### Search and read access
+
+`Glob` and `Grep` validate their search root, and the backend then walks everything under it. So each tool also passes every result path through `validate_path(access="read")`, with the agent's dotfile overrides, and drops the paths it refuses: a search shows no more than `Read` would, neither the names nor the lines of files under a `deny_read` carve-out or among the credential dotfiles. The totals count only what is left.
+
+A `content` line carries its file's path only as text, and paths may contain `:` or `-`. So `Grep` lists the matching files with a second search, in `files_with_matches` mode, and keeps a line only when it starts with a listed path that may be read, followed by `:` or `-`, and with no listed path that may not. Notes from either search follow the results.
+
 ## Backends
 
 | Backend | Notes |
 |---|---|
 | `LocalFileBackend(allowed_roots=, readonly_roots=, include_dotfiles=, deny_read=, allow_read=, deny_write=)` | Host filesystem. Atomic writes (temp file + `fsync` + `os.replace`); true appends; `Grep` via `rg`. Defaults to `[Path.cwd()]`. |
-| `MCPFileBackend(client=, allowed_roots=)` | Reads through MCP resources; writes and deletes through server tools (`write_file`, `delete_file`). The server owns containment; the backend checks only `allowed_roots`. No grep (`NotImplementedError`); use `Glob` + `Read`. |
+| `MCPFileBackend(client=, allowed_roots=)` | Reads through MCP resources; writes and deletes through server tools (`write_file`, `delete_file`). The server owns containment; the backend checks only `allowed_roots`. No grep (`NotImplementedError`); use `Glob` + `Read`. `stat` reports file-type bits from the resource index (see [MCP](mcp.md#mcp-file-backend)). |
 | `E2BFileBackend` | Built by `e2b_environment` (see [Sandbox](sandbox.md)). Paths are inside the sandbox; grep runs remotely; multiline grep is unsupported. A grep `type` selects the same files as ripgrep 14 for 32 common types (`py`, `js`, `ts`, `md`, `sh`, …) and raises on any other type; filter with `glob` there. `stat` reports file-type bits from the entry type. |
 | `InMemoryFileBackend(allowed_roots, files=, max_file_bytes=, max_total_bytes=, grep_time_budget=)` | Files in a dict, gone with the process: a per-session scratch mount or a test double. Directories are implicit, and each root exists from the start. `files=` seeds content; a seed outside the roots, inside another seed or over a limit raises `ValueError`. A write or append past `max_file_bytes` or `max_total_bytes` raises `OSError` (`EFBIG` / `ENOSPC`). Writes are atomic, `expected_mtime` checks are exact, and every write gets a later mtime than the one before. `Grep` runs `grep_texts` within `grep_time_budget` (5 s by default). |
 | `CompositeFileBackend(mounts, scratch=)` | Routes each call to a child backend by mount path (see [Composite backends](#composite-backends)). |
@@ -119,7 +125,9 @@ To serve your own store (a database, say), implement `FileBackend` or put the st
 Subclass `FileBackend` and implement every abstract method: `allowed_roots`, `add_allowed_root`, `validate_path`, `stat`, `exists`, `parent_exists`, `read_text`, `read_bytes`, `write_bytes`, `delete`, `mkdir`, `list_dir`, `find_files`, `grep`. Override `append_bytes` if you can append in place; the default rewrites the whole file.
 
 - **Honor `expected_mtime`.** When `write_bytes` or `delete` gets one, raise `StaleFileError` without changing anything if the file is missing or its mtime differs. Check and write in one step where the store can (a conditional update); otherwise check right before writing. The file tools always pass the argument and rely on the check.
+- **Take a read's mtime first.** `read_text` and `read_bytes` return the mtime taken before the content (or with it, in one step). An mtime taken after could postdate a write that landed in between, and the conditional write that follows would then overwrite that write.
 - **Search stored text.** A backend that holds file text can return `await grep_texts_async(files, pattern, root=root, ...)` from `grep`, which builds a `GrepRawResult` shaped like the local `rg` backend's. `find_files` can filter `list_dir(root, recursive=True)` through `glob_filter_entries` (`file_backend/local.py`) in a worker thread.
+- **Grep lines.** In `content` mode, start each line with the file's path exactly as `files_with_matches` mode reports it, then `:` for a match or `-` for a context line. `Grep` attributes lines to files that way, and drops a line it cannot attribute.
 - **Notes.** Put caveats the model should see in `GrepRawResult.notes`; `Grep` prints them after the results.
 - **Wrappers.** A backend that serves other backends overrides `includes`, which `SessionContext` uses to accept it next to an environment.
 
@@ -157,16 +165,19 @@ Next to an environment, `SessionContext` accepts a composite when a mount includ
 
 1. Validate before any I/O: every tool resolves its path through `validate_path(path, access=...)` first, and backend I/O methods receive only validated paths (`FileBackend`).
 2. `write_bytes` is atomic and creates missing parent directories; it returns the post-write mtime. Given `expected_mtime`, `write_bytes` and `delete` change nothing and raise `StaleFileError` when the file is missing or its mtime differs (`FileBackend.write_bytes`, `FileBackend.delete`).
-3. Backends are pure I/O. The read/mtime ledger lives in the agent's `FileEditSessionState`, never in the backend.
-4. A backend that cannot search raises `NotImplementedError` from `find_files` / `grep`, so tools can report a clear error.
-5. `add_allowed_root(root)` is idempotent; `SessionContext` uses it to admit the memory directory automatically (`SessionContext._validate_memory_under_backend_roots`). A `CompositeFileBackend` adds no roots: it accepts a path inside a mount and raises `PathAccessError` for any other.
-6. `Write` and `Edit` refuse `.ipynb` and point the model at `NotebookEdit`.
-7. Read-before-write and staleness checks apply to every mutating file tool inside an agent loop, and the tool passes the read record's mtime to the backend as `expected_mtime` (`refuse_if_stale`).
-8. Skills are read from the host filesystem (`pathlib`), not through `ctx.file_backend` (see [Skills](skills.md)).
-9. A composite routes by mount path without translating it, never nests mounts, and refuses a path that resolves outside its mount (`CompositeFileBackend.validate_path`).
-10. A read-only mount refuses every change, in `validate_path(access="write")` and in each mutating call (`CompositeFileBackend`).
-11. A composite's `allowed_roots` begin with its writable scratch mount, where framework writes and path-less searches go (`CompositeFileBackend.allowed_roots`).
-12. `Copy` checks its whole plan and reads every source before its first write, and reads only files that pass `validate_path` for reading (`CopyTool`).
+3. A read takes the mtime before the content, so a write landing in between makes the next conditional write refuse rather than overwrite it (`FileBackend.read_text`, `read_bytes`).
+4. Backends are pure I/O. The read/mtime ledger lives in the agent's `FileEditSessionState`, never in the backend.
+5. A backend that cannot search raises `NotImplementedError` from `find_files` / `grep`, so tools can report a clear error.
+6. `add_allowed_root(root)` is idempotent; `SessionContext` uses it to admit the memory directory automatically (`SessionContext._validate_memory_under_backend_roots`). A `CompositeFileBackend` adds no roots: it accepts a path inside a mount and raises `PathAccessError` for any other.
+7. `Write` and `Edit` refuse `.ipynb` and point the model at `NotebookEdit`.
+8. Read-before-write and staleness checks apply to every mutating file tool inside an agent loop, and the tool passes the read record's mtime to the backend as `expected_mtime` (`refuse_if_stale`).
+9. Skills are read from the host filesystem (`pathlib`), not through `ctx.file_backend` (see [Skills](skills.md)).
+10. A composite routes by mount path without translating it, never nests mounts, and refuses a path that resolves outside its mount (`CompositeFileBackend.validate_path`).
+11. A read-only mount refuses every change, in `validate_path(access="write")` and in each mutating call (`CompositeFileBackend`).
+12. A composite's `allowed_roots` begin with its writable scratch mount, where framework writes and path-less searches go (`CompositeFileBackend.allowed_roots`).
+13. `Copy` checks its whole plan and reads every source before its first write, and reads only files that pass `validate_path` for reading (`CopyTool`).
+14. `Glob` and `Grep` return only results whose paths pass `validate_path(access="read")`, and their totals count only those (`tools/file_search/_read_access.py`).
+15. In `content` mode, a backend's `grep` starts each line with the file's path exactly as `files_with_matches` mode reports it, then `:` or `-` (`FileBackend.grep`).
 
 ## Limitations
 
@@ -178,6 +189,10 @@ Next to an environment, `SessionContext` accepts a composite when a mount includ
 - `grep_texts` differs from `rg`: it uses the `regex` module's Python syntax instead of Rust's, ignores `.gitignore`, matches a glob containing `/` against the path under the search root, and knows only a subset of `rg`'s file types (`file_backend/text_grep.py`). It refuses patterns and globs over 1,000 characters and globs with more than 128 brace alternatives.
 - A `grep_texts` search stops at its time budget (5 s by default) and returns only the files it finished, with a note saying so. A cancelled caller stops waiting at once, but the worker thread runs until the search ends or the budget runs out.
 - Inside a directory, `Copy` skips files it may not read, symbolic links and special files instead of failing; check `skipped`. It holds every source in memory until written, and a write that fails partway (a size limit, a concurrent change) leaves the files already copied.
+- `Grep` in `content` mode runs the backend's search twice, the second time to list the matching files, and drops the lines of a file that second search did not list.
+- When a matching file `Grep` may not read has a path that, followed by `:` or `-`, begins another matching file's path (a refused file `notes` beside a readable `notes-2024/`), the other file's `content` lines are dropped too: `Grep` cannot tell which of the two they come from.
+- `Glob` filters after the backend's cap (`head_limit`), so it can return fewer matches than the cap while reporting `truncated`.
+- The search filter is only as strict as the backend's `validate_path`. `MCPFileBackend` leaves read policy to its server and checks only `allowed_roots`, and `InMemoryFileBackend` has no read policy, so neither drops anything inside its roots.
 - `Glob` and `Grep` at a composite's virtual directory search every mount below it. `Glob` there lists each mount in full (a local mount's `.git` and `node_modules` included) before filtering, and leaves out a mount that cannot list its files, logging only a warning.
 - `InMemoryFileBackend` keeps nothing past the process.
 

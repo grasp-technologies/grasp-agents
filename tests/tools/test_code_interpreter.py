@@ -11,6 +11,7 @@ sandbox); they are gated behind the ``integration`` marker and run via
 from __future__ import annotations
 
 import base64
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -22,7 +23,7 @@ from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.code_interpreter import RunPython, RunPythonInput, _human_size
 from grasp_agents.types.content import InputImage, InputText
 from grasp_agents.types.events import ToolErrorInfo
-from tests._helpers import _make_agent_ctx, exec_confinement
+from tests._helpers import FakeSnapshotEnv, _make_agent_ctx, exec_confinement
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -85,6 +86,21 @@ async def test_run_python_requires_exec_backend(tmp_path: Path) -> None:
         RunPythonInput(code="x = 1"), ctx=ctx, agent_ctx=_agent_ctx()
     )
     assert "exec_backend" in _error_message(result)
+
+
+class _NoKernelEnv(FakeSnapshotEnv):
+    @property
+    def exec_backend(self) -> Any:
+        return SimpleNamespace(name="plain")
+
+
+@pytest.mark.asyncio
+async def test_run_python_requires_a_kernel_capable_backend(tmp_path: Path) -> None:
+    ctx: SessionContext[Any] = SessionContext(environment=_NoKernelEnv(tmp_path))
+    result = await RunPython().run(
+        RunPythonInput(code="x = 1"), ctx=ctx, agent_ctx=_agent_ctx()
+    )
+    assert "'plain' cannot host a Jupyter kernel" in _error_message(result)
 
 
 # ---------------------------------------------------------------------------

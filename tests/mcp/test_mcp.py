@@ -6,6 +6,7 @@ Uses the test MCP server at tests/mcp/mcp_test_server.py via stdio transport.
 
 import asyncio
 import math
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +27,9 @@ from grasp_agents.mcp.json_schema import json_schema_to_pydantic
 from grasp_agents.mcp.resource import MCPListResourcesTool, MCPReadResourceTool
 from grasp_agents.mcp.spec import MCPClientSpec
 from grasp_agents.mcp.tool import MCPTool
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
+from grasp_agents.tools.file_search import GlobInput, GlobResult, GlobTool
 
 _SERVER_PATH = str(Path(__file__).parent / "mcp_test_server.py")
 _SERVER_CONFIG = MCPServerStdio(command=sys.executable, args=[_SERVER_PATH])
@@ -543,7 +546,7 @@ class TestMCPClient:
             assert not result.isError
             # structuredContent has the validated data
             assert result.structuredContent is not None
-            assert result.structuredContent["result"] == 12.0
+            assert result.structuredContent["result"] == pytest.approx(12.0)
             assert result.structuredContent["operation"] == "multiply"
 
     @pytest.mark.asyncio
@@ -808,7 +811,7 @@ class TestOmittedOptionalsNotSent:
         assert session.calls == [{"required_field": "x"}]
 
 
-# ---------- file backend: ".." collapse + same-surface mtimes ----------
+# ---------- file backend: ".." collapse + same-surface mtime ----------
 
 
 @dataclass
@@ -824,9 +827,7 @@ class TestMcpPathNormalization:
             cast("Any", _FakeClient()), allowed_roots=[Path("/memdir")]
         )
         with pytest.raises(PathAccessError, match="outside allowed roots"):
-            await backend.validate_path(
-                Path("/memdir/../etc/passwd"), must_exist=False
-            )
+            await backend.validate_path(Path("/memdir/../etc/passwd"), must_exist=False)
 
     @pytest.mark.asyncio
     async def test_inner_dotdot_collapsed(self) -> None:
@@ -874,6 +875,110 @@ class _ReadSession:
         return SimpleNamespace(contents=[contents])
 
 
+class _ListingSession:
+    """Lists the given resources: ``{uri: meta}``."""
+
+    def __init__(self, resources: dict[str, dict[str, Any]]) -> None:
+        self._resources = resources
+
+    async def list_resources(self, params: Any = None) -> Any:
+        del params
+        listed = [
+            SimpleNamespace(
+                uri=uri,
+                name=uri.rsplit("/", 1)[-1],
+                description=None,
+                mimeType=None,
+                size=None,
+                meta=meta,
+            )
+            for uri, meta in self._resources.items()
+        ]
+        return SimpleNamespace(resources=listed, nextCursor=None)
+
+
+class TestMcpStatFileType:
+    @pytest.mark.asyncio
+    async def test_stat_reports_file_type_bits(self) -> None:
+        session = _ListingSession(
+            {
+                "file:///m/notes": {"is_dir": True},
+                "file:///m/notes/a.md": {"mtime_ms": 1000},
+                "file:///m/topics/b.md": {"mtime_ms": 1000},
+            }
+        )
+        backend = MCPFileBackend(
+            cast("Any", _FakeClient(session=session)), allowed_roots=[Path("/m")]
+        )
+        assert stat.S_ISDIR((await backend.stat(Path("/m/notes"))).mode)
+        assert stat.S_ISREG((await backend.stat(Path("/m/notes/a.md"))).mode)
+        # No resource of its own, but resources under it: an implicit directory.
+        assert stat.S_ISDIR((await backend.stat(Path("/m/topics"))).mode)
+        assert (await backend.stat(Path("/m/missing"))).mode == 0
+
+    @pytest.mark.asyncio
+    async def test_implicit_directories_exist(self) -> None:
+        session = _ListingSession({"file:///m/topics/b.md": {"mtime_ms": 1000}})
+        backend = MCPFileBackend(
+            cast("Any", _FakeClient(session=session)), allowed_roots=[Path("/m")]
+        )
+        assert await backend.exists(Path("/m/topics"))
+        assert await backend.exists(Path("/m"))
+        assert await backend.validate_path(Path("/m/topics"), must_exist=True)
+        assert await backend.parent_exists(Path("/m/topics/new.md"))
+        # A name that only starts with a directory's name is not under it.
+        assert not await backend.exists(Path("/m/top"))
+        assert not await backend.exists(Path("/m/missing"))
+
+    @pytest.mark.asyncio
+    async def test_glob_searches_implicit_directories(self) -> None:
+        session = _ListingSession(
+            {
+                "file:///m/topics/a.md": {"mtime_ms": 2000},
+                "file:///m/topics/b.txt": {"mtime_ms": 1000},
+                "file:///m/c.md": {"mtime_ms": 1000},
+            }
+        )
+        backend = MCPFileBackend(
+            cast("Any", _FakeClient(session=session)), allowed_roots=[Path("/m")]
+        )
+        ctx = SessionContext[Any](file_backend=backend)
+        in_topics = await GlobTool().run(
+            GlobInput(pattern="*.md", path="/m/topics"), ctx=ctx
+        )
+        from_root = await GlobTool().run(GlobInput(pattern="**/*.md"), ctx=ctx)
+        assert isinstance(in_topics, GlobResult), in_topics
+        assert in_topics.files == ["/m/topics/a.md"]
+        assert isinstance(from_root, GlobResult), from_root
+        assert from_root.files == ["/m/topics/a.md", "/m/c.md"]
+
+
+class _WriteAfterReadSession:
+    """Lists one resource; another writer replaces it right after it is read."""
+
+    def __init__(self) -> None:
+        self.mtime_ms = 1_000_000
+
+    async def list_resources(self, params: Any = None) -> Any:
+        del params
+        resource = SimpleNamespace(
+            uri="file:///m/a.md",
+            name="a",
+            description=None,
+            mimeType="text/markdown",
+            size=4,
+            meta={"mtime_ms": self.mtime_ms},
+        )
+        return SimpleNamespace(resources=[resource], nextCursor=None)
+
+    async def read_resource(self, uri: Any) -> Any:
+        contents = TextResourceContents.model_validate(
+            {"uri": str(uri), "mimeType": "text/markdown", "text": "ours"}
+        )
+        self.mtime_ms = 3_000_000
+        return SimpleNamespace(contents=[contents])
+
+
 class TestMcpStalenessSurface:
     @pytest.mark.asyncio
     async def test_read_text_uses_index_mtime(self) -> None:
@@ -886,7 +991,7 @@ class TestMcpStalenessSurface:
         text, mtime = await backend.read_text(Path("/m/a.md"))
         assert text == "hello"
         # The list-index surface (what stat() reports) wins over read-meta.
-        assert mtime == 111.0
+        assert mtime == pytest.approx(111.0)
 
     @pytest.mark.asyncio
     async def test_read_text_falls_back_to_meta(self) -> None:
@@ -896,7 +1001,18 @@ class TestMcpStalenessSurface:
             index=cast("Any", _StubIndex(None)),
         )
         _, mtime = await backend.read_text(Path("/m/a.md"))
-        assert mtime == 999.0
+        assert mtime == pytest.approx(999.0)
+
+    @pytest.mark.asyncio
+    async def test_read_text_mtime_is_never_newer_than_content(self) -> None:
+        session = _WriteAfterReadSession()
+        backend = MCPFileBackend(
+            cast("Any", _FakeClient(session=session)), allowed_roots=[Path("/m")]
+        )
+        text, mtime = await backend.read_text(Path("/m/a.md"))
+        assert text == "ours"
+        # A newer mtime would let a conditional write pass over the change.
+        assert mtime == pytest.approx(1000.0)
 
 
 # ---------- SSE server config ----------

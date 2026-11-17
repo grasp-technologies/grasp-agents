@@ -114,8 +114,18 @@ name.
 write_tool_name="write_file", delete_tool_name="delete_file")` routes the file
 tools and memory through a server:
 
-- Reads use `resources/read`; `stat`, `exists`, `list_dir`, glob and grep use
-  a cached index built from one `resources/list` per session.
+- Reads use `resources/read`; `stat`, `exists`, `list_dir` and glob use a
+  cached index built from one `resources/list` per session. Grep is not
+  supported (`NotImplementedError`).
+- `stat` reports POSIX file-type bits: a resource whose metadata sets
+  `is_dir`, or a path with resources under it but none of its own, is a
+  directory, and any other resource is a regular file. `exists`,
+  `parent_exists` and `validate_path(must_exist=True)` agree, so `Glob` can
+  search such an implicit directory, `Delete` refuses it, and `Glob` refuses a
+  file as its search path.
+- A read reports the file's mtime from the index, as `stat` does, and looks it
+  up before reading the content, so the mtime never postdates the content. A
+  file the index does not list yet takes the mtime the read returns.
 - Writes and deletes call the server's `write_file(path, content, mode)` and
   `delete_file(path)` tools and then refresh the index.
 - A conditional write or delete (`expected_mtime`, which the file tools pass)
@@ -158,7 +168,9 @@ exposing exactly this surface. See [Files](files.md).
 - The tool list is discovered once, at `connect()`; tool-list change
   notifications are not followed.
 - `MCPFileBackend` is text-only (`read_bytes` encodes the text read) and has
-  no directories of its own: `mkdir` is a no-op.
+  no directories of its own: a directory exists only as a resource the server
+  marks `is_dir` or through the resources under it, so an empty one does not
+  exist, and `mkdir` is a no-op.
 
 ## See also
 
