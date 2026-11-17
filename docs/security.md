@@ -70,6 +70,10 @@ carry the same authority as your own instructions. Consequences:
   injected instruction. Restrict who writes the memdir, use one memdir per
   tenant, and gate writes with approvals when this matters
   (see [Memory](memory.md#trust)).
+- Loading the memdir does withstand malformed files: frontmatter is capped at
+  4,096 characters, YAML anchors, aliases and deep nesting are refused, and a
+  file that fails is skipped, so a planted file cannot exhaust memory or stop
+  the others from loading. What a file says is still trusted.
 
 ## Secrets
 
