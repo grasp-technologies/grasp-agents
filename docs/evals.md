@@ -191,7 +191,9 @@ A judge is validated like any other system:
   the judge to labeled outputs and reports accuracy, Cohen's κ, TPR, TNR and
   the confusion matrix per split, with intervals clustered on the original
   example. Labels are `JudgedOutput` records whose `reference` is the correct
-  verdict.
+  verdict. With `against=<the judged dataset>`, a label whose example is gone
+  or whose input or reference changed since it was labeled stops the run
+  (`Evaluation.judged_dataset`).
 - `judge_probes(judge, items, perturbations)` checks sensitivity and invariance
   without labels: each `Perturbation(name, apply, expect="lower" | "changed" |
   "same")` changes an output and states what must happen to the verdict.

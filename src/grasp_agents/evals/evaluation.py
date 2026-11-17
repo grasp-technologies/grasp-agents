@@ -25,6 +25,7 @@ from .validation import (
     UnvalidatedJudgeError,
     ValidationGate,
     check_validations,
+    outdated_judgments,
 )
 
 PHOENIX_PREFIX = "phoenix:"
@@ -66,6 +67,38 @@ async def load_phoenix_dataset(
             reference_type=reference_type,
             cache_dir=cache_dir,
         )
+
+
+async def load_dataset_source(
+    source: "DatasetSource",
+    *,
+    input_type: Any = Any,
+    reference_type: Any = Any,
+    phoenix_url: str | None = None,
+    cache_dir: str | Path | None = None,
+) -> Dataset[Any, Any]:
+    """
+    The dataset ``source`` names: a :class:`Dataset`, a file, a
+    ``phoenix:`` reference or a (possibly async) loader.
+    """
+    if isinstance(source, Dataset):
+        return cast("Dataset[Any, Any]", source)
+    if isinstance(source, str) and source.startswith(PHOENIX_PREFIX):
+        return await load_phoenix_dataset(
+            source,
+            input_type=input_type,
+            reference_type=reference_type,
+            base_url=phoenix_url,
+            cache_dir=cache_dir,
+        )
+    if isinstance(source, str | Path):
+        return Dataset.load(
+            source, input_type=input_type, reference_type=reference_type
+        )
+    loaded = source()
+    if inspect.isawaitable(loaded):
+        loaded = await loaded
+    return loaded
 
 
 type TaskSource = (
@@ -129,6 +162,10 @@ class Evaluation:
     validation_gates: Mapping[str, ValidationGate] = field(
         default_factory=dict[str, ValidationGate]
     )
+    # For a dataset of judged outputs (labels, probe items): the dataset of
+    # the examples they answer. An item whose example is gone, or whose input
+    # or reference changed since it was judged, is a dataset problem.
+    judged_dataset: "DatasetSource | None" = None
     tags: Sequence[str] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict[str, Any])
     # Import spec this definition was loaded from (set by ``load_evaluation``).
@@ -165,30 +202,35 @@ class Evaluation:
         phoenix_url: str | None = None,
         cache_dir: str | Path | None = None,
     ) -> Dataset[Any, Any]:
-        source: DatasetSource = path if path is not None else self.dataset
-        if isinstance(source, Dataset):
-            return cast("Dataset[Any, Any]", source)
-        if isinstance(source, str) and source.startswith(PHOENIX_PREFIX):
-            return await load_phoenix_dataset(
-                source,
-                input_type=self.resolved_input_type,
-                reference_type=self.reference_type,
-                base_url=phoenix_url,
-                cache_dir=cache_dir,
-            )
-        if isinstance(source, str | Path):
-            return Dataset.load(
-                source,
-                input_type=self.resolved_input_type,
-                reference_type=self.reference_type,
-            )
-        loaded = source()
-        if inspect.isawaitable(loaded):
-            loaded = await loaded
-        return loaded
+        return await load_dataset_source(
+            path if path is not None else self.dataset,
+            input_type=self.resolved_input_type,
+            reference_type=self.reference_type,
+            phoenix_url=phoenix_url,
+            cache_dir=cache_dir,
+        )
 
     def check_dataset(self, dataset: Dataset[Any, Any]) -> list[DatasetProblem]:
         return dataset.check(self.dataset_checks) if self.dataset_checks else []
+
+    async def dataset_problems(
+        self,
+        dataset: Dataset[Any, Any],
+        *,
+        phoenix_url: str | None = None,
+        cache_dir: str | Path | None = None,
+    ) -> list[DatasetProblem]:
+        """
+        Problems :meth:`select` refuses a dataset for: ``dataset_checks``,
+        and judged outputs that no longer match :attr:`judged_dataset`.
+        """
+        problems = self.check_dataset(dataset)
+        if self.judged_dataset is not None:
+            judged = await load_dataset_source(
+                self.judged_dataset, phoenix_url=phoenix_url, cache_dir=cache_dir
+            )
+            problems.extend(outdated_judgments(dataset, judged))
+        return problems
 
     def check_judges(
         self, store: RunStore | None = None, *, allow_unvalidated: bool = False
@@ -261,7 +303,9 @@ class Evaluation:
             )
         )
         if check:
-            problems = self.check_dataset(data)
+            problems = await self.dataset_problems(
+                data, phoenix_url=phoenix_url, cache_dir=cache_dir
+            )
             if problems:
                 listed = "\n".join(
                     f"  {p.example_id}: [{p.check}] {p.message}" for p in problems[:20]

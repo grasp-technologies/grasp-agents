@@ -281,6 +281,7 @@ def judge_validation(
     judge: Scorer[Any, Any, Any],
     labels: DatasetSource,
     *,
+    against: DatasetSource | None = None,
     scores: str | Sequence[str] | None = None,
     input_type: Any = Any,
     output_type: Any = Any,
@@ -311,7 +312,9 @@ def judge_validation(
     ``output_type`` and ``reference_type`` are those of the evaluation it
     judges, so it sees typed values. Verdicts and labels compare as described
     in :func:`comparable` (pass/fail words and 0/1 read as booleans; numbers
-    at or above ``threshold`` pass).
+    at or above ``threshold`` pass). ``against`` is the dataset the labeled
+    outputs answer: a label whose example is gone, or whose input or
+    reference changed since it was labeled, stops the run before it starts.
 
     Each run applies the judge, exactly as it is now, to every labeled output
     (``repetitions`` times to measure its self-consistency) and reports per
@@ -335,6 +338,7 @@ def judge_validation(
             reference_type=reference_type,
         ),
         dataset=labels,
+        judged_dataset=against,
         scorers=[
             LabelAgreement(
                 names, threshold=threshold, positive=positive, negative=negative
@@ -359,6 +363,7 @@ def judge_probes(
     items: DatasetSource,
     perturbations: Sequence[Perturbation],
     *,
+    against: DatasetSource | None = None,
     scores: str | Sequence[str] | None = None,
     input_type: Any = Any,
     output_type: Any = Any,
@@ -384,7 +389,8 @@ def judge_probes(
     degradation has room to show. Reports one rate per score and
     perturbation. Probing a labels dataset shows its examples one by one, so
     seal its test split (``sealed_splits=("test",)``) or probe the dev split
-    only.
+    only. ``against`` checks the items against the dataset they answer, as
+    in :func:`judge_validation`.
     """
     names = _score_names(judge, scores)
     return Evaluation(
@@ -399,6 +405,7 @@ def judge_probes(
             reference_type=reference_type,
         ),
         dataset=items,
+        judged_dataset=against,
         scorers=[ProbeCheck(perturbations, names, threshold=threshold)],
         metrics=probe_metrics(perturbations, names),
         repetitions=repetitions,

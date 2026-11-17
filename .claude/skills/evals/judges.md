@@ -71,6 +71,7 @@ from grasp_agents.evals import judge_validation
 judge_v1_validation = judge_validation(  # an Evaluation: define it in a spec module
     judge,
     LABELS,  # a path, "phoenix:NAME[@VER]", a Dataset or a loader
+    against=DATA,  # the dataset the labeled outputs answer: refuses outdated labels
     input_type=Submission,  # the judged evaluation's types, so the judge sees typed values
     output_type=Grade,
     reference_type=TeacherGrade,
@@ -89,6 +90,7 @@ The loop:
 |---|---|
 | Splits | It needs a `test` split by default (`sealed_splits=("test",)`); otherwise `ValueError`, even with `--split dev`. Pass `sealed_splits=()` when the labels have no test split |
 | Which run counts | Only runs with sealed (test) trials count for gates: `--split test` (or `--include-sealed`). A run without `--split` leaves the test split out |
+| Outdated labels | With `against=`, a label whose `metadata.example_id` is gone from that dataset, or whose embedded input or reference differs from the example's current one, is a dataset problem (`current_example`): the run stops before it starts (exit 2) and `datasets validate` lists it (exit 1). Relabel it with `labels sample`. `judge_probes(..., against=)` checks probe items the same way. `Evaluation(judged_dataset=...)` is the underlying field |
 | Task | The judge is the task (`ScorerTask`), so a judge failure is a *task error* here, not a scorer failure. It counts as missing |
 | Recorded scores | `<s>.agrees` (bool), `<s>.judge`, `<s>.label` (text) |
 | Metrics | `accuracy(s)`, `kappa(s)`, `tpr(s)`, `tnr(s)`, `confusion(s)`, plus `consistency(s)` when `repetitions > 1`, and `error_rate`, grouped per split |

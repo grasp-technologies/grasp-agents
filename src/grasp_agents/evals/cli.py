@@ -509,7 +509,11 @@ async def _cmd_datasets(args: argparse.Namespace) -> int:
         except DatasetError as exc:
             _print_json({"valid": False, "errors": [str(exc)]})
             return EXIT_GATE
-        problems = evaluation.check_dataset(dataset)
+        problems = await evaluation.dataset_problems(
+            dataset,
+            phoenix_url=args.base_url,
+            cache_dir=(args.root / "datasets") if args.root else None,
+        )
         _print_json(
             {
                 "valid": not problems,

@@ -14,7 +14,8 @@ from typing import Any, Literal, cast, override
 from pydantic import BaseModel, ValidationError
 
 from ._execution import scorer_sources
-from ._util import to_jsonable, user_code_hash, utc_now
+from ._util import canonical_json, to_jsonable, user_code_hash, utc_now
+from .dataset import Dataset, DatasetProblem
 from .metrics import (
     ClassRecall,
     CohenKappa,
@@ -113,6 +114,57 @@ def comparable(
             "one is a number and the other a text label"
         )
     return label_text(judged), label_text(expected)
+
+
+CURRENT_EXAMPLE_CHECK = "current_example"
+
+
+def outdated_judgments(
+    items: Dataset[Any, Any], judged: Dataset[Any, Any]
+) -> list[DatasetProblem]:
+    """
+    Items of ``items`` (:class:`JudgedOutput` records, e.g. labels) that no
+    longer judge an example of ``judged`` as it is now: the example named by
+    their ``metadata.example_id`` is gone, or its input or reference differs
+    from the one the item holds. A label is only valid for the question and
+    reference it was given against.
+    """
+    problems: list[DatasetProblem] = []
+
+    def problem(item: Example[Any, Any], message: str) -> None:
+        problems.append(
+            DatasetProblem(
+                example_id=item.id, check=CURRENT_EXAMPLE_CHECK, message=message
+            )
+        )
+
+    for item in items:
+        example_id = item.metadata.get("example_id")
+        held = item.record.input
+        if example_id is None or not isinstance(held, Mapping):
+            problem(item, "names no metadata.example_id, so it cannot be checked")
+            continue
+        example = judged.get(str(example_id))
+        if example is None:
+            problem(item, f"judges example {example_id!r}, which {judged.name!r} lacks")
+            continue
+        fields = cast("Mapping[str, Any]", held)
+        current = example.record
+        changed = [
+            name
+            for name, now in (
+                ("input", current.input),
+                ("reference", current.reference),
+            )
+            if canonical_json(fields.get(name)) != canonical_json(now)
+        ]
+        if changed:
+            problem(
+                item,
+                f"judges example {example_id!r} by an older {' and '.join(changed)}; "
+                f"label it again against the current one in {judged.name!r}",
+            )
+    return problems
 
 
 def _source_example(

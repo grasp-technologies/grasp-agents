@@ -13,6 +13,7 @@ from grasp_agents.evals import (
     ConfusionMatrix,
     Consistency,
     CorrectedPassRate,
+    DatasetError,
     Evaluation,
     JudgeErrorRates,
     LocalRunStore,
@@ -748,3 +749,60 @@ class TestProbeEdges:
         a = judge_probes(good_judge, "x.jsonl", [Perturbation("p", first, "same")])
         b = judge_probes(good_judge, "x.jsonl", [Perturbation("p", second, "same")])
         assert a.build_task().describe() != b.build_task().describe()
+
+
+class TestLabelsAgainstTheirExamples:
+    @staticmethod
+    def _questions(path: Path, references: dict[str, str]) -> Path:
+        path.write_text(
+            "".join(
+                json.dumps({"id": i, "input": "q", "reference": r}) + "\n"
+                for i, r in references.items()
+            )
+        )
+        return path
+
+    @staticmethod
+    def _labels_for(path: Path, references: dict[str, str]) -> Path:
+        records = [
+            {
+                "id": f"o-{example_id}",
+                "input": {"input": "q", "output": "good!", "reference": reference},
+                "reference": True,
+                "metadata": {"example_id": example_id},
+                "splits": ["dev"],
+            }
+            for example_id, reference in references.items()
+        ]
+        path.write_text("".join(json.dumps(r) + "\n" for r in records))
+        return path
+
+    @pytest.mark.asyncio
+    async def test_outdated_labels_stop_the_run(self, tmp_path: Path) -> None:
+        labels = self._labels_for(
+            tmp_path / "labels.jsonl", {"e0": "r0", "e1": "r1", "e2": "r2"}
+        )
+        current = self._questions(tmp_path / "q.jsonl", {"e0": "r0", "e1": "r1"})
+        changed = self._questions(
+            tmp_path / "q2.jsonl", {"e0": "r0", "e1": "new", "e2": "r2"}
+        )
+        fine = self._questions(
+            tmp_path / "q3.jsonl", {"e0": "r0", "e1": "r1", "e2": "r2"}
+        )
+        with pytest.raises(DatasetError) as missing:
+            await judge_validation(
+                good_judge, labels, against=current, sealed_splits=()
+            ).run(persist=False)
+        assert "o-e2: [current_example] judges example 'e2'" in str(missing.value)
+        with pytest.raises(DatasetError) as stale:
+            await judge_probes(good_judge, labels, [], against=changed).run(
+                persist=False
+            )
+        message = str(stale.value)
+        assert "o-e1" in message
+        assert "older reference" in message
+        assert "o-e0" not in message
+        run = await judge_validation(
+            good_judge, labels, against=fine, sealed_splits=()
+        ).run(persist=False)
+        assert run.counts.trials_done == 3
