@@ -481,3 +481,51 @@ def test_retention_policies_are_described() -> None:
     assert describe_retention(
         {"name": "short", "rule": {"maxDays": 4.0, "maxCount": 1000}}
     ) == ("kept for 4 days or the newest 1000 traces (policy 'short')", True)
+
+
+@pytest.mark.asyncio
+async def test_experiment_ids_stay_inside_their_path() -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.raw_path.decode())
+        return httpx.Response(404)
+
+    async with _client(handler) as client:
+        assert not await client.delete_experiment("../datasets/RGF0YXNldDox")
+    assert paths == ["/v1/experiments/..%2Fdatasets%2FRGF0YXNldDox?delete_project=true"]
+
+
+def test_references_to_a_server_under_a_path_leave_it_out() -> None:
+    ref = PhoenixRef("labels", "3", "https://host.example.com/phoenix")
+    assert str(ref) == "phoenix:labels@3"
+    assert parse_phoenix_ref(str(ref)) == PhoenixRef("labels", "3")
+
+
+@pytest.mark.asyncio
+async def test_server_errors_are_unavailability() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    async with _client(handler, retries=0) as client:
+        with pytest.raises(PhoenixUnavailableError, match="500"):
+            await client.request_json("GET", "v1/datasets")
+
+
+def test_the_trace_exporter_keeps_the_key_with_its_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from grasp_agents.telemetry.phoenix import (
+        _phoenix_auth,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    monkeypatch.setenv("PHOENIX_API_KEY", "secret")
+    monkeypatch.delenv("PHOENIX_BASE_URL", raising=False)
+    assert _phoenix_auth("https://collector.example.com/v1/traces") == {
+        "authorization": "Bearer secret"
+    }
+    monkeypatch.setenv("PHOENIX_BASE_URL", "https://phoenix.example.com")
+    assert _phoenix_auth("https://collector.example.com/v1/traces") is None
+    assert _phoenix_auth("https://phoenix.example.com:443/v1/traces") == {
+        "authorization": "Bearer secret"
+    }

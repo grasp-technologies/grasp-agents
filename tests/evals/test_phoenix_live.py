@@ -230,10 +230,17 @@ async def test_push_run_is_idempotent_and_resumable(
         assert len(link.logged_trials) == 8
         assert len(await _task_runs(client, link.experiment_id)) == 8
 
-        # A repeated push adds nothing.
-        again = await push_run(client, store.load(run.id), store=store)
+        # A repeated push adds nothing, also when it names the dataset.
+        again = await push_run(
+            client, store.load(run.id), store=store, dataset=dataset.name
+        )
         assert again.experiment_id == link.experiment_id
+        assert again.logged_trials == link.logged_trials
         assert len(await _task_runs(client, link.experiment_id)) == 8
+        with pytest.raises(DatasetPushError, match="already pushed"):
+            await push_run(
+                client, store.load(run.id), store=store, dataset=_name("other")
+            )
 
         # Progress lost entirely (e.g. a lost response): the experiment is found
         # again by run id and runs already logged are not duplicated.
@@ -528,17 +535,23 @@ async def test_every_push_refreshes_the_experiment_and_keeps_foreign_keys(
 
 
 _TRACED_MODULE = """
-from grasp_agents.evals import Dataset, Evaluation, Example, FunctionTask
+from grasp_agents.evals import Dataset, Evaluation, Example, FunctionTask, scorer
 
 
 async def add(x: int) -> int:
     return x + 1
 
 
+@scorer
+def exact(ctx) -> bool:
+    return ctx.output == ctx.reference
+
+
 traced = Evaluation(
     name="traced",
     task=FunctionTask(add),
     dataset=Dataset([Example(id=f"t{i}", input=i, reference=i + 1) for i in range(3)]),
+    scorers=[exact],
 )
 """
 
@@ -644,6 +657,9 @@ async def test_pushes_leave_no_empty_projects_and_report_trace_retention(
         assert second["project_name"] not in await _project_names(client)
         # The tracing project and its traces stay.
         assert project in await _project_names(client)
+        for trial in run.trials:
+            assert trial.trace_id is not None
+            assert await client.trace_project(trial.trace_id) == project
 
 
 def test_labels_go_into_and_come_out_of_phoenix(
@@ -672,7 +688,9 @@ def test_labels_go_into_and_come_out_of_phoenix(
         return path
 
     first = sample(3)
-    assert main(["labels", "import", str(label(first, "a.jsonl")), "--into", into]) == 0
+    filled = str(label(first, "a.jsonl"))
+    assert main(["labels", "import", filled, "--into", into]) == 2
+    assert main(["labels", "import", filled, "--into", into, "--create-dataset"]) == 0
     imported = json.loads(capsys.readouterr().out)
     assert imported["added"] == 3
     pinned = imported["ref"]

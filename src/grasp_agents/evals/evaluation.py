@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 from grasp_agents.processors.processor import Processor
 
@@ -39,7 +40,9 @@ class PhoenixRef:
     A Phoenix dataset: its ``name``, optionally pinned to a ``version`` —
     which only means something on the server that issued it, so a pinned
     reference should name that server (``base_url``). Written as
-    ``phoenix:[https://HOST/]NAME[@VERSION]``.
+    ``phoenix:[https://HOST/]NAME[@VERSION]``; a server under a URL path
+    cannot be told from the name there, so it is left out of the text (the
+    reader's ``--base-url`` or ``$PHOENIX_BASE_URL`` must name it).
     """
 
     name: str
@@ -47,7 +50,10 @@ class PhoenixRef:
     base_url: str | None = None
 
     def __str__(self) -> str:
-        server = f"{self.base_url}/" if self.base_url else ""
+        shown = self.base_url is not None and not urlsplit(self.base_url).path.strip(
+            "/"
+        )
+        server = f"{self.base_url}/" if shown else ""
         version = f"@{self.version}" if self.version else ""
         return f"{PHOENIX_PREFIX}{server}{self.name}{version}"
 

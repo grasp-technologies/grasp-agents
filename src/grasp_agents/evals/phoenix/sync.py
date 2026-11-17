@@ -20,6 +20,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 from pydantic import BaseModel, TypeAdapter
 
 from grasp_agents.evals._util import canonical_json, short_hash, slugify, to_jsonable
@@ -38,7 +39,12 @@ from grasp_agents.evals.types import (
     with_record,
 )
 
-from .client import AnnotatorKind, PhoenixClient, PhoenixError
+from .client import (
+    AnnotatorKind,
+    PhoenixClient,
+    PhoenixError,
+    PhoenixUnavailableError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -702,13 +708,28 @@ async def _experiment_for(
             timeout=int(client.timeout_s),
         )
     )
+    return str(created["id"]), False
+
+
+async def _drop_experiment_project(
+    client: PhoenixClient, experiment: Mapping[str, Any]
+) -> None:
     # Phoenix makes a project per experiment for traces of its own runner;
     # these trials' traces stay in their tracing project, so it would stay
-    # empty (and outlive the experiment if deleted elsewhere).
-    project = created.get("project_name")
-    if project:
+    # empty (and outlive the experiment if deleted elsewhere). Tried on every
+    # push, so a failed attempt is retried.
+    project = experiment.get("project_name")
+    if not project:
+        return
+    try:
         await client.delete_project(str(project))
-    return str(created["id"]), False
+    except (PhoenixError, httpx.HTTPError) as exc:
+        logger.warning(
+            "Could not delete the empty project %r of experiment %s: %s",
+            project,
+            experiment.get("id"),
+            exc,
+        )
 
 
 def describe_retention(policy: Mapping[str, Any]) -> tuple[str, bool]:
@@ -778,7 +799,8 @@ async def push_run(
     (their count is in the experiment metadata). Progress is recorded on
     ``run.phoenix`` (and saved to ``store``): an interrupted push resumes
     where it stopped, and pushing again after the run was resumed logs only
-    the trials that changed.
+    the trials that changed. A run already linked on this server keeps its
+    experiment; ``dataset`` must then name the dataset it is linked to.
     """
     if not run.finished:
         raise ValueError(
@@ -787,7 +809,15 @@ async def push_run(
         )
     await client.check_server()
     link = run.phoenix
-    if link is None or link.base_url != client.base_url or dataset is not None:
+    if link is not None and link.base_url == client.base_url and dataset is not None:
+        named = await client.find_dataset(dataset)
+        if named is None or str(named.get("id")) != link.dataset_id:
+            raise DatasetPushError(
+                f"Run {run.id} is already pushed to another dataset on this "
+                f"server (experiment {link.experiment_id}); delete that "
+                f"experiment first to push it to {dataset!r}"
+            )
+    if link is None or link.base_url != client.base_url:
         dataset_id, version_id = await _resolve_dataset(
             client, run, dataset=dataset, create=create_dataset
         )
@@ -896,7 +926,8 @@ async def push_run(
                         "weight": score.weight,
                         **cast("dict[str, Any]", to_jsonable(score.metadata)),
                     },
-                    "trace_id": trial.trace_id,
+                    # No trace id: Phoenix reads it as the evaluator's own
+                    # trace and deletes it with the dataset.
                     **_evaluation_fields(score),
                 }
             )
@@ -924,15 +955,19 @@ async def push_run(
 
     async def push_trial(trial: Trial) -> None:
         async with semaphore:
+            where = (
+                f"logging run {run.id}, example {trial.example_id!r}, "
+                f"repetition {trial.repetition}"
+            )
             try:
                 changed = await log_trial(trial)
             except PhoenixError as exc:
                 raise type(exc)(
-                    exc.status,
-                    exc.method,
-                    exc.path,
-                    f"{exc.detail} (logging run {run.id}, example "
-                    f"{trial.example_id!r}, repetition {trial.repetition})",
+                    exc.status, exc.method, exc.path, f"{exc.detail} ({where})"
+                ) from exc
+            except httpx.TransportError as exc:
+                raise PhoenixUnavailableError(
+                    0, "POST", "experiment runs", f"{exc!r} ({where})"
                 ) from exc
             async with lock:
                 logged[_trial_key(trial)] = _digest(trial)
@@ -957,13 +992,10 @@ async def push_run(
         link.altered_trials = sorted(altered)
         if store is not None:
             store.save(run)
-    await _trace_retention(client, run, link)
-    if store is not None:
-        store.save(run)
+    remote = await client.get_experiment(experiment_id)
     if existed or pending:
         # Refreshed on every push (after a resume, new links, the trials just
         # logged); keys added on Phoenix are kept.
-        remote = await client.get_experiment(experiment_id)
         metadata = {
             **cast("dict[str, Any]", remote.get("metadata") or {}),
             **_experiment_metadata(run, withheld),
@@ -973,6 +1005,13 @@ async def push_run(
             description=_scrubbed(experiment_description(run)),
             metadata=_scrubbed(metadata),
         )
+    await _drop_experiment_project(client, remote)
+    try:
+        await _trace_retention(client, run, link)
+    except (PhoenixError, httpx.HTTPError) as exc:
+        logger.warning("Could not read the trace retention of run %s: %s", run.id, exc)
+    if store is not None:
+        store.save(run)
     return link
 
 

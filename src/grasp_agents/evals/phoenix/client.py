@@ -53,8 +53,11 @@ _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)\S*")
 
 
 class PhoenixError(RuntimeError):
+    """A failed Phoenix request; ``status`` is 0 when no response came."""
+
     def __init__(self, status: int, method: str, path: str, detail: str) -> None:
-        super().__init__(f"Phoenix {method} {path} failed ({status}): {detail}")
+        code = f" ({status})" if status else ""
+        super().__init__(f"Phoenix {method} {path} failed{code}: {detail}")
         self.status = status
         self.method = method
         self.path = path
@@ -66,7 +69,16 @@ class PhoenixCompatibilityError(RuntimeError):
 
 
 class PhoenixUnavailableError(PhoenixError):
-    """The server answered with a server error (5xx) after retries."""
+    """
+    The server answered with a server error (5xx) after retries, or no
+    response came.
+    """
+
+
+def phoenix_error(status: int, method: str, path: str, detail: str) -> PhoenixError:
+    """A :class:`PhoenixError`, :class:`PhoenixUnavailableError` for a 5xx."""
+    cls = PhoenixUnavailableError if status >= 500 else PhoenixError
+    return cls(status, method, path, detail)
 
 
 def normalize_base_url(url: str) -> str:
@@ -165,7 +177,7 @@ class _RetryingClient(httpx.AsyncClient):
 def _phoenix_error(
     exc: httpx.HTTPStatusError, detail: str | None = None
 ) -> PhoenixError:
-    return PhoenixError(
+    return phoenix_error(
         exc.response.status_code,
         exc.request.method,
         exc.request.url.path,
@@ -261,7 +273,7 @@ class PhoenixClient:
     ) -> dict[str, Any]:
         response = await self.http.request(method, path, params=params, json=json)
         if not response.is_success:
-            raise PhoenixError(response.status_code, method, path, response.text[:500])
+            raise phoenix_error(response.status_code, method, path, response.text[:500])
         return cast("dict[str, Any]", response.json())
 
     async def graphql(
@@ -283,7 +295,7 @@ class PhoenixClient:
         if response.status_code == 404:
             return False
         if not response.is_success:
-            raise PhoenixError(
+            raise phoenix_error(
                 response.status_code, "DELETE", "v1/projects", response.text[:500]
             )
         return True
@@ -291,12 +303,13 @@ class PhoenixClient:
     async def delete_experiment(self, experiment_id: str) -> bool:
         """Delete an experiment with its project; ``False`` when there is none."""
         response = await self.http.delete(
-            f"v1/experiments/{experiment_id}", params={"delete_project": "true"}
+            f"v1/experiments/{quote(experiment_id, safe='')}",
+            params={"delete_project": "true"},
         )
         if response.status_code == 404:
             return False
         if not response.is_success:
-            raise PhoenixError(
+            raise phoenix_error(
                 response.status_code, "DELETE", "v1/experiments", response.text[:500]
             )
         return True
@@ -397,7 +410,9 @@ class PhoenixClient:
         return found[0] if found else None
 
     async def get_experiment(self, experiment_id: str) -> dict[str, Any]:
-        body = await self.request_json("GET", f"v1/experiments/{experiment_id}")
+        body = await self.request_json(
+            "GET", f"v1/experiments/{quote(experiment_id, safe='')}"
+        )
         return cast("dict[str, Any]", body.get("data") or {})
 
     async def update_experiment(
@@ -415,5 +430,5 @@ class PhoenixClient:
             body["metadata"] = dict(metadata)
         if body:
             await self.request_json(
-                "PATCH", f"v1/experiments/{experiment_id}", json=body
+                "PATCH", f"v1/experiments/{quote(experiment_id, safe='')}", json=body
             )

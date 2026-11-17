@@ -98,20 +98,24 @@ _STOP_SIGNALS = tuple(
 def _run_async(command: Coroutine[Any, Any, int]) -> int:
     """
     Run a command on an event loop where SIGTERM and SIGHUP cancel it as
-    Ctrl-C does, so a stopped process still finalizes its run.
+    Ctrl-C does, so a stopped process still finalizes its run. A second
+    signal ends the process at once (e.g. when blocked in synchronous code).
     """
 
     async def main() -> int:
         loop = asyncio.get_running_loop()
         task = asyncio.current_task()
         received: list[int] = []
+        handled: list[int] = []
 
         def stop(signal_number: int) -> None:
             received.append(signal_number)
+            for number in handled:
+                loop.remove_signal_handler(number)
+            handled.clear()
             if task is not None:
                 task.cancel()
 
-        handled: list[int] = []
         for signal_number in _STOP_SIGNALS:
             try:
                 loop.add_signal_handler(signal_number, stop, signal_number)
@@ -481,8 +485,8 @@ async def _cmd_experiments(args: argparse.Namespace) -> int:
 
     store, run = _resolve_run(args.run, args.root)
     experiment_id = run.phoenix.experiment_id if run.phoenix else None
-    base_url = args.base_url or (run.phoenix.base_url if run.phoenix else None)
-    async with PhoenixClient(base_url) as client:
+    # The server comes from the user, never from the run record.
+    async with PhoenixClient(args.base_url) as client:
         deleted = await delete_experiment(client, run, store=store)
     _print_json({"id": run.id, "experiment_id": experiment_id, "deleted": deleted})
     return EXIT_OK
@@ -822,6 +826,7 @@ async def _merge_labels(
             args.into,
             labeler=getattr(args, "labeler", None),
             replace=args.replace,
+            create=args.create_dataset,
             phoenix_url=args.base_url,
         )
     return merge_labels(
@@ -1422,6 +1427,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="labels dataset file, or phoenix:[URL/]NAME[@VER] (pushes a new version)",
     )
     imp.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
+    imp.add_argument(
+        "--create-dataset",
+        action="store_true",
+        help="create the phoenix: labels dataset when it does not exist",
+    )
     imp.add_argument("--labeler", help="who labeled them (unless a record says)")
     imp.add_argument(
         "--replace", action="store_true", help="replace conflicting labels"
@@ -1456,6 +1466,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--replace", action="store_true", help="replace conflicting labels"
     )
     lpull.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
+    lpull.add_argument(
+        "--create-dataset",
+        action="store_true",
+        help="create the phoenix: labels dataset when it does not exist",
+    )
     _add_json(lpull)
     lshow = lsub.add_parser("show", help="count labels by split and value")
     lshow.add_argument("path")

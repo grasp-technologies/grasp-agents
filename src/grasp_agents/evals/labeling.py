@@ -535,17 +535,20 @@ async def merge_labels_into_phoenix(
     *,
     labeler: str | None = None,
     replace: bool = False,
+    create: bool = False,
     phoenix_url: str | None = None,
     cache_dir: str | Path | None = None,
 ) -> LabelImport:
     """
     :func:`merge_labels` into the Phoenix labels dataset ``into``
     (``phoenix:[https://HOST/]NAME[@VERSION]``): its version (the latest
-    when unpinned; none for a new dataset) is pulled, the labels merged, and a
-    new version based on it pushed — refused when Phoenix has moved past it.
-    ``ref`` in the result is the version to pin.
+    when unpinned) is pulled, the labels merged, and a new version based on
+    it pushed — refused when Phoenix has moved past it. A missing dataset is
+    created only with ``create``. ``ref`` in the result is the version to
+    pin.
     """
     from .evaluation import (  # ruff: ignore[import-outside-top-level]
+        PhoenixRef,
         parse_phoenix_ref,
     )
     from .phoenix import (  # ruff: ignore[import-outside-top-level]
@@ -560,6 +563,11 @@ async def merge_labels_into_phoenix(
         if ref.version is not None or await client.find_dataset(ref.name):
             base = await pull_dataset(
                 client, ref.name, version=ref.version, cache_dir=cache_dir
+            )
+        elif not create:
+            raise ValueError(
+                f"Phoenix has no dataset {ref.name!r}; create it explicitly "
+                "(--create-dataset) to start a labels dataset there"
             )
         held = base.to_records() if base is not None else []
         result, merged = merge_label_records(
@@ -576,7 +584,7 @@ async def merge_labels_into_phoenix(
             version = pushed.version_id
         result.version = version
         if version is not None:
-            result.ref = f"phoenix:{client.base_url}/{ref.name}@{version}"
+            result.ref = str(PhoenixRef(ref.name, version, client.base_url))
     return result
 
 

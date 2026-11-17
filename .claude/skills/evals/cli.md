@@ -33,7 +33,7 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 | `compare BASE CAND` | Paired comparison; `--top N`; `--where KEY=VALUE`; `--group-by KEY`; gate flags | Exits 1 only with `--fail-on-regression`. Weighted scores are compared pooled |
 | `rescore RUN` | Child run with re-scored stored outputs | `--spec` defaults to the run's recorded spec; `--rerun`; `--allow-unvalidated`; `--split S` / `--ids a,b` for a child of those trials only (sealed splits whole); `--dataset FILE\|phoenix:...` to score against a newer dataset version |
 | `import SPEC FILE` | Scores outputs produced elsewhere as a run (`kind=import`) | JSONL of `{example_id, repetition?, output \| error, duration_s?, cost_usd?, usage?, models?, measurements?, trace_id?, started_at?}`. `--task` (default: the file's stem) and `--task-version` identify what produced them. Selection flags as for `run` (sealed splits left out; an included one needs an output or `error` line for each of its examples and repetitions); outputs outside the selection are ignored, unknown ids and repeated (id, repetition) are errors; `-r` defaults to the most repetitions in the file |
-| `experiments delete RUN` | Deletes the run's Phoenix experiment and its project | JSON output |
+| `experiments delete RUN` | Deletes the run's Phoenix experiment and its project | JSON output. The server is `--base-url` or `PHOENIX_BASE_URL`, never the run record; a run pushed elsewhere is an error naming its server |
 | `datasets delete NAME --yes` | Deletes a Phoenix dataset with its experiments and their projects | Refused without `--yes` |
 | `annotate RUN [--link NAME=URL]... [--note TEXT]... [--remove-link NAME]...` | Adds links and notes to a run's header | Shown by `show`; pushed into the experiment metadata (`links`, `notes`) on the next push. Refused while the run is `running` |
 | `close RUN` | Finalizes a run left `running` by a killed process: `partial` (or `completed`) from its stored trials | Refused while its process runs on this host, or when that cannot be told (another host, a run recorded before processes were), unless `--force`. Usage counts what its stored trials cost it (a retry's new attempts, a rescore's re-run scorers). Metrics from `--spec`, else the run's spec |
@@ -46,7 +46,7 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 | `datasets pull [URL/]NAME[@VER] [-o FILE]` | Pull from Phoenix (cached by server and version) | A server in the reference wins over `$PHOENIX_BASE_URL`; a different `--base-url` is an error |
 | `datasets push PATH [--name --base-version --force --allow-deletes]` | Make a Phoenix dataset match a file | Uploads every example, sealed ones included |
 | `labels sample RUN -o FILE [--exclude FILE\|phoenix:REF]...` | Writes a to-label JSONL | See [judges.md](judges.md#labeling-loop) |
-| `labels import FILES --into LABELS.jsonl\|phoenix:[URL/]NAME[@VER]` | Merges filled-in labels | Into Phoenix: pushes a new version based on the given one and prints the reference to pin |
+| `labels import FILES --into LABELS.jsonl\|phoenix:[URL/]NAME[@VER]` | Merges filled-in labels | Into Phoenix: pushes a new version based on the given one and prints the reference to pin; a missing dataset needs `--create-dataset` (also on `labels pull`) |
 | `labels pull FILE --project P --into LABELS.jsonl` | Reads human annotations from Phoenix | Needs traced trials |
 | `labels show FILE` | Counts labels by split and value | |
 | `push RUN [--dataset NAME --create-dataset]` | Mirrors a finished run to Phoenix as an experiment | See Phoenix below |
@@ -105,7 +105,7 @@ These settings live only in the spec and have no CLI override: `max_error_rate`,
 | 2 | Usage errors: bad arguments, spec, run reference or dataset file; `dataset_checks` problems found by `run`; `ResumeError`; `SealedSelectionError`; any other `ValueError`; a missing `PHOENIX_BASE_URL`; a stale or mismatched Phoenix dataset |
 | 3 | An unexpected error (with a traceback), a Phoenix server error, or a pydantic `ValidationError` |
 | 130 | Interrupted. The run is finalized as `cancelled` and can be resumed in place |
-| 143, 129 | Stopped by SIGTERM or SIGHUP (a stopped shell, a container shutdown): finalized as `cancelled`, like Ctrl-C |
+| 143, 129 | Stopped by SIGTERM or SIGHUP (a stopped shell, a container shutdown): finalized as `cancelled`, like Ctrl-C. A second signal ends the process at once (exit by the signal itself) |
 
 With `run --push`, a push failure's code replaces the gate result. The run is still
 stored and reported, and `push_error` is set in the JSON.
@@ -159,11 +159,12 @@ See [metrics.md](metrics.md#regression-gate).
 - **Setup.** Requires `pip install 'grasp-agents[phoenix]'` and a Phoenix server 20.0
   or later. Configure it with `PHOENIX_BASE_URL` (or `--base-url`) and
   `PHOENIX_API_KEY`. When `PHOENIX_BASE_URL` is set, the environment key is never sent
-  to a different `--base-url`.
+  to a different `--base-url`, nor by `--trace` to a collector on another server. The
+  server is never taken from a run's stored link.
 - **Dataset names.** With `GRASP_EVALS_DATASET_PREFIX` set (e.g. `staging/`), `push`
   and `datasets push` refuse any Phoenix dataset name outside it.
-- **Failures.** A 5xx from the server after retries is `PhoenixUnavailableError` (exit
-  3), not a compatibility error. GET/PUT/DELETE and the trial posts Phoenix
+- **Failures.** A 5xx from the server after retries, or no response, is
+  `PhoenixUnavailableError` (exit 3), not a compatibility error. GET/PUT/DELETE and the trial posts Phoenix
   deduplicates (a trial's run, its evaluations) are retried on 502–504, timeouts and
   dropped connections; other POSTs are not. A trial that still fails names the run,
   the example id and the repetition.
@@ -188,14 +189,17 @@ See [metrics.md](metrics.md#regression-gate).
   - withholds sealed trials (their count goes into the experiment metadata);
   - scopes the experiment to the run's split when it selected exactly one
     (`--split dev`); otherwise the experiment covers every example;
-  - on a repeat push, logs only trials that changed;
+  - on a repeat push, logs only trials that changed; a run already pushed keeps its
+    experiment, so `--dataset` must then name the dataset it is linked to (delete the
+    experiment to move it);
   - refreshes the experiment's description (the question, status and headline
     metrics) and metadata on every push, merging into the metadata on Phoenix so
     keys added there survive;
   - notes on stderr when no trial has a trace id (the experiment links no traces);
-  - deletes the empty `Experiment-<id>` project Phoenix creates with each experiment
-    (trials' traces stay in their tracing project, where the experiment's trace
-    links find them);
+  - deletes the empty `Experiment-<id>` project Phoenix creates with each experiment,
+    on every push while it exists, warning on failure (trials' traces stay in their
+    tracing project, where the experiment's trace links find them; scores carry no
+    trace ids, since Phoenix deletes those traces with the dataset);
   - reports how long Phoenix keeps the linked traces (the tracing project's retention
     policy, in `run.phoenix.trace_retention`) and warns when it deletes them: the
     experiment's trace links stop working then.

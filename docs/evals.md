@@ -201,7 +201,8 @@ only when the parent ran it and all of its examples pair. Runs are addressed
 by id, unique id prefix, run directory, `latest` or `latest:<name>`.
 
 A run records the process executing it (`EvaluationRun.process`: host, pid).
-Ctrl-C, SIGTERM and SIGHUP end a CLI run `cancelled`. A run whose process was
+Ctrl-C, SIGTERM and SIGHUP end a CLI run `cancelled`; a second SIGTERM or
+SIGHUP ends the process at once. A run whose process was
 killed outright stays `running`; `close_run(run)` (`grasp-evals close RUN`)
 finalizes it from its stored trials as `partial` (or `completed`), which
 `rescore`, `push` and `resume` accept. It refuses while the process still runs
@@ -278,7 +279,8 @@ A judge is validated like any other system:
   `import_labels(paths, into)` merges filled-in files with labeler and time.
   On the CLI, `labels sample --exclude` and `labels import --into` also take
   a Phoenix labels dataset (`phoenix:[URL/]NAME[@VER]`): the import pushes a
-  new version based on the given one and prints the reference to pin.
+  new version based on the given one and prints the reference to pin. A
+  missing labels dataset is created only with `--create-dataset`.
 
 ## The `grasp-evals` CLI
 
@@ -323,17 +325,21 @@ A dataset reference is `phoenix:[https://HOST/]NAME[@VERSION]`, or a
 `PhoenixRef(name, version, base_url)`. A version id only means something on
 the server that issued it, so a pinned reference should name its server: the
 server a reference names wins over `PHOENIX_BASE_URL` (and conflicts with a
-different `--base-url`). `PHOENIX_API_KEY` is sent only to
-`PHOENIX_BASE_URL`'s server, or to any server when that is unset. Pinned
+different `--base-url`). A server under a URL path is left out of the
+references grasp-evals prints (the reader names it with `--base-url` or
+`PHOENIX_BASE_URL`). `PHOENIX_API_KEY` is sent only to `PHOENIX_BASE_URL`'s
+server, or to any server when that is unset; the same rule holds for the
+trace exporter. A server is never taken from a run's stored link. Pinned
 versions are cached per server and pulled once. `load_phoenix_dataset` and
 `parse_phoenix_ref` are exported for loaders of your own.
 
 Every push refreshes the experiment's description (the question, status
 and headline metrics) and metadata, merging into what Phoenix holds, so keys
 added there survive; a run's own `links` and `notes` (`annotate_run`,
-`grasp-evals annotate`) go into that metadata. Push deletes the empty
-project Phoenix creates for each experiment: trials' traces stay in their
-tracing project, and push reports that project's retention policy
+`grasp-evals annotate`) go into that metadata. Every push deletes the empty
+project Phoenix creates for each experiment if it is still there (a failure
+only warns): trials' traces stay in their tracing project, and push reports
+that project's retention policy
 (`run.phoenix.trace_retention`), warning when it will delete the traces the
 experiment links to. `grasp-evals experiments delete RUN` and `datasets
 delete NAME --yes` (`delete_experiment`, `delete_dataset`) remove
@@ -342,12 +348,16 @@ experiments and datasets with their projects.
 `push` attaches a run to the dataset its examples were pulled from, or to a
 Phoenix dataset (`--dataset NAME`, default the run's dataset name) that holds
 exactly its examples; it creates a missing dataset only with
-`--create-dataset`, and `GRASP_EVALS_DATASET_PREFIX` keeps push and
+`--create-dataset`. A run already pushed to this server keeps its experiment
+(`--dataset` must name the dataset it is linked to; delete the experiment to
+move it). `GRASP_EVALS_DATASET_PREFIX` keeps push and
 `datasets push` inside one namespace. NUL characters, which Phoenix's
 PostgreSQL store rejects, are replaced with U+FFFD in everything pushed
 (`run.phoenix.altered_trials` lists the trials affected). Trial posts that
 Phoenix deduplicates are retried on gateway errors, and a failure names the
-trial; a 5xx from the server is `PhoenixUnavailableError`. Phoenix 20.0 or
+trial; a 5xx from the server, or no response, is `PhoenixUnavailableError`.
+Scores are posted without trace ids (Phoenix would delete the traces with
+the dataset); the trials' runs link the traces. Phoenix 20.0 or
 later is required; older servers raise `PhoenixCompatibilityError`.
 
 Trials get trace ids only while tracing is on:

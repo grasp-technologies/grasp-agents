@@ -466,9 +466,31 @@ slow_eval = Evaluation(
 """
 
 
-def _start_slow_run(tmp_path: Path) -> tuple[subprocess.Popen[bytes], LocalRunStore]:
+_BLOCKING_MODULE = """
+import time
+
+from grasp_agents.evals import Dataset, Evaluation, Example, FunctionTask
+
+
+def blocking(x: int) -> int:
+    time.sleep(60 if x >= 2 else 0)
+    return x * 2
+
+
+slow_eval = Evaluation(
+    name="blocking",
+    task=FunctionTask(blocking),
+    dataset=Dataset([Example(id=f"x{i}", input=i, reference=i * 2) for i in range(4)]),
+    concurrency=1,
+)
+"""
+
+
+def _start_slow_run(
+    tmp_path: Path, module: str = _SLOW_MODULE
+) -> tuple[subprocess.Popen[bytes], LocalRunStore]:
     spec = tmp_path / "slow_evals.py"
-    spec.write_text(textwrap.dedent(_SLOW_MODULE))
+    spec.write_text(textwrap.dedent(module))
     root = tmp_path / "evals"
     process = subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
         [sys.executable, "-m", "grasp_agents.evals", "--root", str(root), "run"]
@@ -498,6 +520,20 @@ def test_sigterm_finalizes_the_run_as_cancelled(tmp_path: Path) -> None:
     run = store.load(store.resolve("latest"))
     assert run.status == RunStatus.CANCELLED
     assert 2 <= run.counts.trials_done < 30
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_a_second_sigterm_ends_a_run_blocked_in_a_thread(tmp_path: Path) -> None:
+    process, store = _start_slow_run(tmp_path, _BLOCKING_MODULE)
+    process.send_signal(signal.SIGTERM)
+    deadline = time.monotonic() + 30
+    while store.load(store.resolve("latest")).status == RunStatus.RUNNING:
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    assert process.poll() is None  # waiting for the blocked thread
+    process.send_signal(signal.SIGTERM)
+    assert process.wait(timeout=10) == -signal.SIGTERM
+    assert store.load(store.resolve("latest")).status == RunStatus.CANCELLED
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
