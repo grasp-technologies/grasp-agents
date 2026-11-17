@@ -27,7 +27,9 @@ from grasp_agents.mcp.json_schema import json_schema_to_pydantic
 from grasp_agents.mcp.resource import MCPListResourcesTool, MCPReadResourceTool
 from grasp_agents.mcp.spec import MCPClientSpec
 from grasp_agents.mcp.tool import MCPTool
+from grasp_agents.session_context import SessionContext
 from grasp_agents.tools.base import BaseTool
+from grasp_agents.tools.file_search import GlobInput, GlobResult, GlobTool
 
 _SERVER_PATH = str(Path(__file__).parent / "mcp_test_server.py")
 _SERVER_CONFIG = MCPServerStdio(command=sys.executable, args=[_SERVER_PATH])
@@ -913,6 +915,42 @@ class TestMcpStatFileType:
         # No resource of its own, but resources under it: an implicit directory.
         assert stat.S_ISDIR((await backend.stat(Path("/m/topics"))).mode)
         assert (await backend.stat(Path("/m/missing"))).mode == 0
+
+    @pytest.mark.asyncio
+    async def test_implicit_directories_exist(self) -> None:
+        session = _ListingSession({"file:///m/topics/b.md": {"mtime_ms": 1000}})
+        backend = MCPFileBackend(
+            cast("Any", _FakeClient(session=session)), allowed_roots=[Path("/m")]
+        )
+        assert await backend.exists(Path("/m/topics"))
+        assert await backend.exists(Path("/m"))
+        assert await backend.validate_path(Path("/m/topics"), must_exist=True)
+        assert await backend.parent_exists(Path("/m/topics/new.md"))
+        # A name that only starts with a directory's name is not under it.
+        assert not await backend.exists(Path("/m/top"))
+        assert not await backend.exists(Path("/m/missing"))
+
+    @pytest.mark.asyncio
+    async def test_glob_searches_implicit_directories(self) -> None:
+        session = _ListingSession(
+            {
+                "file:///m/topics/a.md": {"mtime_ms": 2000},
+                "file:///m/topics/b.txt": {"mtime_ms": 1000},
+                "file:///m/c.md": {"mtime_ms": 1000},
+            }
+        )
+        backend = MCPFileBackend(
+            cast("Any", _FakeClient(session=session)), allowed_roots=[Path("/m")]
+        )
+        ctx = SessionContext[Any](file_backend=backend)
+        in_topics = await GlobTool().run(
+            GlobInput(pattern="*.md", path="/m/topics"), ctx=ctx
+        )
+        from_root = await GlobTool().run(GlobInput(pattern="**/*.md"), ctx=ctx)
+        assert isinstance(in_topics, GlobResult), in_topics
+        assert in_topics.files == ["/m/topics/a.md"]
+        assert isinstance(from_root, GlobResult), from_root
+        assert from_root.files == ["/m/topics/a.md", "/m/c.md"]
 
 
 class _WriteAfterReadSession:

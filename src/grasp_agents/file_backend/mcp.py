@@ -52,7 +52,7 @@ except ImportError as _err:
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
+    from pathlib import Path, PurePosixPath
 
     from mcp.types import ContentBlock
 
@@ -194,7 +194,7 @@ class MCPFileBackend(FileBackend):
         """
         entry = await self._index.get(self._to_uri(path))
         if entry is None:
-            if await self._index.list_under(normalize_posix(path)):
+            if await self._has_resources_under(normalize_posix(path)):
                 return FileStat(mtime=0.0, mode=stat_module.S_IFDIR | 0o755)
             return FileStat(mtime=0.0, mode=0, size=-1)
         return FileStat(
@@ -208,20 +208,17 @@ class MCPFileBackend(FileBackend):
         )
 
     async def exists(self, path: Path) -> bool:
-        return await self._index.get(self._to_uri(path)) is not None
+        """
+        Whether ``path`` is a listed resource or an implicit directory (a
+        path with resources under it), as :meth:`stat` reports them.
+        """
+        return await self._exists(normalize_posix(path))
 
     async def parent_exists(self, path: Path) -> bool:
-        # MCP resources are flat; a directory "exists" iff at least one
-        # listed resource sits under it. Sufficient for the Write-tool
-        # parent-existence check, which only needs to refuse silent
-        # parent-creation.
         parent = normalize_posix(path).parent
-        if str(parent) == str(normalize_posix(path)):
+        if parent == normalize_posix(path):
             return True
-        if await self._index.get(self._index.make_uri(parent)) is not None:
-            return True
-        children = await self._index.list_under(parent)
-        return len(children) > 0
+        return await self._exists(parent)
 
     async def read_text(self, path: Path) -> tuple[str, float]:
         uri = self._to_uri(path)
@@ -367,6 +364,16 @@ class MCPFileBackend(FileBackend):
         )
 
     # ---- Internals ----------------------------------------------------------
+
+    async def _exists(self, path: PurePosixPath) -> bool:
+        if await self._index.get(self._index.make_uri(path)) is not None:
+            return True
+        return await self._has_resources_under(path)
+
+    async def _has_resources_under(self, path: PurePosixPath) -> bool:
+        # MCP resources are flat: a directory exists only through the
+        # resources listed under it.
+        return bool(await self._index.list_under(path))
 
     async def _check_expected_mtime(self, path: Path, expected_mtime: float) -> None:
         """
