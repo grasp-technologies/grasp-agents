@@ -25,6 +25,7 @@ from .stats import (
     cohens_kappa,
     mean_estimate,
     percentile,
+    pooled_estimate,
     proportion_estimate,
 )
 from .types import Example, MetricResult, Trial
@@ -386,6 +387,101 @@ class Mean(Metric):
             na=c.na,
             confidence=self.confidence,
             partial_examples=c.partial,
+        )
+
+
+def weighted_value(trial: Trial, of: str) -> tuple[float, float] | None:
+    """A score's ``(value, weight)`` on one trial (weight 1 when unset)."""
+    score = trial.score(of)
+    value = None if score is None else score.as_float()
+    if score is None or value is None:
+        return None
+    return value, 1.0 if score.weight is None else score.weight
+
+
+def has_weights(trials: Iterable[Trial], of: str) -> bool:
+    """Whether any trial weighs score ``of``."""
+    return any(
+        (score := t.score(of)) is not None and score.weight is not None for t in trials
+    )
+
+
+class Pooled(Metric):
+    """
+    A score pooled over every trial: ``Σ value·weight / Σ weight``, with
+    ``Score.weight`` (1 when unset). For shares over varying numbers of items
+    — give each score its item count as weight — this is the share over all
+    items, where :class:`Mean` weighs a page with two items like one with
+    forty. The interval resamples examples (or ``cluster_by`` clusters);
+    ``n`` counts examples, and ``details["weight"]`` is the total weight.
+    """
+
+    def __init__(
+        self,
+        of: str,
+        *,
+        name: str | None = None,
+        confidence: float = 0.95,
+        n_resamples: int = 2000,
+        seed: int = 0,
+        higher_is_better: bool | None = None,
+    ) -> None:
+        self.of = of
+        self.name = name or f"pooled({of})"
+        self.confidence = confidence
+        self.n_resamples = n_resamples
+        self.seed = seed
+        self.higher_is_better = higher_is_better
+
+    @override
+    def declared_direction(self) -> tuple[str, bool] | None:
+        return _direction_of(self.of, self.higher_is_better)
+
+    @override
+    def compute(
+        self,
+        trials: Sequence[Trial],
+        *,
+        clusters: Mapping[str, Hashable] | None = None,
+    ) -> MetricResult:
+        values: list[float] = []
+        weights: list[float] = []
+        keys: list[Hashable] = []
+        missing = na = 0
+        for example_id, group in _group_by_example(trials).items():
+            found = [p for t in group if (p := weighted_value(t, self.of)) is not None]
+            if not found:
+                if all(_not_applicable(t, self.of) for t in group):
+                    na += 1
+                else:
+                    missing += 1
+                continue
+            for value, weight in found:
+                values.append(value)
+                weights.append(weight)
+                keys.append(
+                    clusters.get(example_id, example_id) if clusters else example_id
+                )
+        estimate = pooled_estimate(
+            values,
+            weights,
+            clusters=keys,
+            n_resamples=self.n_resamples,
+            seed=self.seed,
+            confidence=self.confidence,
+        )
+        examples = len({t.example_id for t in trials if weighted_value(t, self.of)})
+        return MetricResult(
+            name=self.name,
+            value=None if math.isnan(estimate.value) else estimate.value,
+            n=examples,
+            n_missing=missing,
+            n_na=na,
+            stderr=estimate.stderr,
+            ci_low=estimate.ci_low,
+            ci_high=estimate.ci_high,
+            confidence=self.confidence,
+            details={"weight": math.fsum(weights)} if weights else {},
         )
 
 
@@ -1079,7 +1175,10 @@ class ConfusionMatrix(Metric):
 
 
 def default_metrics(trials: Sequence[Trial]) -> list[Metric]:
-    """A metric per score (pass rate, mean or label shares), plus errors and cost."""
+    """
+    A metric per score (pass rate, mean — and the pooled value of weighted
+    scores — or label shares), plus errors and cost.
+    """
     kinds: dict[str, set[type]] = {}
     for trial in trials:
         for score in trial.scores:
@@ -1093,6 +1192,8 @@ def default_metrics(trials: Sequence[Trial]) -> list[Metric]:
             metrics.append(PassRate(name))
         elif value_types and value_types <= {float, int, bool}:
             metrics.append(Mean(name))
+            if has_weights(trials, name):
+                metrics.append(Pooled(name))
         elif str in value_types:
             metrics.append(Distribution(name))
         else:

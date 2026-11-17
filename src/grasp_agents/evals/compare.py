@@ -1,11 +1,21 @@
+import math
 from collections.abc import Hashable, Mapping, Sequence
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from ._util import code_scheme
-from .metrics import Measure, Reducer, Target, as_target, mean, trial_value
-from .stats import holm_adjust, paired_difference
+from .metrics import (
+    Measure,
+    Reducer,
+    Target,
+    as_target,
+    has_weights,
+    mean,
+    trial_value,
+    weighted_value,
+)
+from .stats import holm_adjust, paired_difference, paired_pooled_difference
 from .types import EvaluationRun, RunStatus, Trial, pairing_hashes
 
 _RESOURCES = frozenset(
@@ -20,6 +30,10 @@ _RESOURCES = frozenset(
 _RESOURCE_NAMES = frozenset(str(m) for m in _RESOURCES)
 _LOWER_IS_BETTER = _RESOURCES | {Measure.ERROR}
 _EPS = 1e-9
+# Groups holding fewer held-out examples than this are not reported: their
+# aggregates (minus the visible members' results) would come close to
+# per-example results.
+MIN_SEALED_GROUP = 5
 
 
 class ExampleDelta(BaseModel):
@@ -37,6 +51,9 @@ class TargetComparison(BaseModel):
     target: str
     kind: Literal["score", "measure"] = "score"
     higher_is_better: bool = True
+    # Weighted score compared on pooled values (Σ value·weight / Σ weight)
+    # with a paired bootstrap, not on per-example means.
+    pooled: bool = False
     n_pairs: int
     base_mean: float | None = None
     candidate_mean: float | None = None
@@ -97,6 +114,11 @@ class Comparison(BaseModel):
     # Scores the runs record opposite directions for: left out of the
     # targets, and the gate fails on them.
     conflicting_directions: list[str] = Field(default_factory=list[str])
+    # Example metadata the paired examples were filtered on, and the
+    # comparisons per value of ``group_by`` ("key=value").
+    where: dict[str, Any] = Field(default_factory=dict[str, Any])
+    group_by: str | None = None
+    groups: dict[str, "Comparison"] = Field(default_factory=dict[str, "Comparison"])
 
     def target(self, name: str) -> TargetComparison | None:
         for target in self.targets:
@@ -123,6 +145,14 @@ class _ExampleView:
             if value is not None:
                 values.append(value)
         return reduce(values) if values else None
+
+    def pooled(self, target: str) -> tuple[float, float] | None:
+        """``(Σ value·weight, Σ weight)`` over the repetitions with a value."""
+        found = [p for t in self.trials if (p := weighted_value(t, target))]
+        total = sum(w for _, w in found)
+        if not found or total <= 0:
+            return None
+        return math.fsum(v * w for v, w in found), total
 
     def explanation(
         self, target: Target, pick: Literal["lowest", "highest"]
@@ -304,9 +334,17 @@ def compare(
     reduce: Reducer = mean,
     confidence: float = 0.95,
     cluster_by: str | None = None,
+    where: Mapping[str, Any] | None = None,
+    group_by: str | None = None,
 ) -> Comparison:
     """
     Paired comparison of two runs on the examples they share.
+
+    A score that carries weights (``Score.weight``) is compared on pooled
+    values — ``Σ value·weight / Σ weight`` per run — with a paired bootstrap
+    over examples. ``where`` keeps the examples whose metadata has those
+    values; ``group_by`` adds a comparison per value of a metadata key
+    (``groups``; groups with a few sealed examples are left out).
 
     Each score is read in the direction the runs recorded for it (higher is
     better unless its scorer declared ``lower_is_better``); a score the runs
@@ -331,6 +369,9 @@ def compare(
     shared = [i for i in base_views if i in candidate_views]
     paired = [i for i in shared if base_views[i].hash == candidate_views[i].hash]
     n_changed = len(shared) - len(paired)
+    metadata = {e.id: e.metadata for e in base.examples}
+    if where:
+        paired = [i for i in paired if _matches(metadata.get(i, {}), where)]
     cluster_key = cluster_by if cluster_by is not None else base.config.cluster_by
     pass_fail = _pass_fail_scores(base, candidate)
     errored_one_side = sum(
@@ -347,8 +388,19 @@ def compare(
             disagreements.append(str(target))
             continue
         as_failures = not isinstance(target, Measure) and target in pass_fail
+        pooled = not isinstance(target, Measure) and (
+            has_weights(base.trials, target) or has_weights(candidate.trials, target)
+        )
         rows: list[tuple[str, float, float]] = []
+        sums: list[tuple[tuple[float, float], tuple[float, float]]] = []
         for example_id in paired:
+            if pooled:
+                bp = base_views[example_id].pooled(str(target))
+                cp = candidate_views[example_id].pooled(str(target))
+                if bp is not None and cp is not None:
+                    rows.append((example_id, bp[0] / bp[1], cp[0] / cp[1]))
+                    sums.append((bp, cp))
+                continue
             b = base_views[example_id].value(
                 target, reduce, errors_as_failures=as_failures
             )
@@ -357,11 +409,21 @@ def compare(
             )
             if b is not None and c is not None:
                 rows.append((example_id, b, c))
-        estimate = paired_difference(
-            [b for _, b, _ in rows],
-            [c for _, _, c in rows],
-            clusters=_clusters(base, cluster_key, [i for i, _, _ in rows]),
-            confidence=confidence,
+        clusters = _clusters(base, cluster_key, [i for i, _, _ in rows])
+        estimate = (
+            paired_pooled_difference(
+                [b for b, _ in sums],
+                [c for _, c in sums],
+                clusters=clusters,
+                confidence=confidence,
+            )
+            if pooled
+            else paired_difference(
+                [b for _, b, _ in rows],
+                [c for _, _, c in rows],
+                clusters=clusters,
+                confidence=confidence,
+            )
         )
         ci_low, ci_high = estimate.ci_low, estimate.ci_high
         if all(0.0 <= v <= 1.0 for _, b, c in rows for v in (b, c)):
@@ -405,6 +467,7 @@ def compare(
                 target=str(target),
                 kind="measure" if isinstance(target, Measure) else "score",
                 higher_is_better=higher_is_better,
+                pooled=pooled,
                 n_pairs=estimate.n,
                 base_mean=estimate.base_mean if has_rows else None,
                 candidate_mean=estimate.candidate_mean if has_rows else None,
@@ -464,7 +527,7 @@ def compare(
                 f"All paired examples are in one {cluster_key!r} cluster: "
                 "nothing can be tested."
             )
-    return Comparison(
+    result = Comparison(
         base_run=base.id,
         candidate_run=candidate.id,
         base_name=base.name,
@@ -479,6 +542,43 @@ def compare(
         targets=comparisons,
         missing_scores=missing,
         conflicting_directions=disagreements,
+        where=dict(where or {}),
+        group_by=group_by,
+    )
+    if group_by is None:
+        return result
+    values: dict[str, Any] = {}
+    for example_id in paired:
+        value = metadata.get(example_id, {}).get(group_by)
+        values.setdefault(str(value), value)
+    for label, value in sorted(values.items()):
+        members = [
+            i for i in paired if _matches(metadata.get(i, {}), {group_by: value})
+        ]
+        sealed = sum(
+            1 for i in members if base_views[i].sealed or candidate_views[i].sealed
+        )
+        if 0 < sealed < MIN_SEALED_GROUP:
+            continue
+        result.groups[f"{group_by}={label}"] = compare(
+            base,
+            candidate,
+            targets=targets,
+            top=top,
+            reduce=reduce,
+            confidence=confidence,
+            cluster_by=cluster_by,
+            where={**(where or {}), group_by: value},
+        )
+    return result
+
+
+def _matches(metadata: Mapping[str, Any], where: Mapping[str, Any]) -> bool:
+    # Values given as text (from the command line) also match their text form.
+    return all(
+        metadata.get(key) == wanted
+        or (isinstance(wanted, str) and str(metadata.get(key)) == wanted)
+        for key, wanted in where.items()
     )
 
 

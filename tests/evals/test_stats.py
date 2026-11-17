@@ -16,7 +16,9 @@ from grasp_agents.evals.stats import (
     minimum_detectable_effect,
     newcombe_paired_interval,
     paired_difference,
+    paired_pooled_difference,
     percentile,
+    pooled_estimate,
     proportion_estimate,
     sign_test,
     t_ppf,
@@ -224,3 +226,22 @@ class TestComparisonStatistics:
     def test_bootstrap_needs_two_resamples(self) -> None:
         with pytest.raises(ValueError, match="n_resamples"):
             bootstrap_estimate([1.0, 2.0], max, n_resamples=1)
+
+
+def test_pooled_values_are_ratios_of_sums() -> None:
+    estimate = pooled_estimate([0.5, 0.75], [2.0, 40.0], clusters=["a", "b"])
+    assert estimate.value == pytest.approx(31 / 42)
+    same = paired_pooled_difference(
+        [(1.0, 2.0), (30.0, 40.0)] * 5, [(1.0, 2.0), (30.0, 40.0)] * 5
+    )
+    assert same.diff == pytest.approx(0.0)
+    assert same.p_value == pytest.approx(1.0)
+    better = paired_pooled_difference(
+        [(10.0, 20.0)] * 12, [(16.0, 20.0)] * 6 + [(14.0, 20.0)] * 6
+    )
+    assert better.diff == pytest.approx(0.25)
+    assert better.test == "pooled_bootstrap"
+    assert better.p_value is not None
+    assert better.p_value < 0.01
+    assert better.ci_low is not None
+    assert better.ci_low > 0

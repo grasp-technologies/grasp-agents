@@ -16,7 +16,7 @@ them. The `grasp-evals` CLI drives the same API from the shell.
 | `Dataset` | `evals/dataset.py` | Load (`.jsonl`, `.json`, `.yaml`), select, split, sample, check, save |
 | `Task`, `ProcessorTask`, `FunctionTask` | `evals/task.py` | The system under test |
 | `Scorer`, `@scorer`, `ScoreContext`, `Score` | `evals/scorer.py`, `evals/types.py` | Per-trial judgments |
-| `Metric` (`PassRate`, `PassAtK`, `PassHatK`, `Mean`, `Percentile`, `ErrorRate`, `CohenKappa`, …) | `evals/metrics.py` | Aggregates with intervals |
+| `Metric` (`PassRate`, `PassAtK`, `PassHatK`, `Mean`, `Pooled`, `Percentile`, `ErrorRate`, `CohenKappa`, …) | `evals/metrics.py` | Aggregates with intervals |
 | `evaluate`, `rescore`, `close_run` | `evals/runner.py` | Run / re-score / finalize a run whose process died |
 | `import_outputs`, `ImportedTrial`, `read_outputs` | `evals/imported.py` | Score outputs produced elsewhere as a run |
 | `Evaluation` | `evals/evaluation.py` | An importable, CLI-runnable definition |
@@ -104,6 +104,12 @@ scores whose lower values are better, such as a defect share;
 `Mean(..., higher_is_better=False)` does the same from a metric, also for
 recorded measurements. Runs record each score's direction in
 `EvaluationRun.directions`.
+
+A share over a varying number of items (the headings on a page) can carry
+that number as its weight, `Score(name=..., value=share, weight=n_items)`:
+`Pooled(name)` (added by default for weighted scores) reports the share over
+all items, `Σ value·weight / Σ weight`, where `Mean` weighs a page with two
+items like one with forty.
 
 ## Running
 
@@ -210,7 +216,11 @@ failures of pass/fail scores. Each score is read in the direction the runs
 recorded (a score they disagree on is left out). Default targets are the
 numeric scores present in both runs; a score of the base run that the
 candidate lacks is listed in `missing_scores` and fails the default
-regression gate.
+regression gate. A weighted score is compared on pooled values with a paired
+bootstrap over examples (`test="pooled_bootstrap"`). `where={key: value}`
+keeps the examples whose metadata matches, and `group_by=key` adds a
+comparison per value in `groups` (groups with one to four sealed examples
+are left out).
 
 `pairwise(base, candidate, judge)` asks a `PairwiseJudge` which of two outputs
 is better. The judge sees them only as `first` and `second`; with
@@ -265,7 +275,7 @@ A judge is validated like any other system:
 | `annotate RUN [--link NAME=URL --note TEXT --remove-link NAME]` | add links and notes to a run |
 | `import SPEC FILE [--task NAME --task-version V --split --ids ...]` | score outputs produced elsewhere as a run |
 | `show RUN [--failures --trials --outputs --example ID]` | inspect a run |
-| `compare BASE CANDIDATE [--fail-on-regression --gate T --min-effect X]` | paired comparison |
+| `compare BASE CANDIDATE [--where K=V --group-by K --fail-on-regression --gate T --min-effect X]` | paired comparison |
 | `pairwise BASE CANDIDATE --judge MODULE:ATTR [--one-order]` | A/B judging |
 | `runs`, `list MODULE` | list runs / evaluations |
 | `datasets {schema, validate, show, pull, push, delete}` | dataset utilities |

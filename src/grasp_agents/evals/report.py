@@ -3,14 +3,10 @@
 from collections.abc import Iterable
 from typing import Any, cast
 
-from .compare import Comparison, TargetComparison
+from .compare import MIN_SEALED_GROUP, Comparison, TargetComparison
 from .types import EvaluationRun, MetricResult, Score, Trial
 
 _MAX_TEXT = 300
-# Groups holding fewer held-out examples than this are not reported: their
-# aggregates (minus the visible members' results) would come close to
-# per-example results.
-MIN_SEALED_GROUP = 5
 
 
 def _num(value: float | None, digits: int = 3) -> str:
@@ -299,11 +295,12 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _target_row(t: TargetComparison) -> str:
+def _target_row(t: TargetComparison, label: str | None = None) -> str:
     arrow = "↑" if t.higher_is_better else "↓"
     flag = " ✱" if t.significant else ""
+    pooled = " (pooled)" if t.pooled else ""
     cells = [
-        f"{arrow} {_cell(t.target)}",
+        f"{arrow} {_cell(label or t.target)}{pooled}",
         _num(t.base_mean),
         _num(t.candidate_mean),
         f"{_num(t.diff)}{flag}",
@@ -330,6 +327,9 @@ def render_comparison_markdown(comparison: Comparison, *, max_rows: int = 5) -> 
     ]
     if c.cluster_by:
         lines.append(f"- **Clustered by:** `{c.cluster_by}`")
+    if c.where:
+        shown = ", ".join(f"{k}={v}" for k, v in c.where.items())
+        lines.append(f"- **Examples where:** {_cell(shown)}")
     lines.extend(f"- ⚠ {warning}" for warning in c.warnings)
     lines += [
         "",
@@ -344,6 +344,20 @@ def render_comparison_markdown(comparison: Comparison, *, max_rows: int = 5) -> 
         "|---|---|---|---|---|---|---|---|---|",
     ]
     lines.extend(_target_row(t) for t in c.targets)
+    if c.groups:
+        lines += [
+            "",
+            f"## By `{c.group_by}`",
+            "",
+            "| group · target | base | candidate | Δ | CI | p | MDE | n | +/- |",
+            "|---|---|---|---|---|---|---|---|---|",
+        ]
+        for label, group in c.groups.items():
+            lines.extend(
+                _target_row(t, f"{label} · {t.target}")
+                for t in group.targets
+                if t.kind == "score"
+            )
     for target in c.targets:
         if not target.top_regressions or target.kind != "score":
             continue

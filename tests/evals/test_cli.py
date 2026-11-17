@@ -706,3 +706,38 @@ def test_deleting_a_phoenix_dataset_needs_confirmation(
     code, payload = _run_json(capsys, "datasets", "delete", "staging/x", "--json")
     assert code == 2
     assert "--yes" in payload["error"]["message"]
+
+
+def test_compare_filters_and_groups_by_metadata(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = str(tmp_path / "evals")
+    _, base = _run_json(capsys, "--root", root, "run", f"{module}:buggy", "--json")
+    _, cand = _run_json(capsys, "--root", root, "run", f"{module}:fixed", "--json")
+    code, grouped = _run_json(
+        capsys,
+        "--root",
+        root,
+        "compare",
+        base["id"],
+        cand["id"],
+        "--group-by",
+        "k",
+        "--json",
+    )
+    assert code == 0
+    assert list(grouped["groups"]) == ["k=None"]
+    assert grouped["groups"]["k=None"]["n_paired_examples"] == 4
+    _, none = _run_json(
+        capsys,
+        "--root",
+        root,
+        "compare",
+        base["id"],
+        cand["id"],
+        "--where",
+        "k=1",
+        "--json",
+    )
+    assert none["n_paired_examples"] == 0
+    assert none["where"] == {"k": 1}

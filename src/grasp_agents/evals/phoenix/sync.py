@@ -893,6 +893,7 @@ async def push_run(
                         "scorer": scorer,
                         "scorer_version": versions.get(scorer),
                         "reason": score.reason,
+                        "weight": score.weight,
                         **cast("dict[str, Any]", to_jsonable(score.metadata)),
                     },
                     "trace_id": trial.trace_id,

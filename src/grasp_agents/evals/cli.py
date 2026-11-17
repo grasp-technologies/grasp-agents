@@ -220,6 +220,19 @@ def _check_threshold_names(
         raise CLIError(f"--fail-under names unknown metrics {unknown}; known: {known}")
 
 
+def _parse_where(values: Sequence[str]) -> dict[str, Any]:
+    where: dict[str, Any] = {}
+    for item in values:
+        key, sep, raw = item.partition("=")
+        if not sep or not key:
+            raise CLIError(f"--where expects KEY=VALUE, got {item!r}")
+        try:
+            where[key] = json.loads(raw)
+        except json.JSONDecodeError:
+            where[key] = raw
+    return where
+
+
 def _gate_messages(
     run: EvaluationRun,
     thresholds: dict[str, float],
@@ -605,7 +618,13 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         raise CLIError("--gate and --min-effect need --fail-on-regression")
     _, base = _resolve_run(args.base, args.root)
     _, candidate = _resolve_run(args.candidate, args.root)
-    comparison = compare(base, candidate, top=args.top)
+    comparison = compare(
+        base,
+        candidate,
+        top=args.top,
+        where=_parse_where(args.where),
+        group_by=args.group_by,
+    )
     failures = (
         regressions(comparison, targets=args.gate or None, min_effect=args.min_effect)
         if args.fail_on_regression
@@ -1264,6 +1283,16 @@ def build_parser() -> argparse.ArgumentParser:
     cmp.add_argument("base")
     cmp.add_argument("candidate")
     cmp.add_argument("--top", type=_positive_int, default=5)
+    cmp.add_argument(
+        "--where",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="only examples whose metadata has this value (repeatable)",
+    )
+    cmp.add_argument(
+        "--group-by", metavar="KEY", help="also compare per value of a metadata key"
+    )
     _add_gate(cmp, needs="")
     _add_json(cmp)
 

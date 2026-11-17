@@ -41,6 +41,7 @@ Always added: `error_rate`, `p50(duration_s)` and `p95(duration_s)`, plus
 | `PassRate(of, threshold=None, errors_as_failures=True, reduce=mean, higher_is_better=None)` | examples | failures | `pass_rate(of)`, `pass_rate(of>=0.7)`, `pass_rate(of)[all_pass]` |
 | `PassAtK(of, k)` / `PassHatK(of, k)` | examples; an example with fewer than `k` repetitions is n/a | failures | `pass@k(of)` / `pass^k(of)` |
 | `Mean(of, reduce=mean, unit="example", higher_is_better=None)` | examples (or trials) | missing | `mean(of)` |
+| `Pooled(of)` | examples (resampled); every weighted trial counts | missing | `pooled(of)`: `Σ value·weight / Σ weight` with `Score.weight` (1 when unset), bootstrap interval; `details.weight` is the total weight. Added by `default_metrics` for scores with weights |
 | `Percentile(of, q, unit="trial")` | trials | missing | `p95(of)` |
 | `ErrorRate()` | trials (clustered on the example) | what it measures | `error_rate` (`details.by_type`) |
 | `Total(of)` | trials | missing | `total(of)` (no interval) |
@@ -119,7 +120,11 @@ cluster_by=None)`:
    or a metric's `higher_is_better=False` says otherwise; a run without the record
    takes the other run's). A score the runs record opposite directions for is left
    out and listed in `conflicting_directions`.
-3. **Per example**: repetitions are reduced with `reduce`.
+3. **Per example**: repetitions are reduced with `reduce`. A score with weights
+   (`Score.weight`) in either run is compared pooled instead: per run
+   `Σ value·weight / Σ weight` over the paired examples, a paired bootstrap over
+   examples (or clusters) for the interval and p-value (`test="pooled_bootstrap"`,
+   `pooled=True`); `improved`/`regressed` compare per-example pooled values.
    - For scores that are always `bool`, a task-errored trial counts as 0.
    - Numeric scores skip errored trials, so `n_pairs` drops. The `error` target catches
      those crashes.
@@ -155,6 +160,14 @@ cluster_by=None)`:
    - task errors appear in only one run;
    - a run is invalid or incomplete;
    - all paired examples sit in one cluster.
+
+## Subsets and groups
+
+`compare(..., where={"source": "arxiv"})` (CLI `--where source=arxiv`, values parsed as
+JSON when they parse) keeps the paired examples whose base-run metadata matches;
+`group_by="source"` (`--group-by source`) adds one comparison per value under
+`groups["source=<value>"]`, each with its own Holm family. A group holding one to four
+sealed examples is left out. The regression gate reads only the overall comparison.
 
 ## Regression gate
 

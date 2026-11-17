@@ -573,6 +573,120 @@ def paired_difference(
     )
 
 
+def _ratio(pairs: Sequence[tuple[float, float]]) -> float:
+    total = math.fsum(w for _, w in pairs)
+    return math.fsum(v for v, _ in pairs) / total if total > 0 else math.nan
+
+
+def pooled_estimate(
+    values: Sequence[float],
+    weights: Sequence[float],
+    *,
+    clusters: Sequence[Hashable] | None = None,
+    n_resamples: int = 2000,
+    seed: int = 0,
+    confidence: float = 0.95,
+) -> Estimate:
+    """
+    Weighted mean ``Σ value·weight / Σ weight`` (a ratio of sums: a share over
+    all items rather than a mean of per-unit shares), with a percentile
+    bootstrap interval resampling ``clusters`` (or single values).
+    """
+    pairs = [(v * w, w) for v, w in zip(values, weights, strict=True)]
+    return bootstrap_estimate(
+        pairs,
+        _ratio,
+        clusters=clusters,
+        n_resamples=n_resamples,
+        seed=seed,
+        confidence=confidence,
+    )
+
+
+def paired_pooled_difference(
+    base: Sequence[tuple[float, float]],
+    candidate: Sequence[tuple[float, float]],
+    *,
+    clusters: Sequence[Hashable] | None = None,
+    n_resamples: int = 2000,
+    seed: int = 0,
+    confidence: float = 0.95,
+    power: float = 0.8,
+) -> PairedEstimate:
+    """
+    Pooled difference ``candidate - base`` on paired examples, each given as
+    ``(Σ value·weight, Σ weight)``, with a paired percentile bootstrap that
+    resamples examples (or ``clusters`` of them) for both arms at once. The
+    p-value is the two-sided bootstrap tail of zero.
+    """
+    if len(base) != len(candidate):
+        raise ValueError("base and candidate must be paired")
+    n = len(base)
+    base_value, candidate_value = _ratio(base), _ratio(candidate)
+    diff = candidate_value - base_value
+    keys: Sequence[Hashable] = clusters if clusters is not None else range(n)
+    groups: dict[Hashable, list[int]] = {}
+    for index, key in enumerate(keys):
+        groups.setdefault(key, []).append(index)
+    members = list(groups.values())
+    if n == 0 or len(members) < 2 or not math.isfinite(diff):
+        return PairedEstimate(
+            n=n,
+            base_mean=base_value,
+            candidate_mean=candidate_value,
+            diff=diff,
+            stderr=None,
+            ci_low=None,
+            ci_high=None,
+            p_value=None,
+            mde=None,
+            test="none",
+        )
+    rng = random.Random(seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]
+    draws: list[float] = []
+    for _ in range(n_resamples):
+        chosen = [i for g in rng.choices(members, k=len(members)) for i in g]
+        delta = _ratio([candidate[i] for i in chosen]) - _ratio(
+            [base[i] for i in chosen]
+        )
+        if math.isfinite(delta):
+            draws.append(delta)
+    if len(draws) < 2:
+        return PairedEstimate(
+            n=n,
+            base_mean=base_value,
+            candidate_mean=candidate_value,
+            diff=diff,
+            stderr=None,
+            ci_low=None,
+            ci_high=None,
+            p_value=None,
+            mde=None,
+            test="none",
+        )
+    draws.sort()
+    alpha = (1.0 - confidence) / 2.0
+    mean = _mean(draws)
+    se = math.sqrt(math.fsum((d - mean) ** 2 for d in draws) / (len(draws) - 1))
+    below = (sum(1 for d in draws if d <= 0) + 1) / (len(draws) + 1)
+    above = (sum(1 for d in draws if d >= 0) + 1) / (len(draws) + 1)
+    degenerate = se <= _DEGENERATE * max(1.0, abs(diff))
+    return PairedEstimate(
+        n=n,
+        base_mean=base_value,
+        candidate_mean=candidate_value,
+        diff=diff,
+        stderr=se,
+        ci_low=percentile(draws, 100.0 * alpha),
+        ci_high=percentile(draws, 100.0 * (1.0 - alpha)),
+        p_value=min(1.0, 2.0 * min(below, above)),
+        mde=None
+        if degenerate
+        else minimum_detectable_effect(se, confidence=confidence, power=power),
+        test="pooled_bootstrap",
+    )
+
+
 # --- Agreement (judge validation) ---
 
 

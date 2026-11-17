@@ -682,6 +682,64 @@ async def test_differences_of_shares_stay_in_range(store: LocalRunStore) -> None
     assert target.ci_high <= 1.0
 
 
+class TestPooled:
+    @staticmethod
+    def _pages() -> Dataset[int, int]:
+        # A page with 2 headings and pages with 40; arXiv papers and others.
+        return Dataset(
+            [
+                Example(
+                    id=f"p{i}",
+                    input=i,
+                    reference=2 if i == 0 else 40,
+                    metadata={"source": "arxiv" if i % 2 else "other"},
+                )
+                for i in range(12)
+            ],
+            name="pages",
+        )
+
+    @staticmethod
+    def _found(share_of_large: float) -> Any:
+        @scorer(name="found")
+        def found(ctx: ScoreContext[int, int, int]) -> Score:
+            items = ctx.reference or 0
+            share = 0.0 if items == 2 else share_of_large + 0.01 * (ctx.input % 3)
+            return Score(name="found", value=share, weight=items)
+
+        return found
+
+    @pytest.mark.asyncio
+    async def test_weighted_scores_are_pooled_in_metrics_and_comparisons(
+        self, store: LocalRunStore
+    ) -> None:
+        base = await evaluate(good, self._pages(), [self._found(0.5)], store=store)
+        pooled = base.metric("pooled(found)")
+        assert pooled is not None
+        assert pooled.value == pytest.approx(
+            sum(40 * (0.5 + 0.01 * (i % 3)) for i in range(1, 12)) / (2 + 40 * 11)
+        )
+        assert pooled.details["weight"] == pytest.approx(442)
+        candidate = await evaluate(good, self._pages(), [self._found(0.7)], store=store)
+        result = compare(base, candidate, group_by="source")
+        target = result.target("found")
+        assert target is not None
+        assert target.pooled
+        assert target.test == "pooled_bootstrap"
+        assert target.diff == pytest.approx(0.2 * 440 / 442)
+        assert target.significant
+        assert sorted(result.groups) == ["source=arxiv", "source=other"]
+        arxiv = result.groups["source=arxiv"]
+        assert arxiv.n_paired_examples == 6
+        assert arxiv.where == {"source": "arxiv"}
+        assert regressions(compare(candidate, base))
+        only = compare(base, candidate, where={"source": "other"})
+        assert only.n_paired_examples == 6
+        text = render_comparison_markdown(result)
+        assert "found (pooled)" in text
+        assert "## By `source`" in text
+
+
 class TestDescriptiveMetadata:
     @staticmethod
     def _data(**metadata: str) -> Dataset[int, int]:

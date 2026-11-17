@@ -30,7 +30,7 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 |---|---|---|
 | `run SPEC` | Runs an `Evaluation` | Selection, overrides, gates and `--push` below |
 | `show RUN` | Markdown summary; `--json`; `--trials`; `--failures`; `--outputs`; `--example ID` | `--failures` lists trials with a task error, a scorer failure, a `False` score or an unscored score. `--example` always prints JSON and refuses sealed examples |
-| `compare BASE CAND` | Paired comparison; `--top N`; gate flags | Exits 1 only with `--fail-on-regression` |
+| `compare BASE CAND` | Paired comparison; `--top N`; `--where KEY=VALUE`; `--group-by KEY`; gate flags | Exits 1 only with `--fail-on-regression`. Weighted scores are compared pooled |
 | `rescore RUN` | Child run with re-scored stored outputs | `--spec` defaults to the run's recorded spec; `--rerun`; `--allow-unvalidated`; `--split S` / `--ids a,b` for a child of those trials only (sealed splits whole); `--dataset FILE\|phoenix:...` to score against a newer dataset version |
 | `import SPEC FILE` | Scores outputs produced elsewhere as a run (`kind=import`) | JSONL of `{example_id, repetition?, output \| error, duration_s?, cost_usd?, usage?, models?, measurements?, trace_id?, started_at?}`. `--task` (default: the file's stem) and `--task-version` identify what produced them. Selection flags as for `run` (sealed splits left out); outputs outside the selection are ignored, unknown ids and repeated (id, repetition) are errors; `-r` defaults to the most repetitions in the file |
 | `experiments delete RUN` | Deletes the run's Phoenix experiment and its project | JSON output |

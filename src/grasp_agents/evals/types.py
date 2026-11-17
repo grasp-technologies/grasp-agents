@@ -234,6 +234,10 @@ class Score(BaseModel):
     reason: str | None = None
     # Name of the scorer that produced this score (stamped by the runner).
     scorer: str | None = None
+    # How much this value counts in pooled aggregates (``Pooled``, pooled
+    # comparisons): e.g. the number of items a share is over, so a share over
+    # 40 headings outweighs one over 2. ``None`` counts as 1.
+    weight: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
     metadata: dict[str, Any] = Field(default_factory=dict[str, Any])
 
     @classmethod

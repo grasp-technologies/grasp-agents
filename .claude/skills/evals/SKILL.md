@@ -85,6 +85,9 @@ print(run.metric("pass_rate(exact)"))
   - `Score.unscored(name, reason)` when it cannot judge.
 
   It should raise only on a real bug.
+- A share over a varying number of items should carry the count as its weight
+  (`Score(name="found", value=share, weight=n_items)`): `pooled(found)` and `compare`
+  then use the share over all items, not a mean of per-example shares.
 - Without `persist=False`, the run lands in `./.evals/runs/<run_id>/`.
 
 ## Workflow 2: an `Evaluation` spec and the CLI loop
