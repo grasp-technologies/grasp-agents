@@ -61,7 +61,7 @@ Defaults: 120 s per call (interrupted on timeout), 20,000 chars of text, 10 imag
 - **`NotebookRead`** returns a cell-structured view with stable `cell_id`s, sources, and output previews (2,000 chars per cell). Images are included by default for a single-cell read only. The generic `Read` renders the same cell view for `.ipynb` files.
 - **`NotebookEdit`** replaces, inserts (after `cell_id`, or at the start) or deletes one cell, re-serializing the notebook so other cells and metadata survive. Replacing a code cell clears its outputs and execution count. Notebooks without native cell ids get deterministic ones; the first edit persists native ids.
 - **`RunCell`** runs one code cell by `cell_id` in the notebook's kernel and writes the outputs and execution count back into the `.ipynb`. It returns the outputs to the model (text plus png / jpeg / gif / webp images).
-- `NotebookEdit` and `RunCell` follow the file-edit write rules: the notebook must exist, must have been read this session, and must be unchanged since (see [Files](files.md)). `Write` and `Edit` refuse `.ipynb` files.
+- `NotebookEdit` and `RunCell` follow the file-edit write rules: the notebook must exist, must have been read this session, and must be unchanged since, and the write is conditional on that read's mtime (see [Files](files.md#read-before-write)). `Write` and `Edit` refuse `.ipynb` files.
 
 **Output sanitization.** Outputs persisted into an `.ipynb` are sanitized by default (`RunCell(sanitize_outputs=True)`): `application/javascript` is dropped and `<script>`, `on*=` handlers and `javascript:` URLs are stripped from HTML. A notebook the agent wrote therefore cannot run agent-authored script in a reviewer's frontend. `RunPython` outputs are never persisted, so they are not sanitized.
 
@@ -92,6 +92,7 @@ An exec backend that can host a kernel implements `KernelCapable.open_kernel(cwd
 - One-shot resource limits do not apply to kernels; bound them with per-call timeouts or use E2B.
 - There is no restart-kernel tool and no run-all; the model re-runs setup cells itself.
 - The notebook tools cannot create a new notebook: `Write` refuses `.ipynb` and `NotebookEdit` needs an existing file.
+- If the notebook changes on disk while `RunCell` runs a cell, the call fails without writing the outputs back, although the cell has run in the kernel.
 
 ## See also
 

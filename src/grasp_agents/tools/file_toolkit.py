@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from .file_edit.copy import CopyTool
 from .file_edit.delete import DeleteTool
 from .file_edit.edit import EditTool
 from .file_edit.notebook import NotebookEditTool, NotebookReadTool
@@ -57,6 +58,7 @@ class FileToolkit:
         glob_include_hidden: bool = False,
         include_notebook: bool = False,
         include_image: bool = False,
+        include_copy: bool = False,
         max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
         tool_timeout: float | None = None,
     ) -> None:
@@ -85,6 +87,10 @@ class FileToolkit:
                 :meth:`read_only_tools`, letting the agent view image files
                 (PNG/JPEG/GIF/WebP) as visual content. Off by default — only
                 vision-capable agents need it.
+            include_copy: Add ``Copy`` to :meth:`tools`, which copies files
+                and directory trees without passing their content through
+                the model — the way to copy files between the mounts of a
+                ``CompositeFileBackend``. Off by default.
             max_image_bytes: Whole-file size ceiling for ``ReadImage``; larger
                 images are refused. Default ``5_000_000``.
             tool_timeout: Per-tool async timeout in seconds. ``None``
@@ -116,8 +122,10 @@ class FileToolkit:
             max_image_bytes=max_image_bytes,
             timeout=tool_timeout,
         )
+        self._copy_tool = CopyTool(timeout=tool_timeout)
         self._include_notebook = include_notebook
         self._include_image = include_image
+        self._include_copy = include_copy
 
     # ---- Tool accessors ----------------------------------------------------
 
@@ -157,13 +165,17 @@ class FileToolkit:
     def read_image(self) -> ReadImageTool:
         return self._image_read_tool
 
+    @property
+    def copy(self) -> CopyTool:
+        return self._copy_tool
+
     def tools(self) -> list[BaseTool[Any, Any, Any]]:
         """
         The file tools, ready to attach to an agent.
 
         ``Read`` / ``Write`` / ``Edit`` / ``Delete`` / ``Glob`` / ``Grep``,
-        plus ``NotebookRead`` + ``NotebookEdit`` when ``include_notebook`` and
-        ``ReadImage`` when ``include_image``.
+        plus ``NotebookRead`` + ``NotebookEdit`` when ``include_notebook``,
+        ``ReadImage`` when ``include_image`` and ``Copy`` when ``include_copy``.
         """
         base: list[BaseTool[Any, Any, Any]] = [
             self._read_tool,
@@ -177,6 +189,8 @@ class FileToolkit:
             base += [self._notebook_read_tool, self._notebook_edit_tool]
         if self._include_image:
             base.append(self._image_read_tool)
+        if self._include_copy:
+            base.append(self._copy_tool)
         return base
 
     def read_only_tools(self) -> list[BaseTool[Any, Any, Any]]:

@@ -123,6 +123,19 @@ checks paths, and the environment scrub is the one barrier between a command
 and your host's other secrets. Use Seatbelt / `srt` or E2B when the agent runs
 code it wrote from untrusted input.
 
+On the file-tool plane, the file backend adds guards of its own (see
+[Files](files.md)):
+
+- A `CompositeFileBackend` mount with `read_only=True` refuses every change
+  made through `ctx.file_backend`: the file tools, `Copy` and memory writes.
+- `Copy` validates every file it reads for read access. Inside a directory it
+  skips files the policy refuses, symbolic links and special files, and lists
+  them, so a copy reads nothing the path policy denies.
+- The pure-Python grep (`grep_texts_async`, which `InMemoryFileBackend`
+  uses) refuses patterns and globs over 1,000 characters, runs in a worker
+  thread, and stops at a time budget (5 s by default) with partial results and
+  a note, so a catastrophic regex from the model cannot stall the agent.
+
 ## Contracts
 
 1. Output of every `untrusted_output` tool is fenced, including after a custom
@@ -132,6 +145,10 @@ code it wrote from untrusted input.
 4. Explicit `env` values are never scrubbed; inherited ones always are, unless
    `env_scrub` is overridden.
 5. Log redaction cannot be disabled after import.
+6. A read-only mount refuses every change made through the file backend, in
+   `validate_path` and in each mutating call (`CompositeFileBackend`).
+7. `Copy` reads only files that pass `validate_path(access="read")` and, inside
+   a directory, resolve to their own path under the source (`CopyTool`).
 
 ## Limitations
 
@@ -143,6 +160,8 @@ code it wrote from untrusted input.
   tool added to an agent later is fenced, but the model is not told what the
   fence means unless you add the section.
 - Memory and skills have no integrity checks or signing.
+- A read-only mount binds only what goes through `ctx.file_backend`; commands
+  still write to the environment's files wherever the sandbox policy allows.
 
 ## See also
 

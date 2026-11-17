@@ -30,6 +30,8 @@ from pydantic import BaseModel, Field
 from grasp_agents.file_backend.paths import PathAccessError
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
+from .session_state import refuse_if_stale
+
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
     from grasp_agents.session_context import SessionContext
@@ -134,6 +136,7 @@ class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
                 "outside the agent loop."
             )
 
+        expected_mtime: float | None = None
         if state is not None:
             record = state.get_read_record(resolved)
             if record is None:
@@ -149,8 +152,10 @@ class DeleteTool(BaseTool[DeleteInput, DeleteResult, Any]):
                     f"(recorded mtime {record.mtime!r}, "
                     f"current {current_stat.mtime!r}). Re-Read before deleting."
                 )
+            expected_mtime = record.mtime
 
-        await backend.delete(resolved)
+        with refuse_if_stale(resolved, action="deleting"):
+            await backend.delete(resolved, expected_mtime=expected_mtime)
         if state is not None:
             state.read_file_state.pop(resolved, None)
 

@@ -118,6 +118,10 @@ tools and memory through a server:
   a cached index built from one `resources/list` per session.
 - Writes and deletes call the server's `write_file(path, content, mode)` and
   `delete_file(path)` tools and then refresh the index.
+- A conditional write or delete (`expected_mtime`, which the file tools pass)
+  first re-lists the resources and compares the file's mtime. The server tools
+  take no precondition, so a change landing between the check and the write
+  goes unnoticed.
 - `validate_path` only checks membership in `allowed_roots` in the server's
   address space. Path containment and sensitive-path policy are the server's
   job.

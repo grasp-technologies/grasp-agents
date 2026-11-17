@@ -8,6 +8,7 @@ handle: it cannot exist without an entered :class:`E2BEnvironment`.
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import re
 import shlex
@@ -15,13 +16,14 @@ import stat as stat_module
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from e2b import AsyncSandbox, CommandExitException
+from e2b import AsyncSandbox, CommandExitException, NotFoundException
 
 from grasp_agents.file_backend.base import (
     FileBackend,
     FileEntry,
     FileStat,
     GrepRawResult,
+    StaleFileError,
 )
 from grasp_agents.file_backend.local import glob_filter_entries
 from grasp_agents.file_backend.paths import PathAccessError, check_access_path
@@ -276,16 +278,21 @@ class E2BFileBackend(FileBackend):
         *,
         mode: int,
         overwrite: bool = True,
+        expected_mtime: float | None = None,
     ) -> float:
         del mode, overwrite  # E2B writes always overwrite; no mode on the API
         async with self._holder.use() as sb:
+            if expected_mtime is not None:
+                await _check_expected_mtime(sb, path, expected_mtime)
             # e2b types write()'s data param as a bare ``IO`` (-> ``IO[Unknown]``).
             await sb.files.write(wire(path), data)  # pyright: ignore[reportUnknownMemberType]
             info = await sb.files.get_info(wire(path))
         return mtime(info)
 
-    async def delete(self, path: Path) -> None:
+    async def delete(self, path: Path, *, expected_mtime: float | None = None) -> None:
         async with self._holder.use() as sb:
+            if expected_mtime is not None:
+                await _check_expected_mtime(sb, path, expected_mtime)
             await sb.files.remove(wire(path))
 
     async def mkdir(self, path: Path) -> None:
@@ -318,7 +325,8 @@ class E2BFileBackend(FileBackend):
         head_limit: int = 250,
     ) -> tuple[list[FileEntry], bool]:
         flat = await self.list_dir(root, recursive=True)
-        return glob_filter_entries(
+        return await asyncio.to_thread(
+            glob_filter_entries,
             flat,
             root,
             pattern,
@@ -508,3 +516,23 @@ def _parse_grep(
     return GrepRawResult(
         lines=lines, num_matches=num_matches, num_files_matched=len(matched_files)
     )
+
+
+async def _check_expected_mtime(
+    sb: AsyncSandbox, path: Path, expected_mtime: float
+) -> None:
+    """
+    Best-effort precondition for a conditional write or delete.
+
+    E2B has no conditional write, so a change landing between this check
+    and the write goes unnoticed.
+    """
+    try:
+        info = await sb.files.get_info(wire(path))
+    except NotFoundException:
+        raise StaleFileError(f"{path} no longer exists") from None
+    current = mtime(info)
+    if current != expected_mtime:
+        raise StaleFileError(
+            f"{path} changed (expected mtime {expected_mtime!r}, current {current!r})"
+        )

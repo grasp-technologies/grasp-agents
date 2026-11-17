@@ -36,9 +36,12 @@ binary blobs to the model wastes tokens and can crash the serializer.
 
 from __future__ import annotations
 
+import posixpath
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Literal
+
+# cspell:ignore pypirc nvim urandom APFS NTFS
 
 AccessMode = Literal["read", "write"]
 
@@ -244,6 +247,18 @@ def resolve_safe(
 
     root_strs = ", ".join(str(r) for r in allowed_roots)
     raise PathAccessError(f"Path {resolved} is outside allowed roots [{root_strs}]")
+
+
+def normalize_posix(path: str | PurePath) -> PurePosixPath:
+    """
+    Lexically normalize a POSIX path: collapse ``.``, ``..`` and repeated
+    slashes without touching any filesystem.
+
+    Backends that cannot resolve symlinks (remote, in-memory, composite) call
+    this before a containment check: a literal ``..`` segment would pass a
+    prefix comparison and escape ``allowed_roots`` once the path is resolved.
+    """
+    return PurePosixPath(posixpath.normpath(PurePosixPath(path).as_posix()))
 
 
 def is_blocked_device(path: str | Path) -> bool:

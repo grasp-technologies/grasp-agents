@@ -153,7 +153,9 @@ referencing==0.37.0
     #   jsonschema
     #   jsonschema-specifications
 regex==2026.11.9
-    # via tiktoken
+    # via
+    #   grasp-agents (pyproject.toml)
+    #   tiktoken
 requests==2.34.2
     # via tiktoken
 rich==14.3.4

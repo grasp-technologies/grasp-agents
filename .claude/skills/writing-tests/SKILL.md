@@ -28,6 +28,7 @@ end-to-end live runs go in `tests/integration/`.
 | E2B sandbox doubles (files, commands, persistent shells, code contexts, a sandbox E2B removed) and `FakeTemplateAPI`, a scripted template API for `E2BTemplateConfig.build(templates=...)` | `tests/sandbox/_e2b_fakes.py` |
 | Sandbox capability probes | `process_is_sandboxed()`, `srt_can_run()`, `exec_confinement()` |
 | Team tests | `_agent(name, responses)`, `_send(to, message, call_id)`, `_until(pred)` |
+| Proof that work stays off the event loop | `max_loop_gap(awaitable)` returns the result and the longest gap between 10 ms ticks while it ran |
 
 - Importable helpers live in `tests/_helpers.py`, and pytest fixtures live in
   `tests/conftest.py`. Import absolutely (`from tests._helpers import MockLLM`);

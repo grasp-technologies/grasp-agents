@@ -36,6 +36,13 @@ logger = logging.getLogger(__name__)
 # Directory (under the backend's first allowed root) holding per-call artifacts.
 TASK_LOG_DIR = (".grasp", "tasks")
 
+MAX_SPILL_CHARS = 4_000_000
+"""
+Most characters a ``.result`` spill file keeps: room for a ``Bash`` result whose
+two streams are both at the exec backends' 1,000,000-character cap. A longer
+result keeps its head and tail around a marker.
+"""
+
 
 def _task_file_name(name: str, suffix: str) -> str:
     safe = "".join(c if c.isalnum() or c in "_-" else "_" for c in name) or "task"
@@ -43,7 +50,7 @@ def _task_file_name(name: str, suffix: str) -> str:
 
 
 def task_log_name(name: str) -> str:
-    """Basename of a task's streamed-output log (``<sanitised name>.log``)."""
+    """Basename of a task's streamed-output log (``<sanitized name>.log``)."""
     return _task_file_name(name, ".log")
 
 
@@ -140,19 +147,34 @@ async def spill_if_large(
     text: str,
     cap: int | None,
     file_kind: str = "full output",
+    max_spill_chars: int = MAX_SPILL_CHARS,
 ) -> tuple[str, str | None]:
     """
     Bound how much of a tool result is inlined: when ``text`` exceeds ``cap``,
     spill the full text to a ``.result`` file and return a head+tail excerpt that
     points at it (``Read`` / ``Grep`` recovers the rest), with that file's path.
 
+    The file holds at most ``max_spill_chars`` characters: a longer result keeps
+    its head and tail around a marker that says how much was cut, and the
+    excerpt says so too.
+
     Returns ``(text, None)`` when it fits, when ``cap`` is ``None``, or when the
     spill is impossible (no backend) or fails — truncating with no recovery path
-    would hide output unrecoverably.
+    would hide the rest of the output for good.
     """
     if cap is None or len(text) <= cap or file_backend is None:
         return text, None
-    result_path = await write_result_file(file_backend, name=name, text=text)
+    saved = text
+    if len(text) > max_spill_chars:
+        head = max_spill_chars // 2
+        tail = max_spill_chars - head
+        marker = (
+            f"\n... [{len(text) - max_spill_chars:,} chars omitted: this file keeps "
+            f"the first {head:,} and last {tail:,} of {len(text):,}] ...\n"
+        )
+        saved = text[:head] + marker + text[len(text) - tail :]
+        file_kind = f"first {head:,} and last {tail:,} chars of the {file_kind}"
+    result_path = await write_result_file(file_backend, name=name, text=saved)
     if result_path is None:
         return text, None
     excerpt, _ = excerpt_for_inline(text, cap, file=result_path, file_kind=file_kind)

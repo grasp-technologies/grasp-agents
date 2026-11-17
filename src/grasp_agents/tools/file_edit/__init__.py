@@ -18,6 +18,7 @@ import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from .copy import CopyInput, CopyResult, CopyTool
     from .delete import DeleteInput, DeleteResult, DeleteTool
     from .edit import EditInput, EditResult, EditTool
     from .fuzzy_match import (
@@ -46,6 +47,9 @@ if TYPE_CHECKING:
 # Map each public attribute to the submodule that defines it. Single source of
 # truth for ``__all__`` + the ``__getattr__`` lookup; keep them in sync.
 _LAZY: dict[str, str] = {
+    "CopyInput": "copy",
+    "CopyResult": "copy",
+    "CopyTool": "copy",
     "DeleteInput": "delete",
     "DeleteResult": "delete",
     "DeleteTool": "delete",
@@ -92,6 +96,9 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "UNICODE_MAP",
+    "CopyInput",
+    "CopyResult",
+    "CopyTool",
     "DefaultSecretRedactor",
     "DeleteInput",
     "DeleteResult",

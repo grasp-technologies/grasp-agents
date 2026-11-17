@@ -20,7 +20,7 @@ outlives sessions.
 | `MemorySnapshot` | `memory/provider.py` | Frozen index + entries, loaded once |
 | `MemoryEntry`, `MemoryFrontmatter`, `MemoryType` | `memory/types.py` | A topic file and its frontmatter (`MemoryEntry` is a root export) |
 | `make_llm_relevance_selector` | `memory/selectors.py` | LLM-backed per-turn selector |
-| `make_memory_section`, `relevant_memories_attachment` | `memory/injection.py` | The `memory` section and the `relevant_memories` attachment |
+| `make_memory_section`, `relevant_memories_attachment`, `check_memory_instructions` | `memory/injection.py` | The `memory` section, the `relevant_memories` attachment, and the check a custom taxonomy must pass |
 | `default_memdir_path` | `memory/default_path.py` | Default location |
 
 ## Layout
@@ -46,8 +46,10 @@ Don't end replies with a recap. **Why:** ... **How to apply:** ...
 
 - `name` (required, at most 64 characters: lowercase letters, digits, `-`, `_`)
   and `description` (required, at most 2048 characters).
-- `type` is one of `user`, `feedback`, `project`, `reference`; an unknown value
-  is kept but treated as untyped.
+- `type` names the kind of memory. The instructions offer the provider's
+  `memory_types` (by default `user`, `feedback`, `project`, `reference`). Any
+  value is kept, and headings and the selector's manifest show it as written,
+  on one line and cut at 64 characters.
 - Freshness comes from the file's mtime, not a frontmatter field. Entries
   older than `stale_after` (default 7 days) get a freshness warning.
 - The index is capped at 200 lines / 25,000 bytes in the prompt (a truncation
@@ -56,6 +58,20 @@ Don't end replies with a recap. **Why:** ... **How to apply:** ...
 The model-facing rules for writing memories (what to save, what not to save,
 the two-step write: topic file, then index line) are in
 `memory/memory_instructions.md`, rendered into the `memory` section.
+
+## Your own taxonomy
+
+`MemoryProvider(memory_types=[...], instructions_template=...)` replaces the
+default types and the built-in instructions. The built-in text describes the
+four default types one by one, so a different set of types needs a template of
+its own. A template is a `str.format` string over the fields `{memdir}`,
+`{index_file}`, `{index_path}`, `{memory_types}`, `{max_lines}`, `{max_bytes}`
+and `{selector_instructions}`, with literal braces doubled;
+`memory/memory_instructions.md` shows how each is used. The provider raises
+`ValueError` at construction for an empty `memory_types`, for a set of types
+other than the defaults without a template, and for a template that does not
+render.
+`check_memory_instructions(memory_types, template)` runs the same check.
 
 ## Location
 
@@ -71,7 +87,7 @@ from grasp_agents import LLMAgent, MemoryProvider, SessionContext
 from grasp_agents.file_backend import LocalFileBackend
 from grasp_agents.memory import make_llm_relevance_selector
 
-memory = MemoryProvider(root="~/.myapp/memory")
+memory = MemoryProvider(root="~/.my-app/memory")
 memory.set_selector(make_llm_relevance_selector(small_llm))
 
 ctx = SessionContext[None](
@@ -85,7 +101,10 @@ with ctx:
 
 `SessionContext` requires a `file_backend` when `memory` is set. Its validator
 adds the memdir to the backend's allowed roots and binds the backend to the
-provider. Any backend works: local, sandboxed, E2B or `MCPFileBackend`.
+provider. Any backend works: local, sandboxed, E2B, `MCPFileBackend`,
+`InMemoryFileBackend`, or a `CompositeFileBackend` with the memdir inside one
+of its mounts (a read-only mount gives the agent memory it cannot change). See
+[Files](files.md#composite-backends).
 
 `enable_memory=True` (default `False`) adds three things:
 
@@ -149,6 +168,11 @@ See [Security](security.md).
    on the input attachment.
 4. Topic-file bodies are recorded as read only when actually surfaced
    (`MemoryProvider.fetch_body`), so read-before-write still applies to them.
+5. A taxonomy other than the default comes with an `instructions_template`
+   that renders; both are checked when the provider is built
+   (`check_memory_instructions`).
+6. A memory's `type` reaches the prompt only as one line of at most 64
+   characters (`MemoryFrontmatter.type_label`).
 
 ## Limitations
 

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 NAME_REGEX = re.compile(r"^[a-z0-9](?:[-_]?[a-z0-9])*$")
 NAME_MAX_LENGTH = 64
 DESCRIPTION_MAX_LENGTH = 2048
+TYPE_MAX_LENGTH = 64
 
 INDEX_FILE_NAME = "MEMORY.md"
 
@@ -46,10 +47,11 @@ class MemoryFrontmatter(BaseModel):
     """
     YAML frontmatter for a topic memory file.
 
-    ``name`` and ``description`` are required;
-    ``type`` is one of ``user|feedback|project|reference`` (closed
-    taxonomy with graceful degradation — unknown values are preserved as
-    ``raw_type`` but :attr:`memory_type` returns ``None``). Recency comes
+    ``name`` and ``description`` are required; ``type`` is free text, kept as
+    ``raw_type``. :attr:`memory_type` returns it when it is one of the default
+    types (``user|feedback|project|reference``) and ``None`` otherwise, and
+    :attr:`type_label` renders any type, so a host's own taxonomy
+    (``MemoryProvider(memory_types=...)``) shows up as written. Recency comes
     from filesystem ``mtime``, not a frontmatter field.
     """
 
@@ -77,6 +79,22 @@ class MemoryFrontmatter(BaseModel):
         if self.raw_type in MEMORY_TYPES:
             return self.raw_type
         return None
+
+    @property
+    def type_label(self) -> str | None:
+        """
+        ``raw_type`` as one line for headings and manifests, or ``None`` if blank.
+
+        Whitespace runs collapse to one space and a label longer than
+        :data:`TYPE_MAX_LENGTH` is cut with an ellipsis, so a stray type
+        cannot add lines or bulk to what the agent sees.
+        """
+        if self.raw_type is None:
+            return None
+        label = " ".join(self.raw_type.split())
+        if len(label) > TYPE_MAX_LENGTH:
+            label = label[: TYPE_MAX_LENGTH - 1] + "…"
+        return label or None
 
 
 @dataclass(frozen=True)

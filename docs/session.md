@@ -22,7 +22,7 @@ A `SessionContext` is the session-scoped container every processor in one sessio
 | `checkpoint_store` | Where checkpoints go (`None`: in-memory heads only). See [Durability](durability.md). |
 | `serialize_state`, `session_metadata`, `fs_snapshot_policy`, `session_writer` | Session-record features. See [Durability](durability.md) and [Rollback](rollback.md). |
 | `environment` | An `ExecutionEnvironment` — the only way to grant command execution. See [Sandbox](sandbox.md). |
-| `file_backend` | File I/O for file tools and memory. Taken from `environment` when one is set. See [Files](files.md). |
+| `file_backend` | File I/O for file tools and memory. Taken from `environment` when one is set; an explicit one must then include the environment's, as a `CompositeFileBackend` that mounts it does. See [Files](files.md). |
 | `approval_store` | Enables `build_store_approval` gates. See [Agent loop](agent-loop.md). |
 | `skills`, `memory` | See [Skills](skills.md) and [Memory](memory.md). |
 | `transport` | The session's mailbox (durable over `checkpoint_store` when there is one). |
@@ -114,7 +114,7 @@ async def note_progress(text: str, *, ctx: SessionContext[MyState], agent_ctx: A
 3. `SessionContext.__deepcopy__` returns `self`; copying a processor never forks its session.
 4. Runs never release session-scoped resources; only `aclose()` / `async with` does, cascading through containers and wrapping tools (`LLMAgent.aclose`, `AgentContext.close`).
 5. Tools are stateless. All per-agent state arrives as `agent_ctx` per call, so one tool instance is safe to share across agents, sub-agents and replicas (`BaseTool` docstring, `AgentContext.for_tool_call`).
-6. Exec is granted only through `ctx.environment`; a `file_backend` that differs from `environment.file_backend` raises at construction (`SessionContext._reconcile_environment`).
+6. Exec is granted only through `ctx.environment`; a `file_backend` that does not include `environment.file_backend` (`FileBackend.includes`) raises at construction (`SessionContext._reconcile_environment`).
 
 ## Limitations
 

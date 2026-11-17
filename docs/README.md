@@ -28,7 +28,7 @@ Start with [Concepts](concepts.md).
 | [Rollback](rollback.md) | Step rollback, the session writer, filesystem snapshots |
 | [Sandbox](sandbox.md) | `SandboxPolicy`, enforcement planes, environments, shell tools |
 | [Notebooks](notebooks.md) | `RunPython`, notebook tools, kernels |
-| [Files](files.md) | File tools and `FileBackend` implementations |
+| [Files](files.md) | File tools (`Copy` included), conditional writes, `FileBackend` implementations, composite backends |
 
 ## Capabilities
 
@@ -36,7 +36,7 @@ Start with [Concepts](concepts.md).
 |---|---|
 | [MCP](mcp.md) | MCP client: tools, resources, prompts |
 | [Skills](skills.md) | `SKILL.md` format, loading and invocation |
-| [Memory](memory.md) | Cross-session memory directory and relevance selection |
+| [Memory](memory.md) | Cross-session memory directory, its type taxonomy, and relevance selection |
 | [Security](security.md) | Trust model, untrusted-content fencing, secret handling |
 | [Evals](evals.md) | `grasp_agents.evals` and the `grasp-evals` CLI |
 | [Observability](observability.md) | Tracing, logging, usage and cost tracking |

@@ -4,8 +4,9 @@ Prompt / context construction.
 Everything that shapes what the model sees: the :class:`PromptBuilder` and its
 section/attachment vocabulary (:class:`SystemPromptSection`,
 :class:`InputAttachment`), the built-in section providers
-(:func:`make_env_info_section`, :func:`make_untrusted_content_section`), and
-context compaction (:class:`Compactor`, :class:`ContextBudget`,
+(:func:`make_env_info_section`, :func:`make_mounts_section`,
+:func:`make_untrusted_content_section`), and context compaction
+(:class:`Compactor`, :class:`ContextBudget`,
 :class:`CollapseToolOutputsProjector`).
 """
 
@@ -27,6 +28,7 @@ from .env_section import (
     make_current_time_attachment,
     make_env_info_section,
 )
+from .mounts_section import MOUNTS_SECTION_NAME, make_mounts_section
 from .projection import SUMMARY_TAG, apply_folds, fold_summary_text
 from .prompt_builder import (
     InputAttachment,
@@ -52,6 +54,7 @@ __all__ = [
     "COMPACTION_SECTION_NAME",
     "CURRENT_TIME_ATTACHMENT_NAME",
     "ENV_INFO_SECTION_NAME",
+    "MOUNTS_SECTION_NAME",
     "SUMMARY_TAG",
     "SYSTEM_REMINDER_TAG",
     "UNTRUSTED_CONTENT_INSTRUCTION",
@@ -72,6 +75,7 @@ __all__ = [
     "make_compaction_section",
     "make_current_time_attachment",
     "make_env_info_section",
+    "make_mounts_section",
     "make_untrusted_content_section",
     "unwrap_untrusted",
     "wrap_in_system_reminder",
