@@ -4,7 +4,11 @@ to a comma-separated list of base URLs and run
 ``pytest -m integration tests/evals/test_phoenix_live.py``.
 """
 
+import asyncio
+import json
 import os
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -18,15 +22,22 @@ from grasp_agents.evals import (
     Example,
     FunctionTask,
     LocalRunStore,
+    Score,
     ScoreContext,
+    annotate_run,
     evaluate,
     scorer,
 )
+from grasp_agents.evals.cli import main
+from grasp_agents.evals.labeling import write_records
 from grasp_agents.evals.phoenix import (
+    NUL_REPLACEMENT,
     DatasetPushError,
     PhoenixClient,
     PhoenixError,
     StaleDatasetError,
+    delete_dataset,
+    delete_experiment,
     phoenix_source,
     pull_dataset,
     push_dataset,
@@ -214,15 +225,22 @@ async def test_push_run_is_idempotent_and_resumable(
         FunctionTask(add), dataset, [exact, judge], repetitions=2, store=store
     )
     async with PhoenixClient(base_url) as client:
-        link = await push_run(client, run, store=store)
+        link = await push_run(client, run, store=store, create_dataset=True)
         assert link.experiment_id is not None
         assert len(link.logged_trials) == 8
         assert len(await _task_runs(client, link.experiment_id)) == 8
 
-        # A repeated push adds nothing.
-        again = await push_run(client, store.load(run.id), store=store)
+        # A repeated push adds nothing, also when it names the dataset.
+        again = await push_run(
+            client, store.load(run.id), store=store, dataset=dataset.name
+        )
         assert again.experiment_id == link.experiment_id
+        assert again.logged_trials == link.logged_trials
         assert len(await _task_runs(client, link.experiment_id)) == 8
+        with pytest.raises(DatasetPushError, match="already pushed"):
+            await push_run(
+                client, store.load(run.id), store=store, dataset=_name("other")
+            )
 
         # Progress lost entirely (e.g. a lost response): the experiment is found
         # again by run id and runs already logged are not duplicated.
@@ -252,7 +270,7 @@ async def test_changed_trials_are_logged_again(base_url: str, tmp_path: Path) ->
         FunctionTask(flaky), _dataset(_name("resync")), [exact], store=store
     )
     async with PhoenixClient(base_url) as client:
-        link = await push_run(client, run, store=store)
+        link = await push_run(client, run, store=store, create_dataset=True)
         assert link.experiment_id is not None
         failed = [
             r for r in await _task_runs(client, link.experiment_id) if r.get("error")
@@ -283,10 +301,11 @@ async def test_sealed_trials_are_withheld(base_url: str, tmp_path: Path) -> None
         _dataset(_name("sealed"), sealed_from=2),
         [exact],
         sealed_splits=["test"],
+        include_sealed=True,
         store=store,
     )
     async with PhoenixClient(base_url) as client:
-        link = await push_run(client, run, store=store)
+        link = await push_run(client, run, store=store, create_dataset=True)
         assert link.experiment_id is not None
         runs = await _task_runs(client, link.experiment_id)
         assert len(runs) == 2
@@ -347,6 +366,7 @@ async def test_a_fully_sealed_run_needs_a_shared_dataset(
         _dataset(name, sealed_from=0),
         [exact],
         sealed_splits=["test"],
+        include_sealed=True,
         store=store,
     )
     async with PhoenixClient(base_url) as client:
@@ -418,8 +438,295 @@ async def test_a_failed_trial_push_reports_the_phoenix_error(
         FunctionTask(add), _dataset(_name("fails")), [exact], store=store
     )
     async with PhoenixClient(base_url, transport=_FailRuns(), retries=0) as client:
-        with pytest.raises(PhoenixError, match="500"):
+        with pytest.raises(PhoenixError, match=r"500.*example 'p\d', repetition 0"):
+            await push_run(client, run, store=store, create_dataset=True)
+
+
+@pytest.mark.asyncio
+async def test_push_creates_no_dataset_unless_asked(
+    base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = LocalRunStore(tmp_path / "evals")
+    local = _name("local")
+    run = await evaluate(FunctionTask(add), _dataset(local), [exact], store=store)
+    async with PhoenixClient(base_url) as client:
+        with pytest.raises(DatasetPushError, match=f"no dataset '{local}'"):
             await push_run(client, run, store=store)
+        assert await client.find_dataset(local) is None
+        # A dataset under another name that holds the run's examples.
+        shared = _name("shared")
+        pushed = await push_dataset(client, _dataset(shared))
+        link = await push_run(client, run, store=store, dataset=shared)
+        assert link.dataset_id == pushed.dataset_id
+        monkeypatch.setenv("GRASP_EVALS_DATASET_PREFIX", "staging/")
+        other = await evaluate(FunctionTask(add), _dataset(local), [exact], store=store)
+        with pytest.raises(DatasetPushError, match="outside 'staging/'"):
+            await push_run(client, other, store=store, create_dataset=True)
+
+
+@pytest.mark.asyncio
+async def test_nul_characters_are_replaced_on_push(
+    base_url: str, tmp_path: Path
+) -> None:
+    async def with_nul(problem: Problem) -> str:
+        return f"page\x00{problem.a}" if problem.a % 2 else str(problem.a)
+
+    @scorer(name="kept")
+    def kept(ctx: ScoreContext[Problem, str, int]) -> Score:
+        return Score(name="kept", value=True, explanation=f"saw {ctx.output}")
+
+    dataset = Dataset(
+        [
+            Example(id=f"p{i}", input=Problem(a=i, b=1), metadata={"note": "x\x00y"})
+            for i in range(4)
+        ],
+        name=_name("nul"),
+    )
+    store = LocalRunStore(tmp_path / "evals")
+    run = await evaluate(FunctionTask(with_nul), dataset, [kept], store=store)
+    async with PhoenixClient(base_url) as client:
+        link = await push_run(client, run, store=store, create_dataset=True)
+        assert link.altered_trials == ["p1#0", "p3#0"]
+        assert link.experiment_id is not None
+        outputs = sorted(
+            str(r["output"]) for r in await _task_runs(client, link.experiment_id)
+        )
+        assert f"page{NUL_REPLACEMENT}1" in outputs
+        # A second run on the same local dataset attaches to the scrubbed rows.
+        again = await evaluate(FunctionTask(with_nul), dataset, [kept], store=store)
+        relinked = await push_run(client, again, store=store)
+        assert relinked.dataset_id == link.dataset_id
+        assert store.load(run.id).phoenix == link
+
+
+@pytest.mark.asyncio
+async def test_every_push_refreshes_the_experiment_and_keeps_foreign_keys(
+    base_url: str, tmp_path: Path
+) -> None:
+    store = LocalRunStore(tmp_path / "evals")
+    run = await evaluate(
+        FunctionTask(add), _dataset(_name("refresh")), [exact], store=store
+    )
+    async with PhoenixClient(base_url) as client:
+        link = await push_run(client, run, store=store, create_dataset=True)
+        assert link.experiment_id is not None
+        experiment = await client.get_experiment(link.experiment_id)
+        assert "pass_rate(exact) = 0.75" in experiment["description"]
+        # Someone links a preview page on Phoenix.
+        await client.update_experiment(
+            link.experiment_id,
+            metadata={**experiment["metadata"], "preview": "https://example.com/p"},
+        )
+        annotated = annotate_run(
+            run.id,
+            links={"report": "https://example.com/report"},
+            notes=["judge v2"],
+            store=store,
+        )
+        annotated.description = "Does it add?"
+        await push_run(client, annotated, store=store)
+        refreshed = await client.get_experiment(link.experiment_id)
+        assert refreshed["description"].startswith("Does it add? — ")
+        metadata = refreshed["metadata"]
+        assert metadata["preview"] == "https://example.com/p"
+        assert metadata["links"] == {"report": "https://example.com/report"}
+        assert metadata["notes"] == ["judge v2"]
+        assert metadata["grasp_run_id"] == run.id
+
+
+_TRACED_MODULE = """
+from grasp_agents.evals import Dataset, Evaluation, Example, FunctionTask, scorer
+
+
+async def add(x: int) -> int:
+    return x + 1
+
+
+@scorer
+def exact(ctx) -> bool:
+    return ctx.output == ctx.reference
+
+
+traced = Evaluation(
+    name="traced",
+    task=FunctionTask(add),
+    dataset=Dataset([Example(id=f"t{i}", input=i, reference=i + 1) for i in range(3)]),
+    scorers=[exact],
+)
+"""
+
+
+@pytest.mark.asyncio
+async def test_run_trace_sends_trials_to_the_named_project(
+    base_url: str, tmp_path: Path
+) -> None:
+    project = _name("traced")
+    store, run = await asyncio.to_thread(_traced_run, base_url, tmp_path, project)
+    assert run.trace_project == project
+    async with PhoenixClient(base_url) as client:
+        for trial in run.trials:
+            assert trial.trace_id is not None
+            found = None
+            for _ in range(20):
+                found = await client.trace_project(trial.trace_id)
+                if found is not None:
+                    break
+                await asyncio.sleep(0.5)
+            assert found == project
+
+
+def _traced_run(
+    base_url: str, tmp_path: Path, project: str
+) -> tuple[LocalRunStore, Any]:
+    spec = tmp_path / "traced_evals.py"
+    spec.write_text(_TRACED_MODULE)
+    root = tmp_path / "evals"
+    result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+        [sys.executable, "-m", "grasp_agents.evals", "--root", str(root), "run"]
+        + [f"{spec}:traced", "--trace", project, "-q"],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "TELEMETRY_COLLECTOR_HTTP_ENDPOINT": f"{base_url}/v1/traces",
+        },
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    store = LocalRunStore(root)
+    return store, store.load(store.resolve("latest"))
+
+
+async def _project_names(client: PhoenixClient) -> set[str]:
+    body = await client.request_json(
+        "GET", "v1/projects", params={"include_experiment_projects": "true"}
+    )
+    return {str(p["name"]) for p in body["data"]}
+
+
+@pytest.mark.asyncio
+async def test_pushes_leave_no_empty_projects_and_report_trace_retention(
+    base_url: str, tmp_path: Path
+) -> None:
+    project = _name("kept")
+    store, run = await asyncio.to_thread(_traced_run, base_url, tmp_path, project)
+    async with PhoenixClient(base_url) as client:
+        for _ in range(20):
+            if await client.trace_project(run.trials[0].trace_id) == project:
+                break
+            await asyncio.sleep(0.5)
+        run.dataset.name = _name("traced")
+        link = await push_run(client, run, store=store, create_dataset=True)
+        assert link.experiment_id is not None
+        experiment = await client.get_experiment(link.experiment_id)
+        assert experiment["project_name"] not in await _project_names(client)
+        assert link.trace_project == project
+        assert link.trace_retention == "kept indefinitely (policy 'Default')"
+
+        data = await client.graphql(
+            "query($n: String!) { getProjectByName(name: $n) { id } }", {"n": project}
+        )
+        await client.graphql(
+            "mutation($input: CreateProjectTraceRetentionPolicyInput!) "
+            "{ createProjectTraceRetentionPolicy(input: $input) { node { id } } }",
+            {
+                "input": {
+                    "name": _name("four-days"),
+                    "cronExpression": "0 0 * * 0",
+                    "rule": {"maxDays": {"maxDays": 4}},
+                    "addProjects": [data["getProjectByName"]["id"]],
+                }
+            },
+        )
+        again = await push_run(client, store.load(run.id), store=store)
+        assert again.trace_retention is not None
+        assert again.trace_retention.startswith("kept for 4 days")
+
+        assert await delete_experiment(client, store.load(run.id), store=store)
+        assert store.load(run.id).phoenix is None
+        assert experiment["project_name"] not in await _project_names(client)
+        relinked = await push_run(client, store.load(run.id), store=store)
+        assert relinked.experiment_id is not None
+        assert relinked.experiment_id != link.experiment_id
+        second = await client.get_experiment(relinked.experiment_id)
+
+        deleted = await delete_dataset(client, run.dataset.name)
+        assert deleted.deleted == 3
+        assert await client.find_dataset(run.dataset.name) is None
+        assert second["project_name"] not in await _project_names(client)
+        # The tracing project and its traces stay.
+        assert project in await _project_names(client)
+        for trial in run.trials:
+            assert trial.trace_id is not None
+            assert await client.trace_project(trial.trace_id) == project
+
+
+def test_labels_go_into_and_come_out_of_phoenix(
+    base_url: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = LocalRunStore(tmp_path / "evals")
+    run = asyncio.run(
+        evaluate(
+            FunctionTask(add), _dataset(_name("labeled"), n=8), [exact], store=store
+        )
+    )
+    root = str(store.root)
+    into = f"phoenix:{base_url}/{_name('labels')}"
+
+    def sample(n: int, *excluded: str) -> list[dict[str, Any]]:
+        path = tmp_path / f"to_label_{n}_{len(excluded)}.jsonl"
+        args = ["--root", root, "labels", "sample", run.id, "-n", str(n), "-o"]
+        args += [str(path), *(a for e in excluded for a in ("--exclude", e))]
+        assert main(args) == 0
+        capsys.readouterr()
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def label(records: list[dict[str, Any]], name: str) -> Path:
+        path = tmp_path / name
+        write_records([{**r, "reference": True} for r in records], path)
+        return path
+
+    first = sample(3)
+    filled = str(label(first, "a.jsonl"))
+    assert main(["labels", "import", filled, "--into", into]) == 2
+    assert main(["labels", "import", filled, "--into", into, "--create-dataset"]) == 0
+    imported = json.loads(capsys.readouterr().out)
+    assert imported["added"] == 3
+    pinned = imported["ref"]
+    assert pinned.startswith(into + "@")
+    second = sample(3, pinned)
+    assert {r["id"] for r in second}.isdisjoint({r["id"] for r in first})
+    more = label(second, "b.jsonl")
+    assert main(["labels", "import", str(more), "--into", pinned]) == 0
+    merged = json.loads(capsys.readouterr().out)
+    assert (merged["added"], merged["total"]) == (3, 6)
+    assert merged["ref"] != pinned
+    # The first version is no longer the latest: importing on it is refused.
+    extra = label(sample(1, merged["ref"]), "c.jsonl")
+    assert main(["labels", "import", str(extra), "--into", pinned]) == 2
+    assert "is at version" in capsys.readouterr().err
+
+
+def test_datasets_pull_writes_nothing_under_the_working_directory(
+    base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name = _name("cached")
+
+    async def push() -> None:
+        async with PhoenixClient(base_url) as client:
+            await push_dataset(client, _dataset(name))
+
+    asyncio.run(push())
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    monkeypatch.delenv("GRASP_EVALS_DIR", raising=False)
+    monkeypatch.delenv("GRASP_EVALS_CACHE_DIR", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    assert main(["datasets", "pull", f"{base_url}/{name}", "--json"]) == 0
+    assert list(work.iterdir()) == []
+    assert list((tmp_path / "xdg" / "grasp-evals").rglob("*.jsonl"))
 
 
 # --- Labels from human annotations ---

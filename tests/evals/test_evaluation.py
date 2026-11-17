@@ -17,6 +17,8 @@ from grasp_agents.evals import (
     list_evaluations,
     load_evaluation,
     load_object,
+    render_run_markdown,
+    run_summary,
     scorer,
 )
 
@@ -292,3 +294,69 @@ class TestSpecNames:
         assert evaluation is spec_module.spec
         judges = importlib.import_module(f"judges_{stem}")
         assert judges.Grade is spec_module.Grade
+
+
+class TestSealedByDefault:
+    @staticmethod
+    def _evaluation() -> Evaluation:
+        data = Dataset(
+            [
+                Example(
+                    id=f"s{i}",
+                    input=i,
+                    reference=i,
+                    splits=["test"] if i >= 2 else ["dev"],
+                )
+                for i in range(4)
+            ],
+            name="sealed",
+        )
+
+        async def echo(x: int) -> int:
+            return x
+
+        return Evaluation(
+            name="sealed", task=FunctionTask(echo), dataset=data, sealed_splits=["test"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_run_without_a_split_leaves_sealed_splits_out(self) -> None:
+        evaluation = self._evaluation()
+        run = await evaluation.run(persist=False)
+        assert sorted(t.example_id for t in run.trials) == ["s0", "s1"]
+        assert run_summary(run)["dataset"]["sealed_left_out"] == ["test"]
+        assert "Left out:** sealed splits test" in render_run_markdown(run)
+
+    @pytest.mark.asyncio
+    async def test_naming_or_including_a_sealed_split_runs_it_whole(self) -> None:
+        evaluation = self._evaluation()
+        named = await evaluation.run(split="test", persist=False)
+        assert sorted(t.example_id for t in named.trials) == ["s2", "s3"]
+        assert all(t.sealed for t in named.trials)
+        included = await evaluation.run(include_sealed=True, persist=False)
+        assert len(included.trials) == 4
+        assert run_summary(included)["dataset"]["sealed_left_out"] == []
+        with pytest.raises(DatasetError, match="not in the selected subset"):
+            await evaluation.run(ids=["s2"], persist=False)
+
+
+@pytest.mark.asyncio
+async def test_an_evaluation_declares_descriptive_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "data.jsonl"
+    path.write_text(
+        '{"id": "a", "input": 1, "reference": 1, "metadata": {"note": "x"}}\n'
+    )
+
+    async def echo(x: int) -> int:
+        return x
+
+    evaluation = Evaluation(
+        name="echo",
+        task=FunctionTask(echo),
+        dataset=path,
+        descriptive_metadata=["note"],
+    )
+    run = await evaluation.run(persist=False)
+    assert run.dataset.descriptive_metadata == ["note"]
+    reworded = Dataset.load(path).with_descriptive_metadata(["note"])
+    assert run.examples[0].content_hash == reworded["a"].content_hash

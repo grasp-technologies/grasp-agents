@@ -1,6 +1,6 @@
 # Evaluations
 
-`grasp_agents.evals` measures a processor (or any async function) against a
+`grasp_agents.evals` measures a processor (or any function) against a
 dataset: run it on every example, score each output with scorers, aggregate
 with metrics, and compare runs. Every run is an append-only record on disk that
 never changes once completed; rescoring, retrying and pairwise judging create
@@ -16,8 +16,9 @@ them. The `grasp-evals` CLI drives the same API from the shell.
 | `Dataset` | `evals/dataset.py` | Load (`.jsonl`, `.json`, `.yaml`), select, split, sample, check, save |
 | `Task`, `ProcessorTask`, `FunctionTask` | `evals/task.py` | The system under test |
 | `Scorer`, `@scorer`, `ScoreContext`, `Score` | `evals/scorer.py`, `evals/types.py` | Per-trial judgments |
-| `Metric` (`PassRate`, `PassAtK`, `PassHatK`, `Mean`, `Percentile`, `ErrorRate`, `CohenKappa`, …) | `evals/metrics.py` | Aggregates with intervals |
-| `evaluate`, `rescore` | `evals/runner.py` | Run / re-score |
+| `Metric` (`PassRate`, `PassAtK`, `PassHatK`, `Mean`, `Pooled`, `Percentile`, `ErrorRate`, `CohenKappa`, …) | `evals/metrics.py` | Aggregates with intervals |
+| `evaluate`, `rescore`, `close_run` | `evals/runner.py` | Run / re-score / finalize a run whose process died |
+| `import_outputs`, `ImportedTrial`, `read_outputs` | `evals/imported.py` | Score outputs produced elsewhere as a run |
 | `Evaluation` | `evals/evaluation.py` | An importable, CLI-runnable definition |
 | `EvaluationRun`, `Trial` | `evals/types.py` | The run record |
 | `RunStore`, `LocalRunStore` | `evals/store.py` | Persistence |
@@ -25,6 +26,7 @@ them. The `grasp-evals` CLI drives the same API from the shell.
 | `pairwise`, `PairwiseJudge`, `FunctionPairwiseJudge` | `evals/pairwise.py` | A/B judging, both orders |
 | `ProcessorScorer`, `judge_validation`, `judge_probes`, `ValidationGate`, `Perturbation` | `evals/judge.py`, `evals/validation.py` | Judges and their validation |
 | `sample_for_labeling`, `import_labels`, `judged_outputs` | `evals/labeling.py` | Label collection |
+| `PhoenixRef`, `parse_phoenix_ref`, `load_phoenix_dataset` | `evals/evaluation.py` | Phoenix dataset references |
 
 Nothing here is exported from the root package; import from `grasp_agents.evals`.
 
@@ -40,13 +42,21 @@ A dataset file holds one example per line (JSONL) or a list (JSON/YAML):
 Give curated examples explicit, stable ids: runs pair and resume by id. A
 missing `id` defaults to a hash of the input. Each example also carries a
 `content_hash` of its stored record; two runs pair an example only when its
-content is unchanged. `Dataset.load(path, input_type=, reference_type=)`
+content is unchanged. Metadata keys that nothing reads (provenance notes,
+descriptions) can be declared descriptive — `Evaluation(descriptive_metadata=
+["source", "check"])`, `Dataset(..., descriptive_metadata=...)` or
+`dataset.with_descriptive_metadata(...)` — and are then left out of the
+content hash; runs record them, and `compare` and `pairwise` leave the keys
+either run declared out when pairing, also against runs made before the
+declaration. `Dataset.load(path, input_type=, reference_type=)`
 validates records against your types. `dataset_checks` on an `Evaluation` are
 integrity functions (`example -> problem message | None`) run before every run.
 
 ## Tasks
 
-`evaluate` accepts a `Task`, any `Processor`, or an async function. A
+`evaluate` accepts a `Task`, any `Processor`, or a function — async, or plain,
+which `FunctionTask` runs in a worker thread so it does not block other trials
+(concurrent trials then call it from several threads at once). A
 `ProcessorTask(processor_or_factory, version=, ctx_factory=, input_mode=,
 input_fn=, output_fn=, output_type=)` runs each trial in its own
 `SessionContext`, with that session ambient for the whole trial:
@@ -84,6 +94,33 @@ task's `events`, the trial's `session` (for state-mutating tasks) and
 thread. Bump `version` whenever a scorer's semantics change: runs are
 comparable only under the same scorer versions.
 
+A scorer's identity (`describe()`) also covers its code — its function or
+class without docstrings, comments or layout, and, followed a few levels
+deep, the user code it reaches: helpers and classes it calls (through modules
+too, `pkg.sub.norm`), base classes, decorators, and the values it is bound
+with (defaults, closures, class attributes, public attributes of objects it
+uses, module globals) — and anything listed in `identity=[...]`: strings (a
+prompt, a model id), `Path`s (a prompt or rubric file, or a directory, caches
+and hidden files aside), functions. Constants, compiled patterns and frozen
+records count by value, and so do lists, dicts and sets of plain data under a
+constant's name (`RUBRIC`, `_WORDS`); other mutable values (caches, clients)
+count by type only. Library code (grasp-agents, installed packages, the
+standard library) counts by name, so upgrading it changes nothing. A change
+to any of these makes `rescore` run the scorer again, voids judge
+validations and is flagged by `compare`. Code whose source cannot be read
+(compiled from a string) records `source="unknown"`, which never matches. `lower_is_better=True` (or a set of score names) marks
+scores whose lower values are better, such as a defect share;
+`Mean(..., higher_is_better=False)` does the same from a metric, also for
+recorded measurements. Runs record each score's direction in
+`EvaluationRun.directions`.
+
+A share over a varying number of items (the headings on a page) can carry
+that number as its weight, `Score(name=..., value=share, weight=n_items)`:
+`Pooled(name)` (added by default for weighted scores that are not pass/fail)
+reports the share over all items, `Σ value·weight / Σ weight`, where `Mean`
+weighs a page with two items like one with forty. Each example's repetitions
+are averaged first, and the interval comes from a linearized standard error.
+
 ## Running
 
 ```python
@@ -108,15 +145,19 @@ defaults are picked from the scores produced.
 An `Evaluation(name=, task=, dataset=, scorers=, metrics=, input_type=,
 reference_type=, repetitions=, sealed_splits=, dataset_checks=,
 validation_gates=, ...)` packages all of this. `task` may be a factory and
-`dataset` a path, a `phoenix:NAME[@VERSION]` reference or a loader, so
+`dataset` a path, a Phoenix reference or a loader, so
 importing a definition builds no clients. Run it with `await ev.run(split=...)`
 or `grasp-evals run module_or_file.py:attr`.
 
-**Sealed splits.** For a split listed in `sealed_splits`, reports, `show`,
-`compare` and Phoenix pushes give only aggregates, and a run touching the split
-must include all of it (no `--ids`, `--limit` or `--sample` inside it). This
-keeps an agent iterating through the CLI from fitting to held-out examples. It
-is not access control: the dataset file and run records contain the examples.
+**Sealed splits.** A split listed in `sealed_splits` is left out of a run
+unless the selection names it (`--split test`, `dataset.split("test")`) or the
+run opts in (`--include-sealed`, `include_sealed=True`); the run report and
+`run_summary` (`dataset.sealed_left_out`) say which sealed splits were left
+out. When a sealed split is run, reports, `show`, `compare` and Phoenix pushes
+give only aggregates, and the run must include all of it (no `--ids`,
+`--limit` or `--sample` inside it). This keeps an agent iterating through the
+CLI from fitting to held-out examples. It is not access control: the dataset
+file and run records contain the examples.
 
 ## Runs and storage
 
@@ -131,7 +172,13 @@ runs/<run_id>/transcripts.jsonl  per-trial event streams
 runs/<run_id>/report.md
 ```
 
-`EvaluationRun.kind` is `evaluation`, `rescore`, `pairwise` or `retry`. A run
+The default `./.evals` is relative to the current directory; creating it
+inside a git repository that does not ignore it logs a warning. Pulled
+Phoenix datasets are cached outside it, per user: `$GRASP_EVALS_CACHE_DIR`,
+else `$XDG_CACHE_HOME/grasp-evals`, else `~/.cache/grasp-evals`.
+
+`EvaluationRun.kind` is `evaluation`, `rescore`, `pairwise`, `retry` or
+`import`. A run
 records provenance (git commit/branch/dirty state, source hashes, Python and
 package versions, observed models). `evaluate(..., resume=run)` continues an
 unfinished run in place, or retries a completed run's failed trials in a new
@@ -139,10 +186,38 @@ unfinished run in place, or retries a completed run's failed trials in a new
 resume must use the same task identity, scorers, selection and repetitions;
 that cannot be forced. It is also refused when the git commit or diff of the
 repository containing the current directory changed (any file, not only the
-task's) or when the task's or scorers' source files changed; `force=True`
-overrides those two checks. A model that the run never used stops the resume. `rescore(run, scorers)` scores stored outputs again in a child run;
-unchanged scorers keep their scores. Runs are addressed by id, unique id prefix,
-run directory, `latest` or `latest:<name>`.
+task's), when the task's or scorers' source files changed, or when a run left
+`running` may still be running in its process (alive on this host, or on
+another host); `force=True` overrides those three checks. A model that the
+run never used stops the resume.
+`rescore(run, scorers)` scores stored outputs again in a child run; unchanged
+scorers keep their scores. `split=` and `ids=` make a child of those
+examples' trials only; `dataset=` scores the outputs against another version
+of the dataset, pairing examples by id where the input is unchanged (the
+child records that version and its splits, and lists unpaired examples in
+`metadata["unpaired"]`). Only the given scorers count then (the parent's
+others are listed in `metadata["dropped_scorers"]`); a sealed split is scored
+only when the parent ran it and all of its examples pair. Runs are addressed
+by id, unique id prefix, run directory, `latest` or `latest:<name>`.
+
+A run records the process executing it (`EvaluationRun.process`: host, pid).
+Ctrl-C, SIGTERM and SIGHUP end a CLI run `cancelled`; a second SIGTERM or
+SIGHUP ends the process at once. A run whose process was
+killed outright stays `running`; `close_run(run)` (`grasp-evals close RUN`)
+finalizes it from its stored trials as `partial` (or `completed`), which
+`rescore`, `push` and `resume` accept. It refuses while the process still runs
+on this host, or when that cannot be told (another host, an older run),
+unless forced.
+
+**Outputs produced elsewhere** (another agent, a person, a vendor) become a
+run with `import_outputs(records, dataset, scorers, task=...)`,
+`Evaluation.import_outputs(path)` or `grasp-evals import SPEC FILE`. Each
+`ImportedTrial` (one JSONL line) carries `example_id`, `repetition`, `output`
+or `error`, and optionally `duration_s`, `cost_usd`, `usage`, `models`,
+`measurements`, `trace_id` and `started_at`. The run (`kind="import"`) is
+scored as a rescore scores stored outputs, on the selection a run would make,
+so it compares, pairs and pushes like any run; its task is identified only by
+the `task` name, version and config you give.
 
 ## Comparing
 
@@ -152,9 +227,18 @@ paired difference with a confidence interval and a p-value. Exact McNemar is
 used only when every paired per-example value is 0 or 1 and nothing is
 clustered; with repetitions > 1 or `cluster_by` it is a paired (or clustered)
 t-test. `significant` reads the Holm-adjusted p-value. Task errors count as
-failures of pass/fail scores. Default targets are the numeric scores present
-in both runs, so a score that is missing from the candidate is not compared
-unless named.
+failures of pass/fail scores. Each score is read in the direction the runs
+recorded (a score they disagree on is left out). Default targets are the
+numeric scores present in both runs; a score of the base run that the
+candidate lacks is listed in `missing_scores` and fails the default
+regression gate. A score both runs weigh (other than a pass/fail score) is
+compared on pooled values, with a linearized interval and a paired sign-flip
+randomization test over examples or clusters (`test="pooled_randomization"`,
+exact up to 12 of them). `where={key: value}` keeps the examples whose
+metadata matches, compared as JSON text (`"2024"` matches `2024`; `True` does
+not match `1`), and `group_by=key` adds a `GroupComparison` per value in
+`groups`, Holm-adjusted across all groups. Sealed examples are left out of
+both, so a filter cannot single one out.
 
 `pairwise(base, candidate, judge)` asks a `PairwiseJudge` which of two outputs
 is better. The judge sees them only as `first` and `second`; with
@@ -172,7 +256,9 @@ A judge is validated like any other system:
   the judge to labeled outputs and reports accuracy, Cohen's κ, TPR, TNR and
   the confusion matrix per split, with intervals clustered on the original
   example. Labels are `JudgedOutput` records whose `reference` is the correct
-  verdict.
+  verdict. With `against=<the judged dataset>`, a label whose example is gone
+  or whose input or reference changed since it was labeled stops the run
+  (`Evaluation.judged_dataset`).
 - `judge_probes(judge, items, perturbations)` checks sensitivity and invariance
   without labels: each `Perturbation(name, apply, expect="lower" | "changed" |
   "same")` changes an output and states what must happen to the verdict.
@@ -184,11 +270,17 @@ A judge is validated like any other system:
   of its labels, meets the thresholds (lower interval bound by default). A
   changed judge (version, prompt, model, settings, code) needs a new validation.
   Gated scores also report a pass rate corrected for the judge's measured error
-  rates (`CorrectedPassRate`). The check raises `UnvalidatedJudgeError`
+  rates (`CorrectedPassRate`). A judge's prompt file, or a prompt or model it
+  reads from elsewhere, belongs in its `identity=[...]` so a change to it
+  needs a new validation too. The check raises `UnvalidatedJudgeError`
   (`--allow-unvalidated` overrides; a `--no-score` run skips the check).
 - `sample_for_labeling(run, n, score=, against=)` picks outputs worth labeling
   (disagreements with a cheaper check first, never sealed trials);
   `import_labels(paths, into)` merges filled-in files with labeler and time.
+  On the CLI, `labels sample --exclude` and `labels import --into` also take
+  a Phoenix labels dataset (`phoenix:[URL/]NAME[@VER]`): the import pushes a
+  new version based on the given one and prints the reference to pin. A
+  missing labels dataset is created only with `--create-dataset`.
 
 ## The `grasp-evals` CLI
 
@@ -196,15 +288,19 @@ A judge is validated like any other system:
 
 | Command | Does |
 |---|---|
-| `run SPEC [--split --ids --sample --limit -r -c --timeout --max-cost --resume --baseline --fail-under M=V --fail-on-regression --push]` | run an `Evaluation` |
-| `rescore RUN [--spec SPEC --rerun --allow-unvalidated]` | score stored outputs again (`--spec` defaults to the run's recorded spec) |
+| `run SPEC [--split --ids --sample --limit --include-sealed -r -c --timeout --max-cost --resume --baseline --fail-under M=V --fail-on-regression --trace PROJECT --push]` | run an `Evaluation` |
+| `rescore RUN [--spec SPEC --split --ids --dataset --rerun --allow-unvalidated]` | score stored outputs again (`--spec` defaults to the run's recorded spec) |
+| `close RUN [--spec SPEC --force]` | finalize a run whose process is gone |
+| `annotate RUN [--link NAME=URL --note TEXT --remove-link NAME]` | add links and notes to a run |
+| `import SPEC FILE [--task NAME --task-version V --split --ids ...]` | score outputs produced elsewhere as a run |
 | `show RUN [--failures --trials --outputs --example ID]` | inspect a run |
-| `compare BASE CANDIDATE [--fail-on-regression --gate T --min-effect X]` | paired comparison |
+| `compare BASE CANDIDATE [--where K=V --group-by K --fail-on-regression --gate T --min-effect X]` | paired comparison |
 | `pairwise BASE CANDIDATE --judge MODULE:ATTR [--one-order]` | A/B judging |
 | `runs`, `list MODULE` | list runs / evaluations |
-| `datasets {schema, validate, show, pull, push}` | dataset utilities |
+| `datasets {schema, validate, show, pull, push, delete}` | dataset utilities |
+| `experiments delete RUN` | delete a run's Phoenix experiment |
 | `labels {sample, import, pull, show}` | label collection |
-| `push RUN` | mirror a finished run to Phoenix |
+| `push RUN [--dataset NAME --create-dataset]` | mirror a finished run to Phoenix |
 
 Every command accepts `--json` (one JSON document on stdout, errors included);
 progress goes to stderr (`--progress json` for one object per trial).
@@ -215,24 +311,72 @@ progress goes to stderr (`--progress json` for one object per trial).
 | 1 | a gate failed: invalid or incomplete run, missed `--fail-under`, significant regression, unvalidated judge; `datasets validate` found problems |
 | 2 | usage error: bad arguments, spec, dataset file or run reference; dataset problems found by `run`; resume refused |
 | 3 | unexpected error, or Phoenix failed |
+| 130, 143, 129 | interrupted (Ctrl-C), or stopped by SIGTERM or SIGHUP: the run is finalized `cancelled` |
 
 ## Phoenix
 
 With the `phoenix` extra and `PHOENIX_BASE_URL` (plus `PHOENIX_API_KEY`) set,
-datasets can be pushed to and pulled from Phoenix (`phoenix:NAME[@VERSION]`
-dataset references), runs are mirrored as experiments (`push`; sealed trials
-are withheld, and a run on one split gets an experiment over that split), and `labels pull` reads human annotations of traced trials back
-as labels. Phoenix 20.0 or later is required; older servers raise
-`PhoenixCompatibilityError`. To give trials trace ids, initialize tracing in
-the spec module (`init_tracing` + `init_phoenix`; see
-[Observability](observability.md)).
+datasets can be pushed to and pulled from Phoenix, runs are mirrored as
+experiments (`push`; sealed trials are withheld, and a run on one split gets
+an experiment over that split), and `labels pull` reads human annotations of
+traced trials back as labels.
+
+A dataset reference is `phoenix:[https://HOST/]NAME[@VERSION]`, or a
+`PhoenixRef(name, version, base_url)`. A version id only means something on
+the server that issued it, so a pinned reference should name its server: the
+server a reference names wins over `PHOENIX_BASE_URL` (and conflicts with a
+different `--base-url`). A server under a URL path is left out of the
+references grasp-evals prints (the reader names it with `--base-url` or
+`PHOENIX_BASE_URL`). `PHOENIX_API_KEY` is sent only to `PHOENIX_BASE_URL`'s
+server, or to any server when that is unset; the same rule holds for the
+trace exporter. A server is never taken from a run's stored link. Pinned
+versions are cached per server and pulled once. `load_phoenix_dataset` and
+`parse_phoenix_ref` are exported for loaders of your own.
+
+Every push refreshes the experiment's description (the question, status
+and headline metrics) and metadata, merging into what Phoenix holds, so keys
+added there survive; a run's own `links` and `notes` (`annotate_run`,
+`grasp-evals annotate`) go into that metadata. Every push deletes the empty
+project Phoenix creates for each experiment if it is still there (a failure
+only warns): trials' traces stay in their tracing project, and push reports
+that project's retention policy
+(`run.phoenix.trace_retention`), warning when it will delete the traces the
+experiment links to. `grasp-evals experiments delete RUN` and `datasets
+delete NAME --yes` (`delete_experiment`, `delete_dataset`) remove
+experiments and datasets with their projects.
+
+`push` attaches a run to the dataset its examples were pulled from, or to a
+Phoenix dataset (`--dataset NAME`, default the run's dataset name) that holds
+exactly its examples; it creates a missing dataset only with
+`--create-dataset`. A run already pushed to this server keeps its experiment
+(`--dataset` must name the dataset it is linked to; delete the experiment to
+move it). `GRASP_EVALS_DATASET_PREFIX` keeps push and
+`datasets push` inside one namespace. NUL characters, which Phoenix's
+PostgreSQL store rejects, are replaced with U+FFFD in everything pushed
+(`run.phoenix.altered_trials` lists the trials affected). Trial posts that
+Phoenix deduplicates are retried on gateway errors, and a failure names the
+trial; a 5xx from the server, or no response, is `PhoenixUnavailableError`.
+Scores are posted without trace ids (Phoenix would delete the traces with
+the dataset); the trials' runs link the traces. Phoenix 20.0 or
+later is required; older servers raise `PhoenixCompatibilityError`.
+
+Trials get trace ids only while tracing is on:
+`grasp-evals run --trace PROJECT` (or `$GRASP_EVALS_TRACE_PROJECT`;
+`grasp_agents.evals.tracing.start_tracing` in Python) sets it up before the
+first trial, sending to `TELEMETRY_COLLECTOR_HTTP_ENDPOINT` or
+`$PHOENIX_BASE_URL/v1/traces`; tracing the spec module set up itself
+(`init_tracing` + `init_phoenix`, see [Observability](observability.md)) wins.
+Runs record the project in `trace_project`, and `push` notes a run without
+trace ids.
 
 ## Contracts
 
 1. A completed run's trials and results are never modified; retries and
    rescoring create child runs (`EvaluationRun.parent_run_id`). `push` only adds
-   the Phoenix link and digests to `run.json`.
-2. Examples pair across runs only by id with an unchanged `content_hash`.
+   the Phoenix link and digests to `run.json`, and `annotate_run` only its
+   `links` and `notes`.
+2. Examples pair across runs only by id with unchanged content (declared
+   descriptive metadata keys aside).
 3. Unscored values are never counted as numbers in metrics.
 4. A run that includes a sealed split includes all of it.
 5. A gated score is never computed by a judge that did not pass its gate,
@@ -245,7 +389,8 @@ the spec module (`init_tracing` + `init_phoenix`; see
   Return `bool` for pass/fail, and always read `error_rate`.
 - A run is invalid only when no trial ran, every trial failed, or
   `max_error_rate` is exceeded; set `max_error_rate` to fail on errors.
-- A run without `--split` includes sealed splits in its headline metrics.
+- A run without `--split` leaves sealed splits out; a judge validation counts
+  for its gate only once it ran the sealed split (`--split test`).
 - In an `Evaluation`, pass `task=FunctionTask(fn)`: a bare function is treated
   as a zero-argument factory.
 - Bare `rescore()` and `pairwise()` re-validate stored outputs only with
@@ -258,12 +403,17 @@ The `evals` skill in `.claude/skills/evals/` lists these and more, with fixes.
 
 ## Limitations
 
-- Only offline evaluation of runs started by the framework; traces produced
-  elsewhere are not scored.
+- Only offline evaluation. Outputs produced elsewhere can be imported
+  (`import_outputs`), but traces are not read back into runs.
 - LLM calls are not recorded for replay; rerunning a task calls the models
   again.
 - Trials share the host: no per-trial sandbox or environment is created unless
   your `ctx_factory` builds one.
+- Code identity reads source files when a scorer is described, so a file
+  edited without reloading the module counts as changed. User code installed
+  into site-packages (a non-editable install) counts as library code: by
+  name only. Code reached through dynamic lookups (`getattr`, a registry) is
+  not followed.
 
 ## See also
 

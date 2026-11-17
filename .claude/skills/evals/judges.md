@@ -7,10 +7,14 @@ Code: `evals/judge.py`, `evals/validation.py`, `evals/labeling.py`, `evals/pairw
 ## An LLM judge as a scorer
 
 ```python
+from pathlib import Path
+
 from pydantic import BaseModel
 
 from grasp_agents import LLMAgent
 from grasp_agents.evals import JudgedOutput, ProcessorScorer, Score
+
+PROMPT_FILE = Path(__file__).parent / "prompts" / "specific.md"
 
 
 class Verdict(BaseModel):
@@ -24,7 +28,7 @@ Judged = JudgedOutput[Submission, Grade, TeacherGrade]
 
 def build_judge() -> LLMAgent[Judged, Verdict, None]:
     return LLMAgent[Judged, Verdict, None](
-        name="feedback_judge", llm=make_llm(), sys_prompt="Is the feedback specific?"
+        name="feedback_judge", llm=make_llm(), sys_prompt=PROMPT_FILE.read_text()
     )
 
 
@@ -36,7 +40,7 @@ judge = ProcessorScorer(
     build_judge,
     name="specific",
     version="1",
-    config={"model": "<model id>", "prompt": "v1"},  # a factory judge has no fingerprint
+    identity=[PROMPT_FILE],  # a factory judge reads it at run time: declare it
     to_scores=to_scores,
 )
 ```
@@ -48,7 +52,7 @@ judge = ProcessorScorer(
 | Isolation | Each call runs a fresh copy (or a factory product) in its own session |
 | Usage | Goes to `trial.scorer_usage[<judge name>]`, not `trial.usage`. It counts toward `cost_usd`, the budget and `run.usage`, but not the token measures. Models land in `trial.models` |
 | Failure | A raise, or a verdict that does not parse, is a scorer failure. Rescore retries it |
-| Identity | `describe().fingerprint` covers a template's models, settings, prompts, output schema and tools. `describe().source` covers the code of `to_input`, `to_scores`, custom classes, hooks and tool functions. Any change makes rescore re-run the judge and voids earlier validations. A factory-built judge has no fingerprint, so put its model and prompt version in `version` or `config` |
+| Identity | `describe().fingerprint` covers a template's models, settings, prompts, output schema and tools, plus the declared `identity=[...]` parts (strings, `Path`s hashed by content, functions). `describe().source` covers the code of `to_input`, `to_scores`, a factory, custom classes, hooks and tool functions, with the user code they reach (helpers, decorators, base classes, defaults, module constants). Any change makes rescore re-run the judge and voids earlier validations. A factory-built judge has no fingerprint: a prompt it reads from a module constant is covered through the factory's code, a prompt file only through `identity` |
 | Load | All scorers of a trial run concurrently, so judge calls in flight = trials in flight (`concurrency`) × judges. A pairwise judge makes 2 calls per pair |
 | Timeouts | None, unless the `Evaluation` sets `scorer_timeout_s` |
 
@@ -66,7 +70,8 @@ from grasp_agents.evals import judge_validation
 
 judge_v1_validation = judge_validation(  # an Evaluation: define it in a spec module
     judge,
-    LABELS,  # a path, "phoenix:NAME[@VER]", a Dataset or a loader
+    LABELS,  # a path, "phoenix:https://HOST/NAME@VER", a Dataset or a loader
+    against=DATA,  # the dataset the labeled outputs answer: refuses outdated labels
     input_type=Submission,  # the judged evaluation's types, so the judge sees typed values
     output_type=Grade,
     reference_type=TeacherGrade,
@@ -84,7 +89,8 @@ The loop:
 | Point | Behavior |
 |---|---|
 | Splits | It needs a `test` split by default (`sealed_splits=("test",)`); otherwise `ValueError`, even with `--split dev`. Pass `sealed_splits=()` when the labels have no test split |
-| Which run counts | Only runs with sealed (test) trials count for gates. A run *without* `--split` includes the test split, so it counts as the final test run |
+| Which run counts | Only runs with sealed (test) trials count for gates: `--split test` (or `--include-sealed`). A run without `--split` leaves the test split out |
+| Outdated labels | With `against=`, a label whose `metadata.example_id` is gone from that dataset, or whose embedded input or reference differs from the example's current one, is a dataset problem (`current_example`): the run stops before it starts (exit 2) and `datasets validate` lists it (exit 1). Relabel it with `labels sample`. `judge_probes(..., against=)` checks probe items the same way. `Evaluation(judged_dataset=...)` is the underlying field |
 | Task | The judge is the task (`ScorerTask`), so a judge failure is a *task error* here, not a scorer failure. It counts as missing |
 | Recorded scores | `<s>.agrees` (bool), `<s>.judge`, `<s>.label` (text) |
 | Metrics | `accuracy(s)`, `kappa(s)`, `tpr(s)`, `tnr(s)`, `confusion(s)`, plus `consistency(s)` when `repetitions > 1`, and `error_rate`, grouped per split |
@@ -146,8 +152,9 @@ grasp-evals run spec.py:judge_v1_validation --dataset labels.jsonl --split dev
 | `--score` / `--against` | `--score` may name a score the run does not have yet (a warning; no spreading over verdicts). `--against` must exist |
 | Record identity | `id` is a hash of (input, output, reference, metadata). `metadata` carries `example_id`, `repetition`, `run_id`, `score`, and `trace_id` when the run was traced |
 | Splits | `test` or `dev` from a hash of the original example id, so `--test-share` is approximate and every output of one example lands in the same split. Splits found in `--exclude` files are reused |
+| Phoenix | `--exclude` takes `phoenix:[URL/]NAME[@VER]` too. `labels import --into phoenix:[URL/]NAME[@VER]` (and `labels pull --into`) pulls that version (the latest when unpinned; none for a new dataset), merges, and pushes a new version based on it — refused (`StaleDatasetError`, exit 2) when Phoenix moved past it — then prints the new reference to pin (`ref` in the JSON) |
 | Import | Labels are stored per score, with `labeler` and `labeled_at` per score. Equality is typed: `true`, `"pass"` and `1` are different labels, so relabeling with another spelling reports conflicts and keeps the old value unless `--replace`. A record whose id matches but whose output differs is refused. `--into` must be `.jsonl`. Blank or null references count as unlabeled. Nothing is written when nothing changed |
-| Python | `sample_for_labeling(run, n, score=..., against=...)` returns records; `grasp_agents.evals.labeling.write_records(records, path)` writes them; `import_labels(paths, into, labeler=...)` merges |
+| Python | `sample_for_labeling(run, n, score=..., against=...)` returns records; `grasp_agents.evals.labeling.write_records(records, path)` writes them; `import_labels(paths, into, labeler=...)` merges into a file, `labeling.merge_labels_into_phoenix(records, "phoenix:...")` into a Phoenix dataset |
 
 Labels from Phoenix: `grasp-evals labels pull to_label.jsonl --project P --into
 labels.jsonl [--name S] [--true WORD]... [--false WORD]...`

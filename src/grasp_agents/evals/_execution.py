@@ -2,7 +2,10 @@ import asyncio
 import json
 import logging
 import operator
+import os
 import platform
+import socket
+import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -27,7 +30,7 @@ from ._util import (
     to_jsonable,
     utc_now,
 )
-from .metrics import MetricsSpec, compute_metrics
+from .metrics import Metric, MetricsSpec, compute_metrics, select_metrics
 from .report import render_run_markdown
 from .scorer import (
     FunctionScorer,
@@ -41,11 +44,13 @@ from .task import Task, TrialContext
 from .types import (
     ComponentInfo,
     DatasetRef,
+    Direction,
     ErrorInfo,
     EvaluationRun,
     Example,
     Provenance,
     RunCounts,
+    RunProcess,
     RunStatus,
     Score,
     ScorerFailure,
@@ -77,6 +82,85 @@ type ProgressCallback = Callable[[TrialProgress], None]
 def scorer_sources(scorers: Iterable[Scorer[Any, Any, Any]]) -> list[Any]:
     """Classes and functions whose source files define ``scorers``."""
     return [e.fn if isinstance(e, FunctionScorer) else type(e) for e in scorers]
+
+
+def declared_directions(
+    scorers: Iterable[Scorer[Any, Any, Any]], metrics: Iterable[Metric]
+) -> dict[str, Direction]:
+    """
+    The directions scorers (``lower_is_better``) and metrics
+    (``higher_is_better``) declare. Raises ``ValueError`` when they disagree.
+    """
+    declared: dict[str, Direction] = {}
+    for scorer in scorers:
+        for name in scorer.lower_is_better:
+            declared[name] = "lower"
+    for metric in metrics:
+        found = metric.declared_direction()
+        if found is None:
+            continue
+        name, higher = found
+        direction: Direction = "higher" if higher else "lower"
+        if declared.get(name, direction) != direction:
+            raise ValueError(
+                f"{metric.name} says {'higher' if higher else 'lower'} values of "
+                f"{name!r} are better, but its scorer declares the opposite"
+            )
+        declared[name] = direction
+    return declared
+
+
+def score_directions(
+    trials: Iterable[Trial],
+    scorers: Sequence[Scorer[Any, Any, Any]],
+    metrics: Iterable[Metric],
+    inherited: Mapping[str, Direction],
+) -> dict[str, Direction]:
+    """
+    Which values are better for each numeric score of ``trials``: as
+    declared, else as recorded on the run for scores of scorers not run
+    now (a parent's other scorers), else higher.
+    """
+    try:
+        declared = declared_directions(scorers, metrics)
+    except ValueError as exc:
+        logger.warning("%s; the scorer's declaration is kept", exc)
+        declared = declared_directions(scorers, ())
+    current = {s.name for s in scorers}
+    directions: dict[str, Direction] = {}
+    for trial in trials:
+        for score in trial.scores:
+            if score.name in directions or score.as_float() is None:
+                continue
+            if score.name in declared or (score.scorer or score.name) in current:
+                directions[score.name] = declared.get(score.name, "higher")
+            else:
+                directions[score.name] = inherited.get(score.name, "higher")
+    return {**directions, **declared}
+
+
+def current_process() -> RunProcess:
+    return RunProcess(host=socket.gethostname(), pid=os.getpid(), started_at=utc_now())
+
+
+def process_alive(process: RunProcess | None) -> bool | None:
+    """
+    Whether ``process`` still runs: ``None`` when this host cannot tell (no
+    record, another host, or Windows). A reused process id reads as alive.
+    """
+    if process is None or process.host != socket.gethostname():
+        return None
+    if sys.platform == "win32":
+        return None  # os.kill there terminates the process
+    if process.pid == os.getpid():
+        return True
+    try:
+        os.kill(process.pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def capture_provenance(
@@ -277,9 +361,17 @@ class Executor:
         scorer_timeout_s: float | None = None,
         progress: ProgressCallback | None = None,
         total: int = 0,
+        claim: bool = True,
+        base_usage: Usage | None = None,
     ) -> None:
         self.run = run
         self.store = store
+        if claim:
+            # Recorded before any trial, so a run left behind by a killed
+            # process can be told from one still running.
+            run.process = current_process()
+            if store is not None:
+                store.save(run)
         self.scorers = list(scorers)
         self.capture_events = capture_events
         self.max_cost_usd = max_cost_usd
@@ -293,7 +385,7 @@ class Executor:
         self._trials: dict[TrialKey, Trial] = {t.key: t for t in run.trials}
         # What this run has spent so far, including attempts later superseded
         # (a resumed run continues its own total).
-        self._base_usage = run.usage
+        self._base_usage = run.usage if base_usage is None else base_usage
         self._new_usage = Usage()
         self._trial_costs: list[float] = [
             t.total_usage.cost_usd or 0.0 for t in run.trials
@@ -509,9 +601,13 @@ class Executor:
         run.status = status
         run.finished_at = utc_now()
         try:
+            selected = select_metrics(trials, metrics)
+            run.directions = score_directions(
+                trials, self.scorers, selected, run.directions
+            )
             run.metrics = compute_metrics(
                 trials,
-                metrics,
+                selected,
                 examples=run.examples,
                 group_by=run.config.group_by,
                 cluster_by=run.config.cluster_by,

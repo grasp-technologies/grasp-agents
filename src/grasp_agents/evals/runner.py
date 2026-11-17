@@ -11,9 +11,11 @@ from ._execution import (
     TrialKey,
     capture_provenance,
     config_hash,
+    declared_directions,
     execute_trial,
     load_run,
     output_adapter,
+    process_alive,
     rehydrate_output,
     resolve_store,
     retype_examples,
@@ -21,12 +23,13 @@ from ._execution import (
     scorer_sources,
     warn_if_untyped,
 )
-from ._util import new_run_id, utc_now
+from ._util import canonical_json, new_run_id, utc_now
 from .dataset import Dataset
 from .metrics import MetricsSpec
 from .scorer import Scorer
 from .store import RunStore
 from .task import Task, TaskFn, as_task
+from .tracing import trace_project
 from .types import (
     ComponentInfo,
     EvaluationRun,
@@ -35,6 +38,8 @@ from .types import (
     RunConfig,
     RunStatus,
     Trial,
+    Usage,
+    content_digest,
 )
 
 if TYPE_CHECKING:
@@ -68,28 +73,62 @@ class SealedSelectionError(ValueError):
     pass
 
 
-def _check_scorers(scorers: Sequence[Scorer[Any, Any, Any]]) -> None:
+def check_scorers(
+    scorers: Sequence[Scorer[Any, Any, Any]], metrics: MetricsSpec = None
+) -> None:
     seen: set[str] = set()
     for scorer in scorers:
         if scorer.name in seen:
             raise ValueError(f"Duplicate scorer name {scorer.name!r}")
         seen.add(scorer.name)
+    if metrics is not None and not callable(metrics):
+        declared_directions(scorers, metrics)
 
 
-def check_sealed(dataset: Dataset[Any, Any], sealed: frozenset[str]) -> None:
+def leave_out_sealed[InT, RefT](
+    dataset: Dataset[InT, RefT], sealed: frozenset[str], *, include_sealed: bool
+) -> Dataset[InT, RefT]:
     """
-    Sealed splits must exist, and a selection must include each sealed split
-    it touches whole: a subset would report its examples' results one by
-    one (``--ids <sealed id>``).
+    ``dataset`` without the examples of sealed splits, unless its selection
+    names a sealed split (``split=test``) or ``include_sealed``.
+    """
+    if include_sealed or not sealed:
+        return dataset
+    named = {
+        s.removeprefix("split=") for s in dataset.selection if s.startswith("split=")
+    }
+    if named & sealed or not any(sealed.intersection(e.splits) for e in dataset):
+        return dataset
+    kept = dataset.exclude_splits(sealed)
+    if len(kept) == 0:
+        raise SealedSelectionError(
+            f"Every selected example of {dataset.name!r} is in a sealed split "
+            f"({', '.join(sorted(sealed))}); name the split to evaluate it, or "
+            "include sealed splits"
+        )
+    return kept
+
+
+def check_sealed(
+    dataset: Dataset[Any, Any],
+    sealed: frozenset[str],
+    *,
+    require_splits: bool = True,
+) -> None:
+    """
+    Sealed splits must be splits of the dataset (unless ``require_splits`` is
+    false), and a selection must include each sealed split it touches whole:
+    a subset would report its examples' results one by one
+    (``--ids <sealed id>``).
     """
     if not sealed:
         return
-    known = set(dataset.origin.splits)
-    unknown = sorted(sealed - known)
-    if unknown:
+    splits = set(dataset.origin.splits)
+    unknown = sorted(sealed - splits)
+    if unknown and require_splits:
         raise ValueError(
             f"Sealed splits {unknown} are not splits of {dataset.name!r} "
-            f"(splits: {sorted(known) or 'none'})"
+            f"(splits: {sorted(splits) or 'none'})"
         )
     for split in sorted(sealed):
         selected = {e.id for e in dataset if split in e.splits}
@@ -122,6 +161,23 @@ def _code_changes(old: Provenance, new: Provenance) -> list[str]:
     return changes
 
 
+def _check_not_running_elsewhere(previous: EvaluationRun, *, force: bool) -> None:
+    # A run left ``running`` is continued in place: never while the process
+    # that ran it may still be writing to it.
+    if previous.status != RunStatus.RUNNING or previous.process is None or force:
+        return
+    alive = process_alive(previous.process)
+    if alive is False:
+        return
+    process = previous.process
+    state = "still runs it" if alive else "may still run it"
+    raise ResumeError(
+        f"Cannot resume {previous.id}: process {process.pid} on {process.host} "
+        f"{state}. Wait for it to finish, or resume with force=True once it is "
+        "gone."
+    )
+
+
 def _resume_record(
     previous: EvaluationRun,
     *,
@@ -134,8 +190,8 @@ def _resume_record(
         raise ResumeError(
             f"Cannot resume {previous.id}: the task, scorers, selected examples or "
             "repetitions differ from the original run. Pass the same selection "
-            "(split, ids, limit, sample) and repetitions as the original run, or "
-            "start a new one."
+            "(split, ids, limit, sample, include_sealed) and repetitions as the "
+            "original run, or start a new one."
         )
     if sorted(previous.config.sealed_splits) != sorted(config.sealed_splits):
         raise ResumeError(
@@ -190,6 +246,7 @@ def _retry_run(
         config_hash=run_hash,
         tags=[*parent.tags, *tags],
         metadata={**parent.metadata, **(metadata or {})},
+        directions=dict(parent.directions),
         examples=list(parent.examples),
         trials=[t.model_copy(deep=True) for t in parent.trials if t.ok],
     )
@@ -240,6 +297,7 @@ async def evaluate[InT, OutT, RefT](
     group_by: Sequence[str] = (),
     cluster_by: str | None = None,
     sealed_splits: Sequence[str] = (),
+    include_sealed: bool = False,
     score: bool = True,
     capture_events: bool = True,
     store: RunStore | None = None,
@@ -264,9 +322,14 @@ async def evaluate[InT, OutT, RefT](
     scorers that did not finish). A run that did not complete is continued
     in place; a completed one keeps its results — its failed trials are
     retried in a new ``retry`` run that copies the rest. Resuming refuses if
-    the code changed (git state, or the task's and scorers' source files;
-    ``force=True`` overrides) and stops if an agent answers with a model the
-    run did not use.
+    the code changed (git state, or the task's and scorers' source files) or
+    if a run left ``running`` may still run in its process (``force=True``
+    overrides both), and stops if an agent answers with a model the run did
+    not use.
+
+    Examples of ``sealed_splits`` are left out unless the dataset's selection
+    names a sealed split (``dataset.split("test")``) or ``include_sealed``; a
+    run that includes a sealed split includes all of it.
 
     ``max_cost_usd`` stops scheduling new trials once spent (the run ends
     ``partial``); trials already running finish, so the total can exceed it
@@ -284,8 +347,9 @@ async def evaluate[InT, OutT, RefT](
         raise ValueError(f"The selection from {dataset.name!r} has no examples")
     the_task = as_task(task)
     scorer_list: list[Scorer[Any, Any, Any]] = list(scorers)
-    _check_scorers(scorer_list)
+    check_scorers(scorer_list, metrics)
     sealed = frozenset(sealed_splits)
+    dataset = leave_out_sealed(dataset, sealed, include_sealed=include_sealed)
     check_sealed(dataset, sealed)
     run_store = resolve_store(store, persist)
     dataset_ref = dataset.ref()
@@ -314,6 +378,7 @@ async def evaluate[InT, OutT, RefT](
     known_models: dict[str, set[str]] = {}
     if resume is not None:
         previous = load_run(run_store, resume)
+        _check_not_running_elsewhere(previous, force=force)
         record = _resume_record(
             previous,
             run_hash=run_hash,
@@ -345,6 +410,7 @@ async def evaluate[InT, OutT, RefT](
                 evaluation=evaluation,
             )
             run.metadata = {**run.metadata, "resumed": [record]}
+            run.trace_project = trace_project() or previous.trace_project
             if run_store is not None:
                 run_store.create(run)
                 for trial in run.trials:
@@ -355,6 +421,7 @@ async def evaluate[InT, OutT, RefT](
             run.finished_at = None
             run.invalid_reason = None
             run.config = config
+            run.trace_project = trace_project() or run.trace_project
             run.metadata = {
                 **run.metadata,
                 "resumed": [*run.metadata.get("resumed", []), record],
@@ -381,6 +448,7 @@ async def evaluate[InT, OutT, RefT](
             config_hash=run_hash,
             tags=list(tags),
             metadata=dict(metadata or {}),
+            trace_project=trace_project(),
             examples=list(dataset),
         )
         if run_store is not None:
@@ -438,6 +506,10 @@ async def evaluate[InT, OutT, RefT](
     )
 
 
+# Metadata key of a rescore child: the scorers it ran (rather than kept).
+RESCORED_KEY = "rescored_scorers"
+
+
 def _without(trial: Trial, replaced: set[str]) -> Trial:
     return trial.model_copy(
         deep=True,
@@ -454,6 +526,43 @@ def _without(trial: Trial, replaced: set[str]) -> Trial:
     )
 
 
+def _rescored_examples(
+    parent: EvaluationRun,
+    typed: Sequence[Example[Any, Any]],
+    dataset: Dataset[Any, Any] | None,
+) -> tuple[Dataset[Any, Any], dict[str, Any]]:
+    """
+    The examples a rescore scores against, as a dataset whose selection says
+    how they were chosen, and what could not be paired with ``dataset``.
+    """
+    if dataset is None:
+        return Dataset(typed, name=parent.dataset.name), {}
+    by_id = {e.id: e for e in parent.examples}
+    sealed = frozenset(parent.config.sealed_splits)
+    paired: list[str] = []
+    missing: list[str] = []
+    changed: list[str] = []
+    for example_id, old in by_id.items():
+        new = dataset.get(example_id)
+        if new is not None and canonical_json(new.record.input) == canonical_json(
+            old.record.input
+        ):
+            paired.append(example_id)
+        elif sealed.intersection(old.splits):
+            continue  # counted, not listed: see rescore
+        else:
+            (missing if new is None else changed).append(example_id)
+    kept = [s for s in parent.dataset.selection if s.startswith("split=")]
+    start = dataset
+    if len(kept) == 1 and kept[0].removeprefix("split=") in dataset.splits:
+        start = dataset.split(kept[0].removeprefix("split="))
+    chosen = set(paired)
+    if {e.id for e in start} - chosen:
+        start = start.select([e.id for e in start if e.id in chosen])
+    unpaired: dict[str, Any] = {"missing": missing, "input_changed": changed}
+    return start, unpaired
+
+
 async def rescore(
     run: "str | EvaluationRun",
     scorers: Sequence[Scorer[Any, Any, Any]],
@@ -462,6 +571,9 @@ async def rescore(
     input_type: Any = Any,
     reference_type: Any = Any,
     output_type: Any = Any,
+    split: str | None = None,
+    ids: Sequence[str] | None = None,
+    dataset: Dataset[Any, Any] | None = None,
     name: str | None = None,
     concurrency: int = 4,
     scorer_timeout_s: float | None = None,
@@ -479,24 +591,35 @@ async def rescore(
 
     Creates a child run (``parent_run_id``) that copies the parent's trials and
     transcripts; the parent is never modified. A scorer identical to the
-    parent's (same name, version, configuration and code) keeps its scores and
-    only fills the trials where it failed or did not run; a new or changed one
-    replaces the parent's scores under its name. Only the scorer's own
-    function or class is compared: when a helper, closure or data file it
-    relies on changes, bump its version or pass ``rerun=True``, which re-runs
-    every given scorer (also to measure a judge's self-consistency). The
-    parent's other scorers' scores are kept.
+    parent's (same name, version, configuration, fingerprint and code) keeps
+    its scores and only fills the trials where it failed or did not run; a
+    new or changed one replaces the parent's scores under its name, and
+    ``rerun=True`` re-runs every given scorer (also to measure a judge's
+    self-consistency). The parent's other scorers' scores are kept.
+
+    ``split`` and ``ids`` make a child of those examples' trials only (a
+    sealed split whole, as for runs), which :func:`compare` pairs with its
+    parent on the examples they share. ``dataset`` scores the outputs
+    against another version of the dataset: each example is paired by id
+    where its input is unchanged and scored against that version's
+    reference, splits and metadata (trials whose example changed are scored
+    from scratch); the child records that version, so it is pushed to it,
+    and lists the examples it could not pair in ``metadata["unpaired"]``.
+    Only the given scorers count then (the parent's others are listed in
+    ``metadata["dropped_scorers"]``), and a sealed split is scored only when
+    the parent ran it and every one of its examples pairs.
 
     Stored examples and outputs are re-validated as ``input_type`` /
     ``reference_type`` / ``output_type`` before scorers see them. A parent
     that did not complete yields a ``partial`` child.
     """
-    _check_scorers(scorers)
+    check_scorers(scorers, metrics)
     run_store = resolve_store(store, persist)
     parent = load_run(run_store, run)
     if parent.status == RunStatus.RUNNING:
         raise ValueError(
-            f"Run {parent.id} has not finished; resume it (or let it finish) first"
+            f"Run {parent.id} has not finished: resume it, let it finish, or close "
+            "it if its process is gone"
         )
     events_by_key: dict[TrialKey, list[Event[Any]]] = (
         run_store.load_events(parent.id) if run_store is not None else {}
@@ -504,16 +627,67 @@ async def rescore(
     typed = retype_examples(
         parent.examples, input_type=input_type, reference_type=reference_type
     )
+    sealed = frozenset(parent.config.sealed_splits)
+    source, unpaired = _rescored_examples(parent, typed, dataset)
+    selected = source.split(split) if split is not None else source
+    if dataset is not None:
+        # Sealed splits as the parent had them, and only whole: a split some
+        # of whose examples could not be paired is left out.
+        selected = leave_out_sealed(
+            selected,
+            sealed,
+            include_sealed=any(sealed.intersection(e.splits) for e in parent.examples),
+        )
+        partial = frozenset(
+            s
+            for s in sealed
+            if (members := {e.id for e in selected if s in e.splits})
+            and members != {e.id for e in selected.origin if s in e.splits}
+        )
+        if partial:
+            selected = selected.exclude_splits(partial)
+        kept_ids = {e.id for e in selected}
+        unpaired["sealed"] = sum(
+            1
+            for e in parent.examples
+            if sealed.intersection(e.splits) and e.id not in kept_ids
+        )
+    if ids:
+        selected = selected.select(ids)
+    if len(selected) == 0:
+        raise ValueError(f"The selection from run {parent.id} has no examples")
+    check_sealed(selected, sealed, require_splits=False)
+    if dataset is not None:
+        dataset_ref = selected.ref()
+    elif selected.selection:
+        dataset_ref = parent.dataset.model_copy(
+            update={
+                "selection": [*parent.dataset.selection, *selected.selection],
+                "selected_fingerprint": selected.fingerprint,
+                "selected_size": len(selected),
+            }
+        )
+    else:
+        dataset_ref = parent.dataset
     adapter = output_adapter(output_type)
     warn_if_untyped(output_type, (t.output for t in parent.trials if t.ok))
     previous = {info.name: info for info in parent.scorers}
     given = {e.name for e in scorers}
     replaced = {
-        e.name for e in scorers if rerun or previous.get(e.name) != e.describe()
+        e.name
+        for e in scorers
+        if rerun or not e.describe().matches(previous.get(e.name))
     }
-    scorer_infos = [i for i in parent.scorers if i.name not in given] + [
-        e.describe() for e in scorers
-    ]
+    everything = {info.name for info in parent.scorers} | given
+    kept_infos = [i for i in parent.scorers if i.name not in given]
+    dropped: list[str] = []
+    if dataset is not None:
+        # Against another dataset version only the given scorers count: the
+        # others' scores would be missing on every example that changed.
+        dropped = [i.name for i in kept_infos]
+        replaced |= set(dropped)
+        kept_infos = []
+    scorer_infos = [*kept_infos, *(e.describe() for e in scorers)]
     config = parent.config.model_copy(
         update={
             "score": True,
@@ -528,9 +702,15 @@ async def rescore(
         }
     )
     order: list[TrialKey] = [
-        (e.id, r) for e in parent.examples for r in range(parent.config.repetitions)
+        (e.id, r) for e in selected for r in range(parent.config.repetitions)
     ]
     child_name = name or parent.name
+    child_metadata = {**parent.metadata, **(metadata or {})}
+    child_metadata[RESCORED_KEY] = sorted(replaced)
+    if dataset is not None:
+        child_metadata["unpaired"] = unpaired
+        if dropped:
+            child_metadata["dropped_scorers"] = dropped
     child = EvaluationRun(
         id=new_run_id(child_name),
         name=child_name,
@@ -539,7 +719,7 @@ async def rescore(
         description=parent.description,
         evaluation=parent.evaluation,
         parent_run_id=parent.id,
-        dataset=parent.dataset,
+        dataset=dataset_ref,
         task=parent.task,
         scorers=scorer_infos,
         config=config,
@@ -547,15 +727,35 @@ async def rescore(
             parent.provenance.observed_models, sources=scorer_sources(scorers)
         ),
         config_hash=config_hash(
-            parent.task, scorer_infos, parent.dataset, parent.config.repetitions
+            parent.task, scorer_infos, dataset_ref, parent.config.repetitions
         ),
         tags=[*parent.tags, *tags],
-        metadata={**parent.metadata, **(metadata or {})},
-        examples=list(parent.examples),
+        metadata=child_metadata,
+        directions=dict(parent.directions),
+        trace_project=parent.trace_project,
+        examples=list(selected),
     )
     if run_store is not None:
         run_store.create(child)
-    examples = {e.id: e for e in typed}
+    examples = {e.id: e for e in selected}
+    old_examples = {e.id: e for e in parent.examples}
+    descriptive = {
+        *parent.dataset.descriptive_metadata,
+        *dataset_ref.descriptive_metadata,
+    }
+
+    def moved(example: Example[Any, Any], parent_trial: Trial) -> bool:
+        # Changed content, metadata keys either side declared descriptive aside.
+        if example.content_hash == parent_trial.example_hash:
+            return False
+        old = old_examples.get(example.id)
+        return (
+            not descriptive
+            or old is None
+            or content_digest(*old.record, descriptive=descriptive)
+            != content_digest(*example.record, descriptive=descriptive)
+        )
+
     executor = Executor(
         child,
         store=run_store,
@@ -568,14 +768,136 @@ async def rescore(
 
     async def work(parent_trial: Trial) -> None:
         async with semaphore:
-            trial = _without(parent_trial, replaced)
-            example = examples.get(trial.example_id)
+            example = examples[parent_trial.example_id]
+            changed = moved(example, parent_trial)
+            trial = _without(parent_trial, everything if changed else replaced)
+            trial.example_hash = example.content_hash
+            trial.sealed = bool(sealed.intersection(example.splits))
             events = events_by_key.get(trial.key, [])
-            if example is not None:
-                output = rehydrate_output(adapter, trial.output) if trial.ok else None
-                await executor.score(trial, example, output, events)
+            output = rehydrate_output(adapter, trial.output) if trial.ok else None
+            await executor.score(trial, example, output, events)
             await executor.record(trial, events)
 
     return await run_all(
-        executor, [work(t) for t in parent.trials], metrics=metrics, order=order
+        executor,
+        [work(t) for t in parent.trials if t.example_id in examples],
+        metrics=metrics,
+        order=order,
     )
+
+
+def _own_usage(run: EvaluationRun) -> Usage:
+    """What a run's stored trials cost it, without what it copied."""
+    if run.kind == "retry":
+        new = (t for t in run.trials if t.started_at >= run.created_at)
+        return sum((t.total_usage for t in new), Usage())
+    if run.kind == "rescore":
+        ran = {str(name) for name in run.metadata.get(RESCORED_KEY, [])}
+        return sum(
+            (
+                u
+                for t in run.trials
+                for name, u in t.scorer_usage.items()
+                if name in ran
+            ),
+            Usage(),
+        )
+    return sum((t.total_usage for t in run.trials), Usage())
+
+
+def close_run(
+    run: "str | EvaluationRun",
+    *,
+    scorers: Sequence[Scorer[Any, Any, Any]] = (),
+    metrics: MetricsSpec = None,
+    store: RunStore | None = None,
+    force: bool = False,
+) -> EvaluationRun:
+    """
+    Finalize a run left ``running`` by a process that is gone (killed, or
+    on a machine that stopped) from the trials it stored: ``completed`` when
+    every trial is there, else ``partial``, which ``rescore`` and Phoenix
+    pushes accept and ``resume`` continues. ``scorers`` and ``metrics`` are
+    the run's (for score directions and metrics; defaults otherwise).
+
+    Refused while the run's process still runs on this host, or when that
+    cannot be told (another host, or a run recorded without its process),
+    unless ``force``. Usage counts what the stored trials cost this run (a
+    retry's new attempts, a rescore's re-run scorers), or the run's recorded
+    total when larger (attempts later retried are not stored).
+    """
+    run_store = resolve_store(store, persist=True)
+    loaded = load_run(run_store, run)
+    if loaded.status != RunStatus.RUNNING:
+        raise ValueError(f"Run {loaded.id} is {loaded.status}: nothing to close")
+    alive = process_alive(loaded.process)
+    if alive is not False and not force:
+        process = loaded.process
+        owner = (
+            "the process running it is unknown"
+            if process is None
+            else f"process {process.pid} on {process.host} "
+            + ("is still running it" if alive else "may still be running it")
+        )
+        raise ValueError(
+            f"Cannot close run {loaded.id}: {owner}. Close it once that process "
+            "is gone, or force it."
+        )
+    order: list[TrialKey] = [
+        (e.id, r) for e in loaded.examples for r in range(loaded.config.repetitions)
+    ]
+    stored = _own_usage(loaded)
+    recorded = loaded.usage
+    usage = (
+        recorded if (recorded.cost_usd or 0.0) > (stored.cost_usd or 0.0) else stored
+    )
+    loaded.metadata = {
+        **loaded.metadata,
+        "closed": {
+            "at": utc_now().isoformat(),
+            "process": None
+            if loaded.process is None
+            else loaded.process.model_dump(mode="json"),
+            "forced": alive is not False,
+        },
+    }
+    executor = Executor(
+        loaded, store=run_store, scorers=scorers, claim=False, base_usage=usage
+    )
+    done = sum(1 for key in order if executor.get(key) is not None)
+    status = RunStatus.COMPLETED if done >= len(order) else RunStatus.PARTIAL
+    return executor.finalize(status, metrics=metrics, order=order)
+
+
+def annotate_run(
+    run: "str | EvaluationRun",
+    *,
+    links: Mapping[str, str] | None = None,
+    notes: Sequence[str] = (),
+    remove_links: Sequence[str] = (),
+    store: RunStore | None = None,
+) -> EvaluationRun:
+    """
+    Add ``links`` (name → URL, replacing a link of the same name) and
+    ``notes`` to a run, or drop links by name. Only the run's header changes:
+    its trials and results stay as they are. A Phoenix push carries them into
+    the experiment's metadata.
+    """
+    run_store = resolve_store(store, persist=True)
+    if run_store is None:
+        raise ValueError("Annotating a run needs a store")
+    # From the store: the header as last saved, not a copy held in memory.
+    loaded = load_run(run_store, run if isinstance(run, str) else run.id)
+    if loaded.status == RunStatus.RUNNING:
+        raise ValueError(
+            f"Run {loaded.id} is running: annotate it once it finishes (its "
+            "process saves the header last)"
+        )
+    unknown = sorted(set(remove_links) - set(loaded.links))
+    if unknown:
+        raise ValueError(f"Run {loaded.id} has no links named {unknown}")
+    kept = {k: v for k, v in loaded.links.items() if k not in set(remove_links)}
+    loaded.links = {**kept, **(links or {})}
+    loaded.notes = [*loaded.notes, *notes]
+    run_store.save(loaded)
+    return loaded

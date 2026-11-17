@@ -2,20 +2,22 @@ import importlib
 import importlib.util
 import inspect
 import sys
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 from grasp_agents.processors.processor import Processor
 
 from ._execution import ProgressCallback
 from ._util import SPEC_MODULE_PREFIX, short_hash
 from .dataset import Dataset, DatasetCheck, DatasetError, DatasetProblem
+from .imported import ImportedTrial, import_outputs, read_outputs
 from .metrics import MetricsSpec, default_metrics
 from .runner import evaluate as evaluate_task
-from .runner import rescore
+from .runner import leave_out_sealed, rescore
 from .scorer import Scorer
 from .store import LocalRunStore, RunStore
 from .task import Task, as_task
@@ -25,22 +27,79 @@ from .validation import (
     UnvalidatedJudgeError,
     ValidationGate,
     check_validations,
+    outdated_judgments,
 )
 
 PHOENIX_PREFIX = "phoenix:"
+_SCHEMES = ("http://", "https://")
 
 
-def parse_phoenix_ref(ref: str) -> tuple[str, str | None]:
-    """``(name, version)`` of ``[phoenix:]NAME[@VERSION]``."""
+@dataclass(frozen=True)
+class PhoenixRef:
+    """
+    A Phoenix dataset: its ``name``, optionally pinned to a ``version`` —
+    which only means something on the server that issued it, so a pinned
+    reference should name that server (``base_url``). Written as
+    ``phoenix:[https://HOST/]NAME[@VERSION]``; a server under a URL path
+    cannot be told from the name there, so it is left out of the text (the
+    reader's ``--base-url`` or ``$PHOENIX_BASE_URL`` must name it).
+    """
+
+    name: str
+    version: str | None = None
+    base_url: str | None = None
+
+    def __str__(self) -> str:
+        shown = self.base_url is not None and not urlsplit(self.base_url).path.strip(
+            "/"
+        )
+        server = f"{self.base_url}/" if shown else ""
+        version = f"@{self.version}" if self.version else ""
+        return f"{PHOENIX_PREFIX}{server}{self.name}{version}"
+
+    def server(self, base_url: str | None = None) -> str | None:
+        """
+        The server to pull from: the one this reference names, else
+        ``base_url`` (else ``$PHOENIX_BASE_URL``, read by the client).
+        Raises ``ValueError`` when both are given and differ.
+        """
+        if self.base_url is None:
+            return base_url
+        from .phoenix import (  # ruff: ignore[import-outside-top-level]
+            normalize_base_url,
+        )
+
+        if base_url is not None and normalize_base_url(base_url) != normalize_base_url(
+            self.base_url
+        ):
+            raise ValueError(f"{self} names the server {self.base_url}, not {base_url}")
+        return self.base_url
+
+
+def parse_phoenix_ref(ref: str) -> PhoenixRef:
+    """
+    The :class:`PhoenixRef` of ``[phoenix:][https://HOST/]NAME[@VERSION]``.
+    A server is a scheme and host (with a port, no path); everything after
+    it up to the last ``@`` is the dataset name.
+    """
     body = ref.removeprefix(PHOENIX_PREFIX)
+    base_url: str | None = None
+    if body.startswith(_SCHEMES):
+        scheme, _, rest = body.partition("://")
+        host, _, body = rest.partition("/")
+        if not host or not body:
+            raise ValueError(
+                f"Expected phoenix:{scheme}://HOST/NAME[@VERSION], got {ref!r}"
+            )
+        base_url = f"{scheme}://{host}"
     name, at, version = body.rpartition("@")
     if not at:
-        return body, None
-    return name, version or None
+        return PhoenixRef(body, None, base_url)
+    return PhoenixRef(name, version or None, base_url)
 
 
 async def load_phoenix_dataset(
-    ref: str,
+    ref: "str | PhoenixRef",
     *,
     input_type: Any = Any,
     reference_type: Any = Any,
@@ -48,24 +107,81 @@ async def load_phoenix_dataset(
     cache_dir: str | Path | None = None,
 ) -> Dataset[Any, Any]:
     """
-    Pull ``phoenix:NAME[@VERSION]`` from ``base_url`` (``$PHOENIX_BASE_URL``),
-    caching it in ``cache_dir`` (default ``<evals dir>/datasets``).
+    Pull a Phoenix dataset (``phoenix:[https://HOST/]NAME[@VERSION]`` or a
+    :class:`PhoenixRef`) from the server it names, else from ``base_url``
+    (``$PHOENIX_BASE_URL``), caching pinned versions in ``cache_dir``.
     """
     from .phoenix import (  # ruff: ignore[import-outside-top-level]
         PhoenixClient,
         pull_dataset,
     )
 
-    name, version = parse_phoenix_ref(ref)
-    async with PhoenixClient(base_url) as client:
+    parsed = ref if isinstance(ref, PhoenixRef) else parse_phoenix_ref(ref)
+    async with PhoenixClient(parsed.server(base_url)) as client:
         return await pull_dataset(
             client,
-            name,
-            version=version,
+            parsed.name,
+            version=parsed.version,
             input_type=input_type,
             reference_type=reference_type,
             cache_dir=cache_dir,
         )
+
+
+async def load_dataset_source(
+    source: "DatasetSource",
+    *,
+    input_type: Any = Any,
+    reference_type: Any = Any,
+    descriptive_metadata: Sequence[str] = (),
+    phoenix_url: str | None = None,
+    cache_dir: str | Path | None = None,
+) -> Dataset[Any, Any]:
+    """
+    The dataset ``source`` names — a :class:`Dataset`, a file, a
+    ``phoenix:`` reference or a (possibly async) loader — with
+    ``descriptive_metadata`` declared on it.
+    """
+    loaded = await _load_source(
+        source,
+        input_type=input_type,
+        reference_type=reference_type,
+        phoenix_url=phoenix_url,
+        cache_dir=cache_dir,
+    )
+    if descriptive_metadata:
+        return loaded.with_descriptive_metadata(descriptive_metadata)
+    return loaded
+
+
+async def _load_source(
+    source: "DatasetSource",
+    *,
+    input_type: Any,
+    reference_type: Any,
+    phoenix_url: str | None,
+    cache_dir: str | Path | None,
+) -> Dataset[Any, Any]:
+    if isinstance(source, Dataset):
+        return cast("Dataset[Any, Any]", source)
+    if isinstance(source, PhoenixRef) or (
+        isinstance(source, str) and source.startswith(PHOENIX_PREFIX)
+    ):
+        return await load_phoenix_dataset(
+            source,
+            input_type=input_type,
+            reference_type=reference_type,
+            base_url=phoenix_url,
+            cache_dir=cache_dir,
+        )
+    if isinstance(source, str | Path):
+        return Dataset.load(
+            source, input_type=input_type, reference_type=reference_type
+        )
+    loaded = source()
+    if inspect.isawaitable(loaded):
+        loaded = await loaded
+    return loaded
 
 
 type TaskSource = (
@@ -77,6 +193,7 @@ type DatasetSource = (
     Dataset[Any, Any]
     | str
     | Path
+    | PhoenixRef
     | Callable[[], Dataset[Any, Any] | Awaitable[Dataset[Any, Any]]]
 )
 
@@ -89,7 +206,9 @@ class Evaluation:
 
     Definitions are cheap to import: ``task`` may be a zero-argument factory
     (called on the first run, so no clients are built at import time) and
-    ``dataset`` a path, a ``phoenix:NAME[@VERSION]`` reference or a loader.
+    ``dataset`` a path, a Phoenix reference
+    (``phoenix:[https://HOST/]NAME[@VERSION]`` or :class:`PhoenixRef`) or a
+    loader.
     Run with :meth:`run`, or from the CLI as ``grasp-evals run
     package.module:attr``.
     """
@@ -113,13 +232,19 @@ class Evaluation:
     max_error_rate: float | None = None
     group_by: Sequence[str] = ()
     cluster_by: str | None = None
-    # Held-out splits: reports, ``show``, ``compare`` and Phoenix pushes give
-    # only their aggregates, and a run must include each one whole. This keeps
-    # an agent iterating through the CLI from fitting to their examples; it is
-    # not access control — the dataset file and run records contain them.
+    # Held-out splits: left out of a run unless it names one (``split=``) or
+    # includes them (``include_sealed=True``); reports, ``show``, ``compare``
+    # and Phoenix pushes give only their aggregates, and a run must include
+    # each one whole. This keeps an agent iterating through the CLI from
+    # fitting to their examples; it is not access control — the dataset file
+    # and run records contain them.
     sealed_splits: Sequence[str] = ()
     # Integrity checks run on the dataset before every run.
     dataset_checks: Mapping[str, DatasetCheck] | Sequence[DatasetCheck] = ()
+    # Metadata keys nothing reads (provenance, descriptions): left out of
+    # example identity, so rewording them keeps runs pairing. Not for keys
+    # that scorers, group_by or cluster_by read.
+    descriptive_metadata: Sequence[str] = ()
     # Scores whose judge must have passed validation on held-out labels before
     # this evaluation scores anything: the newest validation run of the judge
     # exactly as it is now must meet the gate. Their pass rates are also
@@ -127,6 +252,10 @@ class Evaluation:
     validation_gates: Mapping[str, ValidationGate] = field(
         default_factory=dict[str, ValidationGate]
     )
+    # For a dataset of judged outputs (labels, probe items): the dataset of
+    # the examples they answer. An item whose example is gone, or whose input
+    # or reference changed since it was judged, is a dataset problem.
+    judged_dataset: "DatasetSource | None" = None
     tags: Sequence[str] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict[str, Any])
     # Import spec this definition was loaded from (set by ``load_evaluation``).
@@ -163,30 +292,36 @@ class Evaluation:
         phoenix_url: str | None = None,
         cache_dir: str | Path | None = None,
     ) -> Dataset[Any, Any]:
-        source: DatasetSource = path if path is not None else self.dataset
-        if isinstance(source, Dataset):
-            return cast("Dataset[Any, Any]", source)
-        if isinstance(source, str) and source.startswith(PHOENIX_PREFIX):
-            return await load_phoenix_dataset(
-                source,
-                input_type=self.resolved_input_type,
-                reference_type=self.reference_type,
-                base_url=phoenix_url,
-                cache_dir=cache_dir,
-            )
-        if isinstance(source, str | Path):
-            return Dataset.load(
-                source,
-                input_type=self.resolved_input_type,
-                reference_type=self.reference_type,
-            )
-        loaded = source()
-        if inspect.isawaitable(loaded):
-            loaded = await loaded
-        return loaded
+        return await load_dataset_source(
+            path if path is not None else self.dataset,
+            input_type=self.resolved_input_type,
+            reference_type=self.reference_type,
+            descriptive_metadata=self.descriptive_metadata,
+            phoenix_url=phoenix_url,
+            cache_dir=cache_dir,
+        )
 
     def check_dataset(self, dataset: Dataset[Any, Any]) -> list[DatasetProblem]:
         return dataset.check(self.dataset_checks) if self.dataset_checks else []
+
+    async def dataset_problems(
+        self,
+        dataset: Dataset[Any, Any],
+        *,
+        phoenix_url: str | None = None,
+        cache_dir: str | Path | None = None,
+    ) -> list[DatasetProblem]:
+        """
+        Problems :meth:`select` refuses a dataset for: ``dataset_checks``,
+        and judged outputs that no longer match :attr:`judged_dataset`.
+        """
+        problems = self.check_dataset(dataset)
+        if self.judged_dataset is not None:
+            judged = await load_dataset_source(
+                self.judged_dataset, phoenix_url=phoenix_url, cache_dir=cache_dir
+            )
+            problems.extend(outdated_judgments(dataset, judged))
+        return problems
 
     def check_judges(
         self, store: RunStore | None = None, *, allow_unvalidated: bool = False
@@ -241,11 +376,16 @@ class Evaluation:
         sample: int | None = None,
         seed: int = 0,
         limit: int | None = None,
+        include_sealed: bool = False,
         check: bool = True,
         phoenix_url: str | None = None,
         cache_dir: str | Path | None = None,
     ) -> Dataset[Any, Any]:
-        """The dataset subset a run would evaluate (after integrity checks)."""
+        """
+        The dataset subset a run would evaluate (after integrity checks):
+        ``split``, then ``ids``, ``sample`` and ``limit``. Sealed splits are
+        left out unless ``split`` names one or ``include_sealed``.
+        """
         data = (
             dataset
             if isinstance(dataset, Dataset)
@@ -253,8 +393,13 @@ class Evaluation:
                 dataset, phoenix_url=phoenix_url, cache_dir=cache_dir
             )
         )
+        if self.descriptive_metadata:
+            # Raises for a selection made before the keys were declared.
+            data = data.with_descriptive_metadata(self.descriptive_metadata)
         if check:
-            problems = self.check_dataset(data)
+            problems = await self.dataset_problems(
+                data, phoenix_url=phoenix_url, cache_dir=cache_dir
+            )
             if problems:
                 listed = "\n".join(
                     f"  {p.example_id}: [{p.check}] {p.message}" for p in problems[:20]
@@ -264,6 +409,9 @@ class Evaluation:
                 )
         if split is not None:
             data = data.split(split)
+        data = leave_out_sealed(
+            data, frozenset(self.sealed_splits), include_sealed=include_sealed
+        )
         if ids:
             data = data.select(ids)
         if sample is not None:
@@ -286,6 +434,7 @@ class Evaluation:
         sample: int | None = None,
         seed: int = 0,
         limit: int | None = None,
+        include_sealed: bool = False,
         repetitions: int | None = None,
         concurrency: int | None = None,
         timeout_s: float | None = None,
@@ -316,12 +465,9 @@ class Evaluation:
             sample=sample,
             seed=seed,
             limit=limit,
+            include_sealed=include_sealed,
             check=check,
             phoenix_url=phoenix_url,
-            # Pulled datasets are cached next to the runs.
-            cache_dir=store.root / "datasets"
-            if isinstance(store, LocalRunStore)
-            else None,
         )
         return await evaluate_task(
             self.build_task(),
@@ -343,6 +489,7 @@ class Evaluation:
             group_by=self.group_by,
             cluster_by=self.cluster_by,
             sealed_splits=self.sealed_splits,
+            include_sealed=include_sealed,
             score=score,
             store=store,
             persist=persist,
@@ -358,20 +505,44 @@ class Evaluation:
         self,
         run: "str | EvaluationRun",
         *,
+        split: str | None = None,
+        ids: Sequence[str] | None = None,
+        dataset: DatasetSource | None = None,
         rerun: bool = False,
         store: RunStore | None = None,
         persist: bool = True,
         concurrency: int | None = None,
         progress: ProgressCallback | None = None,
         allow_unvalidated: bool = False,
+        phoenix_url: str | None = None,
     ) -> EvaluationRun:
         """
         Re-score a stored run of this evaluation with its current scorers:
         changed ones run again, unchanged ones only where they failed or did
-        not run (all of them with ``rerun=True``). Gated judges must be
-        validated, as for :meth:`run`.
+        not run (all of them with ``rerun=True``). ``split`` and ``ids``
+        narrow it to those examples; ``dataset`` (a file, a ``phoenix:``
+        reference, ...) scores against that version of the dataset, after
+        this evaluation's dataset checks (see :func:`rescore`). Gated judges
+        must be validated, as for :meth:`run`.
         """
         metrics, judges = self.check_judges(store, allow_unvalidated=allow_unvalidated)
+        newer: Dataset[Any, Any] | None = None
+        if dataset is not None:
+            newer = await load_dataset_source(
+                dataset,
+                input_type=self.resolved_input_type,
+                reference_type=self.reference_type,
+                descriptive_metadata=self.descriptive_metadata,
+                phoenix_url=phoenix_url,
+            )
+            problems = await self.dataset_problems(newer, phoenix_url=phoenix_url)
+            if problems:
+                listed = "\n".join(
+                    f"  {p.example_id}: [{p.check}] {p.message}" for p in problems[:20]
+                )
+                raise DatasetError(
+                    f"{len(problems)} dataset problem(s) in {newer.name!r}:\n{listed}"
+                )
         return await rescore(
             run,
             self.scorers,
@@ -379,6 +550,9 @@ class Evaluation:
             input_type=self.resolved_input_type,
             reference_type=self.reference_type,
             output_type=self.resolved_output_type,
+            split=split,
+            ids=ids,
+            dataset=newer,
             concurrency=concurrency if concurrency is not None else self.concurrency,
             scorer_timeout_s=self.scorer_timeout_s,
             group_by=self.group_by,
@@ -387,6 +561,80 @@ class Evaluation:
             store=store,
             persist=persist,
             metadata=judges,
+            progress=progress,
+        )
+
+    async def import_outputs(
+        self,
+        outputs: "str | Path | Iterable[ImportedTrial | Mapping[str, Any]]",
+        *,
+        task: str | None = None,
+        task_version: str | None = None,
+        task_config: Mapping[str, Any] | None = None,
+        dataset: Dataset[Any, Any] | str | Path | None = None,
+        split: str | None = None,
+        ids: Sequence[str] | None = None,
+        sample: int | None = None,
+        seed: int = 0,
+        limit: int | None = None,
+        include_sealed: bool = False,
+        repetitions: int | None = None,
+        name: str | None = None,
+        store: RunStore | None = None,
+        persist: bool = True,
+        tags: Sequence[str] = (),
+        metadata: Mapping[str, Any] | None = None,
+        progress: ProgressCallback | None = None,
+        phoenix_url: str | None = None,
+        allow_unvalidated: bool = False,
+    ) -> EvaluationRun:
+        """
+        Score outputs produced elsewhere (a JSONL file of
+        :class:`ImportedTrial` records, or the records) as a run of this
+        evaluation, on the same selection :meth:`run` would make; ``task``
+        (default: the file's stem) names what produced them. Gated judges
+        must be validated, as for :meth:`run`. See :func:`import_outputs`.
+        """
+        metrics, judges = self.check_judges(store, allow_unvalidated=allow_unvalidated)
+        if isinstance(outputs, str | Path):
+            records: list[ImportedTrial] | list[Any] = read_outputs(outputs)
+            source: dict[str, Any] = {"imported_from": str(outputs)}
+            label = Path(outputs).stem
+        else:
+            records, source, label = list(outputs), {}, "imported"
+        data = await self.select(
+            dataset=dataset,
+            split=split,
+            ids=ids,
+            sample=sample,
+            seed=seed,
+            limit=limit,
+            include_sealed=include_sealed,
+            phoenix_url=phoenix_url,
+        )
+        return await import_outputs(
+            records,
+            data,
+            self.scorers,
+            metrics,
+            task=task or label,
+            task_version=task_version,
+            task_config=task_config,
+            output_type=self.resolved_output_type,
+            repetitions=repetitions,
+            name=name or self.name,
+            description=self.description,
+            concurrency=self.concurrency,
+            scorer_timeout_s=self.scorer_timeout_s,
+            group_by=self.group_by,
+            cluster_by=self.cluster_by,
+            sealed_splits=self.sealed_splits,
+            include_sealed=include_sealed,
+            store=store,
+            persist=persist,
+            tags=[*self.tags, *tags],
+            metadata={**self.metadata, **source, **(metadata or {}), **judges},
+            evaluation=self.spec,
             progress=progress,
         )
 

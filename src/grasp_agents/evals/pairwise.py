@@ -29,7 +29,14 @@ from ._execution import (
     retype_examples,
     run_all,
 )
-from ._util import code_hash, new_run_id, qualified_name, short_hash, utc_now
+from ._util import (
+    identity_hash,
+    new_run_id,
+    qualified_name,
+    short_hash,
+    source_identity,
+    utc_now,
+)
 from .metrics import Metric, MetricsSpec, PassRate
 from .scorer import (
     ScoreContext,
@@ -51,6 +58,7 @@ from .types import (
     Score,
     Trial,
     Usage,
+    pairing_hashes,
 )
 
 type Winner = Literal["first", "second", "tie"]
@@ -100,14 +108,24 @@ class PairwiseJudge[InT, OutT, RefT](ABC):
     name: str = ""
     version: str = "1"
     annotator: Literal["CODE", "LLM", "HUMAN"] = "LLM"
+    # What else the judge's verdicts depend on (see ``Scorer.identity``).
+    identity: Sequence[Any] = ()
 
-    def __init__(self, name: str | None = None, version: str | None = None) -> None:
+    def __init__(
+        self,
+        name: str | None = None,
+        version: str | None = None,
+        *,
+        identity: Sequence[Any] | None = None,
+    ) -> None:
         if name is not None:
             self.name = name
         if version is not None:
             self.version = version
         if not self.name:
             self.name = snake_case(type(self).__name__)
+        if identity is not None:
+            self.identity = tuple(identity)
 
     def config(self) -> dict[str, Any]:
         return {}
@@ -119,7 +137,8 @@ class PairwiseJudge[InT, OutT, RefT](ABC):
             version=self.version,
             config=self.config(),
             annotator=self.annotator,
-            source=code_hash(type(self)),
+            fingerprint=identity_hash(self.identity),
+            source=source_identity(type(self)),
         )
 
     @abstractmethod
@@ -141,15 +160,16 @@ class FunctionPairwiseJudge[InT, OutT, RefT](PairwiseJudge[InT, OutT, RefT]):
         name: str | None = None,
         version: str = "1",
         annotator: Literal["CODE", "LLM", "HUMAN"] = "LLM",
+        identity: Sequence[Any] = (),
     ) -> None:
-        super().__init__(name=name or fn.__name__, version=version)
+        super().__init__(name=name or fn.__name__, version=version, identity=identity)
         self._fn = fn
         self.annotator = annotator
 
     def describe(self) -> ComponentInfo:
         info = super().describe()
         info.kind = qualified_name(self._fn)
-        info.source = code_hash(self._fn)
+        info.source = source_identity(self._fn)
         return info
 
     @property
@@ -207,10 +227,18 @@ class OrderSwapped[InT, OutT, RefT](Scorer[InT, Mapping[str, OutT], RefT]):
         self.annotator = judge.annotator
 
     def config(self) -> dict[str, Any]:
-        return {
-            "judge": self.judge.describe().model_dump(),
-            "both_orders": self.both_orders,
-        }
+        judge = self.judge.describe().model_dump(exclude={"fingerprint", "source"})
+        return {"judge": judge, "both_orders": self.both_orders}
+
+    def describe(self) -> ComponentInfo:
+        # The judge's prompt and code identify this scorer as they identify
+        # the judge, so changes to them read as such rather than as a
+        # different configuration.
+        judge = self.judge.describe()
+        info = super().describe()
+        info.fingerprint = judge.fingerprint
+        info.source = judge.source
+        return info
 
     async def score(
         self, ctx: ScoreContext[InT, Mapping[str, OutT], RefT]
@@ -365,13 +393,15 @@ async def pairwise(
     base_run = load_run(run_store, base)
     candidate_run = load_run(run_store, candidate)
     candidate_trials = {t.key: t for t in candidate_run.trials}
+    base_hashes, candidate_hashes = pairing_hashes(base_run, candidate_run)
     pairs: list[tuple[Trial, Trial]] = []
     for trial in base_run.trials:
         other = candidate_trials.get(trial.key)
         if (
             other is not None
             and (trial.ok or other.ok)
-            and trial.example_hash == other.example_hash
+            and base_hashes.get(trial.example_id)
+            == candidate_hashes.get(other.example_id)
         ):
             pairs.append((trial, other))
     if not pairs:

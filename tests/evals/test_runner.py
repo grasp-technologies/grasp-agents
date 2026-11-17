@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from grasp_agents.evals import (
     Mean,
     PassRate,
     ResumeError,
+    RunProcess,
     RunStatus,
     Score,
     ScoreContext,
@@ -24,10 +26,14 @@ from grasp_agents.evals import (
     TrialContext,
     TrialProgress,
     Usage,
+    annotate_run,
+    close_run,
+    compare,
     evaluate,
     rescore,
     scorer,
 )
+from grasp_agents.evals._util import utc_now
 
 type Ctx = ScoreContext[int, int, int]
 
@@ -54,6 +60,25 @@ def store(tmp_path: Path) -> LocalRunStore:
 
 
 class TestEvaluate:
+    @pytest.mark.asyncio
+    async def test_plain_function_tasks_run_in_worker_threads(self) -> None:
+        loop_thread = threading.get_ident()
+        seen: list[tuple[int, int]] = []
+        both_started = threading.Barrier(2, timeout=5)
+
+        def blocking(x: int, trial: TrialContext) -> int:
+            # Two trials meet here: they run at once, off the event loop.
+            both_started.wait()
+            seen.append((threading.get_ident(), trial.repetition))
+            return x * 2
+
+        run = await evaluate(
+            FunctionTask(blocking), _numbers(2), [correct], concurrency=2, persist=False
+        )
+        assert run.counts.task_errors == 0
+        assert all(ident != loop_thread for ident, _ in seen)
+        assert len(seen) == 2
+
     @pytest.mark.asyncio
     async def test_scores_persist_and_reload(self, store: LocalRunStore) -> None:
         run = await evaluate(double, _numbers(), [correct], store=store)
@@ -237,7 +262,12 @@ class TestEvaluate:
             ]
         )
         run = await evaluate(
-            double, dataset, [correct], sealed_splits=["test"], persist=False
+            double,
+            dataset,
+            [correct],
+            sealed_splits=["test"],
+            include_sealed=True,
+            persist=False,
         )
         assert {t.example_id: t.sealed for t in run.trials} == {
             "dev": False,
@@ -477,6 +507,7 @@ class TestResumeRules:
         crashed = store.load(first.id)
         crashed.status = RunStatus.RUNNING
         crashed.provenance.observed_models = {}
+        crashed.process = None
         store.save(crashed)
         model["name"], fail = "m2", set()
         with pytest.raises(ResumeError, match="m2"):
@@ -529,8 +560,17 @@ class TestSelectionGuards:
                 data.select(["n0", "n3"]),
                 [correct],
                 sealed_splits=["test"],
+                include_sealed=True,
                 persist=False,
             )
+        unsealed = await evaluate(
+            double,
+            data.select(["n0", "n3"]),
+            [correct],
+            sealed_splits=["test"],
+            persist=False,
+        )
+        assert [t.example_id for t in unsealed.trials] == ["n0"]
         whole = await evaluate(
             double, data.split("test"), [correct], sealed_splits=["test"], persist=False
         )
@@ -676,6 +716,101 @@ class TestBudget:
         assert run.invalid_reason == "no trial ran"
 
 
+class TestRescoreSelection:
+    @staticmethod
+    def _counting() -> tuple[Any, list[str]]:
+        calls: list[str] = []
+
+        @scorer(name="correct", version="2")
+        def counted(ctx: Ctx) -> bool:
+            calls.append(ctx.example.id)
+            return ctx.output == ctx.reference
+
+        return counted, calls
+
+    @pytest.mark.asyncio
+    async def test_rescoring_some_examples_makes_a_child_of_their_trials(
+        self, store: LocalRunStore
+    ) -> None:
+        data = Dataset(
+            [
+                Example(id=f"n{i}", input=i, reference=i * 2, splits=[split])
+                for i, split in enumerate(["dev", "dev", "test", "test"])
+            ],
+            name="numbers",
+        )
+        parent = await evaluate(
+            double,
+            data,
+            [correct],
+            repetitions=2,
+            sealed_splits=["test"],
+            include_sealed=True,
+            store=store,
+        )
+        counted, calls = self._counting()
+        child = await rescore(parent.id, [counted], store=store, ids=["n1"])
+        assert sorted(calls) == ["n1", "n1"]
+        assert [e.id for e in child.examples] == ["n1"]
+        assert child.dataset.selection == ["ids=1"]
+        assert child.status == RunStatus.COMPLETED
+        assert compare(parent, child).n_paired_examples == 1
+        calls.clear()
+        by_split = await rescore(parent.id, [counted], store=store, split="dev")
+        assert sorted(set(calls)) == ["n0", "n1"]
+        assert by_split.dataset.selection == ["split=dev"]
+        with pytest.raises(SealedSelectionError, match="1 of the 2"):
+            await rescore(parent.id, [counted], store=store, ids=["n2"])
+
+    @pytest.mark.asyncio
+    async def test_rescoring_against_a_newer_dataset_version(
+        self, store: LocalRunStore
+    ) -> None:
+        old = Dataset(
+            [
+                Example(id="n0", input=0, reference=0, splits=["dev"]),
+                Example(id="n1", input=1, reference=99, splits=["dev"]),
+                Example(id="n2", input=2, reference=4, splits=["dev"]),
+                Example(id="n3", input=3, reference=6, splits=["dev"]),
+            ],
+            name="numbers",
+        )
+        counted, calls = self._counting()
+        parent = await evaluate(double, old.split("dev"), [counted], store=store)
+        assert parent.counts.trials_done == 4
+        newer = Dataset(
+            [
+                Example(id="n0", input=0, reference=0, splits=["dev-v2"]),
+                Example(id="n1", input=1, reference=2, splits=["dev-v2"]),
+                Example(id="n2", input=20, reference=40, splits=["dev-v2"]),
+            ],
+            name="numbers",
+            version="v2",
+        )
+        calls.clear()
+        child = await rescore(parent.id, [counted], store=store, dataset=newer)
+        # The scorer is unchanged: only the example whose reference changed is
+        # scored again.
+        assert calls == ["n1"]
+        assert child.metadata["unpaired"] == {
+            "missing": ["n3"],
+            "input_changed": ["n2"],
+            "sealed": 0,
+        }
+        assert child.dataset.version == "v2"
+        assert child.dataset.selection == ["ids=2"]
+        assert {e.id: e.splits for e in child.examples} == {
+            "n0": ["dev-v2"],
+            "n1": ["dev-v2"],
+        }
+        n1 = child.trial("n1")
+        assert n1 is not None
+        assert n1.example_hash == newer["n1"].content_hash
+        score = n1.score("correct")
+        assert score is not None
+        assert score.value is True
+
+
 class TestRescoreRules:
     @pytest.mark.asyncio
     async def test_unchanged_scorers_are_reused(self, store: LocalRunStore) -> None:
@@ -733,7 +868,7 @@ class TestRescoreRules:
         run = await evaluate(double, _numbers(3), [judged], store=store)
         # (The package exports a function named like the module.)
         module = importlib.import_module("grasp_agents.evals.scorer")
-        monkeypatch.setattr(module, "code_hash", lambda _: "edited")
+        monkeypatch.setattr(module, "source_identity", lambda _: "v2:edited")
         await rescore(run.id, [judged], store=store, output_type=int)
         assert len(calls) == 6
 
@@ -800,3 +935,83 @@ class TestRescoreRules:
         store.save(loaded)
         with pytest.raises(ValueError, match="not finished"):
             await rescore(parent.id, [correct], store=store)
+
+
+class TestLifecycleGuards:
+    @pytest.mark.asyncio
+    async def test_a_run_its_process_may_still_run_is_not_resumed(
+        self, store: LocalRunStore
+    ) -> None:
+        first = await evaluate(double, _numbers(2), [correct], store=store)
+        running = store.load(first.id)
+        running.status = RunStatus.RUNNING
+        store.save(running)  # its process is this one
+        with pytest.raises(ResumeError, match="still runs it"):
+            await evaluate(double, _numbers(2), [correct], store=store, resume=first.id)
+        resumed = await evaluate(
+            double, _numbers(2), [correct], store=store, resume=first.id, force=True
+        )
+        assert resumed.status == RunStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_annotations_build_on_the_stored_header(
+        self, store: LocalRunStore
+    ) -> None:
+        run = await evaluate(double, _numbers(2), [correct], store=store)
+        stale = run.model_copy(deep=True)
+        annotate_run(run.id, notes=["first"], store=store)
+        assert annotate_run(stale, notes=["second"], store=store).notes == [
+            "first",
+            "second",
+        ]
+        running = store.load(run.id)
+        running.status = RunStatus.RUNNING
+        store.save(running)
+        with pytest.raises(ValueError, match="is running"):
+            annotate_run(run.id, notes=["third"], store=store)
+
+    @pytest.mark.asyncio
+    async def test_closing_a_child_counts_only_its_own_usage(
+        self, store: LocalRunStore
+    ) -> None:
+        parent = await evaluate(_costly(1.0), _numbers(2), [correct], store=store)
+
+        @scorer(name="judge")
+        def judge(ctx: Ctx) -> bool:
+            ctx.record_usage(Usage(input_tokens=1, cost_usd=0.25))
+            return True
+
+        child = await rescore(parent.id, [judge], store=store, output_type=int)
+        assert child.usage.cost_usd == pytest.approx(0.5)
+        stuck = store.load(child.id)
+        stuck.status = RunStatus.RUNNING
+        stuck.process = None
+        stuck.usage = Usage()
+        store.save(stuck)
+        closed = close_run(child.id, store=store, force=True)
+        assert closed.usage.cost_usd == pytest.approx(0.5)
+
+
+def test_processes_are_not_probed_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import socket
+    import sys
+
+    from grasp_agents.evals._execution import process_alive
+
+    here = RunProcess(host=socket.gethostname(), pid=os.getpid(), started_at=utc_now())
+    assert process_alive(here) is True
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert process_alive(here) is None
+    with pytest.raises(ValueError, match="greater than 0"):
+        RunProcess(host="h", pid=-1, started_at=utc_now())
+
+
+def test_tracing_set_up_without_a_project_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from grasp_agents.evals import tracing
+
+    monkeypatch.setattr(tracing.trace, "get_tracer_provider", TracerProvider)
+    with pytest.raises(ValueError, match="without a Phoenix project"):
+        tracing.start_tracing("evals")

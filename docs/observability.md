@@ -40,10 +40,13 @@ init_phoenix(project_name="my-app")   # needs TELEMETRY_COLLECTOR_HTTP_ENDPOINT
   OTLP/HTTP; it needs `opentelemetry-exporter-otlp-proto-http`, which is not a
   dependency.
 - `init_phoenix(batch=False, use_litellm_instr=True, use_llm_provider_instr=True,
-  project_name=...)` reads `TELEMETRY_COLLECTOR_HTTP_ENDPOINT` (it logs a warning
-  and does nothing when unset), creates the provider if needed, and adds an
-  OpenInference span processor (converting OpenLLMetry-style attributes) plus a
-  Phoenix HTTP exporter wrapped in `FilteringExporter`. The filter drops spans
+  project_name=..., collector_endpoint=None)` sends spans to `collector_endpoint`,
+  else `TELEMETRY_COLLECTOR_HTTP_ENDPOINT` (it logs a warning and does nothing
+  when neither is set), creates the provider if needed, and adds an
+  OpenInference span processor (converting OpenLLMetry-style attributes) plus an
+  OTLP/HTTP exporter wrapped in `FilteringExporter`. The exporter sends
+  `PHOENIX_API_KEY` unless `PHOENIX_BASE_URL` names another server than the
+  collector's (other headers come from `OTEL_EXPORTER_OTLP_HEADERS`). The filter drops spans
   whose `gen_ai.system` / `gen_ai.provider.name` is an LLM provider (those calls
   are already captured by the OpenInference instrumentors) and cloud metadata
   requests. It then applies the OpenInference instrumentors for LiteLLM, OpenAI,
@@ -199,8 +202,6 @@ Both wrap an event stream and yield every event through. See
 
 ## Limitations
 
-- `init_phoenix` takes no endpoint argument; it reads only
-  `TELEMETRY_COLLECTOR_HTTP_ENDPOINT`.
 - There are no OTel metrics or logs exports; usage is available in-process
   (`UsageTracker`) and on spans.
 - Cost is only as current as the installed LiteLLM pricing table.

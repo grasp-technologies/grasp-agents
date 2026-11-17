@@ -1,5 +1,6 @@
 import functools
 import json
+import sys
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -242,7 +243,7 @@ class TestProcessorPairwiseJudge:
         consistent = run.metric("pass_rate(longer.position_consistent)")
         assert consistent is not None
         assert consistent.value == 1.0
-        assert run.scorers[0].config["judge"]["fingerprint"] is not None
+        assert run.scorers[0].fingerprint is not None
 
     @pytest.mark.asyncio
     async def test_pairwise_judge_usage_reaches_the_trial(
@@ -456,3 +457,37 @@ class TestJudgeSpend:
         assert "judge failed" in run.trials[0].error.message  # type: ignore[union-attr]
         await asyncio.sleep(0.3)
         assert finished == []
+
+
+class TestDeclaredIdentity:
+    def test_declared_parts_join_the_processor_fingerprint(
+        self, tmp_path: Path
+    ) -> None:
+        rubric = tmp_path / "rubric.md"
+        rubric.write_text("v1")
+        plain = ProcessorScorer(_judge_with(), to_scores=_passed).describe()
+        declared = ProcessorScorer(
+            _judge_with(), to_scores=_passed, identity=[rubric]
+        ).describe()
+        assert plain.fingerprint is not None
+        assert declared.fingerprint not in {None, plain.fingerprint}
+        rubric.write_text("v2")
+        redeclared = ProcessorScorer(
+            _judge_with(), to_scores=_passed, identity=[rubric]
+        ).describe()
+        assert redeclared.fingerprint != declared.fingerprint
+
+    def test_a_factory_judge_is_identified_by_the_constants_it_reads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def build() -> Any:
+            return _judge_with(max_turns=_JUDGE_TURNS)
+
+        before = ProcessorScorer(build, to_scores=_passed).describe()
+        assert before.fingerprint is None
+        monkeypatch.setattr(sys.modules[__name__], "_JUDGE_TURNS", 7)
+        after = ProcessorScorer(build, to_scores=_passed).describe()
+        assert after.source != before.source
+
+
+_JUDGE_TURNS = 3

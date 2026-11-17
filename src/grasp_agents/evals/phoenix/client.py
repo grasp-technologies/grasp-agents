@@ -12,6 +12,7 @@ import re
 import time
 from collections.abc import Awaitable, Mapping
 from typing import TYPE_CHECKING, Any, Literal, Self, cast, override
+from urllib.parse import quote
 
 import httpx
 
@@ -30,20 +31,54 @@ type AnnotatorKind = Literal["LLM", "CODE", "HUMAN"]
 MIN_SERVER_VERSION: ServerVersion = (20, 0, 0)
 
 _IDEMPOTENT = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
+# POSTs the server makes idempotent: a repeated experiment run is refused
+# (409) once it succeeded and overwritten otherwise; an evaluation is an
+# upsert on (run, name).
+_IDEMPOTENT_POSTS = (
+    re.compile(r"/v1/experiments/[^/]+/runs$"),
+    re.compile(r"/v1/experiment_evaluations$"),
+)
 _GATEWAY_ERRORS = frozenset({502, 503, 504})
+
+
+def _repeatable(request: httpx.Request) -> bool:
+    if request.method in _IDEMPOTENT:
+        return True
+    path = request.url.path
+    return request.method == "POST" and any(p.search(path) for p in _IDEMPOTENT_POSTS)
+
+
 _MAX_DELAY_S = 60.0
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)\S*")
 
 
 class PhoenixError(RuntimeError):
+    """A failed Phoenix request; ``status`` is 0 when no response came."""
+
     def __init__(self, status: int, method: str, path: str, detail: str) -> None:
-        super().__init__(f"Phoenix {method} {path} failed ({status}): {detail}")
+        code = f" ({status})" if status else ""
+        super().__init__(f"Phoenix {method} {path} failed{code}: {detail}")
         self.status = status
+        self.method = method
+        self.path = path
         self.detail = detail
 
 
 class PhoenixCompatibilityError(RuntimeError):
     pass
+
+
+class PhoenixUnavailableError(PhoenixError):
+    """
+    The server answered with a server error (5xx) after retries, or no
+    response came.
+    """
+
+
+def phoenix_error(status: int, method: str, path: str, detail: str) -> PhoenixError:
+    """A :class:`PhoenixError`, :class:`PhoenixUnavailableError` for a 5xx."""
+    cls = PhoenixUnavailableError if status >= 500 else PhoenixError
+    return cls(status, method, path, detail)
 
 
 def normalize_base_url(url: str) -> str:
@@ -86,7 +121,8 @@ class _RetryingClient(httpx.AsyncClient):
     """
     Retries a request only when repeating it cannot duplicate a write: it
     never reached the server, the server rate-limited it (429), or it is
-    idempotent and failed on a gateway error or timeout.
+    idempotent (by method, or a POST the server makes idempotent) and failed
+    on a gateway error, a timeout or a dropped connection.
     """
 
     def __init__(self, *, retries: int, **kwargs: Any) -> None:
@@ -116,12 +152,12 @@ class _RetryingClient(httpx.AsyncClient):
                 if attempt >= self._retries:
                     raise
             except (httpx.TimeoutException, httpx.NetworkError):
-                if request.method not in _IDEMPOTENT or attempt >= self._retries:
+                if not _repeatable(request) or attempt >= self._retries:
                     raise
             else:
                 status = response.status_code
                 retryable = status == 429 or (
-                    status in _GATEWAY_ERRORS and request.method in _IDEMPOTENT
+                    status in _GATEWAY_ERRORS and _repeatable(request)
                 )
                 if not retryable or attempt >= self._retries:
                     return response
@@ -141,7 +177,7 @@ class _RetryingClient(httpx.AsyncClient):
 def _phoenix_error(
     exc: httpx.HTTPStatusError, detail: str | None = None
 ) -> PhoenixError:
-    return PhoenixError(
+    return phoenix_error(
         exc.response.status_code,
         exc.request.method,
         exc.request.url.path,
@@ -237,13 +273,97 @@ class PhoenixClient:
     ) -> dict[str, Any]:
         response = await self.http.request(method, path, params=params, json=json)
         if not response.is_success:
-            raise PhoenixError(response.status_code, method, path, response.text[:500])
+            raise phoenix_error(response.status_code, method, path, response.text[:500])
         return cast("dict[str, Any]", response.json())
+
+    async def graphql(
+        self, query: str, variables: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """The ``data`` of a GraphQL request (errors raise :class:`PhoenixError`)."""
+        body = await self.request_json(
+            "POST", "graphql", json={"query": query, "variables": dict(variables or {})}
+        )
+        errors = cast("list[dict[str, Any]]", body.get("errors") or [])
+        if errors:
+            detail = "; ".join(str(e.get("message")) for e in errors)
+            raise PhoenixError(200, "POST", "graphql", detail)
+        return cast("dict[str, Any]", body.get("data") or {})
+
+    async def delete_project(self, name: str) -> bool:
+        """Delete a project and its traces; ``False`` when there is none."""
+        response = await self.http.delete(f"v1/projects/{quote(name, safe='')}")
+        if response.status_code == 404:
+            return False
+        if not response.is_success:
+            raise phoenix_error(
+                response.status_code, "DELETE", "v1/projects", response.text[:500]
+            )
+        return True
+
+    async def delete_experiment(self, experiment_id: str) -> bool:
+        """Delete an experiment with its project; ``False`` when there is none."""
+        response = await self.http.delete(
+            f"v1/experiments/{quote(experiment_id, safe='')}",
+            params={"delete_project": "true"},
+        )
+        if response.status_code == 404:
+            return False
+        if not response.is_success:
+            raise phoenix_error(
+                response.status_code, "DELETE", "v1/experiments", response.text[:500]
+            )
+        return True
+
+    async def delete_dataset(self, dataset_id: str) -> None:
+        """
+        Delete a dataset with its experiments and their projects (Phoenix's REST
+        delete leaves the projects behind; its GraphQL mutation does not).
+        """
+        await self.graphql(
+            "mutation($id: ID!) { deleteDataset(input: {datasetId: $id}) "
+            "{ dataset { id } } }",
+            {"id": dataset_id},
+        )
+
+    async def retention(self, project: str) -> dict[str, Any] | None:
+        """
+        The trace retention policy of a project (``{name, rule}``), or
+        ``None`` when there is no such project.
+        """
+        data = await self.graphql(
+            "query($name: String!) { getProjectByName(name: $name) "
+            "{ traceRetentionPolicy { name rule { __typename "
+            "... on TraceRetentionRuleMaxDays { maxDays } "
+            "... on TraceRetentionRuleMaxCount { maxCount } "
+            "... on TraceRetentionRuleMaxDaysOrCount { maxDays maxCount } } } } }",
+            {"name": project},
+        )
+        found = cast("dict[str, Any] | None", data.get("getProjectByName"))
+        if found is None:
+            return None
+        return cast("dict[str, Any]", found["traceRetentionPolicy"])
+
+    async def trace_project(self, trace_id: str) -> str | None:
+        """The project holding a trace (by its OTel id), or ``None``."""
+        data = await self.graphql(
+            "query($id: String!) { getTraceByOtelId(traceId: $id) "
+            "{ project { name } } }",
+            {"id": trace_id.lower()},
+        )
+        found = cast("dict[str, Any] | None", data.get("getTraceByOtelId"))
+        return None if found is None else str(found["project"]["name"])
 
     async def server_version(self) -> ServerVersion:
         if self._version is None:
             response = await self.http.get("arize_phoenix_version")
             text = response.text.strip()
+            if response.status_code >= 500:
+                raise PhoenixUnavailableError(
+                    response.status_code,
+                    "GET",
+                    "arize_phoenix_version",
+                    f"{self.base_url} is unavailable: {text[:80]!r}",
+                )
             match = _VERSION_RE.fullmatch(text) if response.is_success else None
             if match is None:
                 raise PhoenixCompatibilityError(
@@ -289,11 +409,26 @@ class PhoenixClient:
         found = cast("list[dict[str, Any]]", body.get("data") or [])
         return found[0] if found else None
 
-    async def update_experiment_metadata(
-        self, experiment_id: str, metadata: Mapping[str, Any]
-    ) -> None:
-        await self.request_json(
-            "PATCH",
-            f"v1/experiments/{experiment_id}",
-            json={"metadata": dict(metadata)},
+    async def get_experiment(self, experiment_id: str) -> dict[str, Any]:
+        body = await self.request_json(
+            "GET", f"v1/experiments/{quote(experiment_id, safe='')}"
         )
+        return cast("dict[str, Any]", body.get("data") or {})
+
+    async def update_experiment(
+        self,
+        experiment_id: str,
+        *,
+        description: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Set an experiment's description and metadata (which is replaced)."""
+        body: dict[str, Any] = {}
+        if description is not None:
+            body["description"] = description
+        if metadata is not None:
+            body["metadata"] = dict(metadata)
+        if body:
+            await self.request_json(
+                "PATCH", f"v1/experiments/{quote(experiment_id, safe='')}", json=body
+            )

@@ -1,6 +1,8 @@
 import json
 import logging
 import os
+import shutil
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any, Protocol
@@ -14,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 EVALS_DIR_ENV = "GRASP_EVALS_DIR"
 DEFAULT_EVALS_DIR = ".evals"
+CACHE_DIR_ENV = "GRASP_EVALS_CACHE_DIR"
 _TAIL_BLOCK = 1 << 16
 
 
@@ -65,6 +68,57 @@ class RunStore(Protocol):
 
 def default_evals_dir() -> Path:
     return Path(os.environ.get(EVALS_DIR_ENV) or DEFAULT_EVALS_DIR)
+
+
+def default_cache_dir() -> Path:
+    """
+    Where pulled datasets are cached: ``$GRASP_EVALS_CACHE_DIR``, else
+    ``$XDG_CACHE_HOME/grasp-evals``, else ``~/.cache/grasp-evals``.
+    """
+    explicit = os.environ.get(CACHE_DIR_ENV)
+    if explicit:
+        return Path(explicit)
+    base = os.environ.get("XDG_CACHE_HOME")
+    return (Path(base) if base else Path.home() / ".cache") / "grasp-evals"
+
+
+def _warn_if_untracked_in_repo(root: Path) -> None:
+    # The default store is relative to the working directory, which is often
+    # a repository's root: say so, rather than leave untracked data there.
+    git = shutil.which("git")
+    if git is None:
+        return
+    parent = root.resolve().parent
+    try:
+        top = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+            [git, "rev-parse", "--show-toplevel"],
+            cwd=parent,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if top.returncode != 0:
+            return
+        ignored = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+            # A path inside it matches "dir/" patterns before it exists.
+            [git, "check-ignore", "-q", str(root.resolve() / "runs")],
+            cwd=parent,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if ignored.returncode != 0:
+        logger.warning(
+            "Storing evaluation runs in %s, inside the git repository %s: set %s "
+            "to keep them elsewhere, or add %s to .gitignore",
+            root.resolve(),
+            top.stdout.strip(),
+            EVALS_DIR_ENV,
+            DEFAULT_EVALS_DIR,
+        )
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -164,17 +218,22 @@ class LocalRunStore:
         transcripts.jsonl   per-trial event streams (when captured)
         report.md           rendered summary
 
-    ``root`` defaults to ``$GRASP_EVALS_DIR`` or ``./.evals``.
+    ``root`` defaults to ``$GRASP_EVALS_DIR`` or ``./.evals``; creating the
+    latter inside a git repository that does not ignore it logs a warning.
     """
 
     def __init__(self, root: str | Path | None = None) -> None:
         self.root = Path(root) if root is not None else default_evals_dir()
         self.runs_dir = self.root / "runs"
+        self._check_location = root is None and not os.environ.get(EVALS_DIR_ENV)
 
     def run_dir(self, run_id: str) -> Path:
         return self.runs_dir / run_id
 
     def create(self, run: EvaluationRun) -> None:
+        if self._check_location and not self.root.exists():
+            _warn_if_untracked_in_repo(self.root)
+        self._check_location = False
         directory = self.run_dir(run.id)
         directory.mkdir(parents=True, exist_ok=False)
         _atomic_write(directory / "run.json", run.model_dump_json(indent=2))

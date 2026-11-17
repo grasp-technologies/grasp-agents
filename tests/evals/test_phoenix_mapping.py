@@ -1,16 +1,27 @@
 import asyncio
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 from pydantic import BaseModel, TypeAdapter
 
-from grasp_agents.evals import Dataset, Example, Score, Trial
+from grasp_agents.evals import (
+    Dataset,
+    Example,
+    PhoenixRef,
+    Score,
+    Trial,
+    load_phoenix_dataset,
+    parse_phoenix_ref,
+)
 from grasp_agents.evals.phoenix import (
     PhoenixClient,
     PhoenixCompatibilityError,
     PhoenixError,
+    PhoenixUnavailableError,
     from_phoenix_record,
     normalize_base_url,
     phoenix_source,
@@ -21,12 +32,15 @@ from grasp_agents.evals.phoenix.client import (
 )
 from grasp_agents.evals.phoenix.sync import (
     GRASP_KEY,
+    _cache_path,  # pyright: ignore[reportPrivateUsage]
     _digest,  # pyright: ignore[reportPrivateUsage]
     _experiment_splits,  # pyright: ignore[reportPrivateUsage]
     _is_example_node_id,  # pyright: ignore[reportPrivateUsage]
+    describe_retention,
     parse_phoenix_source,
     record_id,
     record_node_id,
+    scrub,
 )
 
 
@@ -353,3 +367,167 @@ async def test_wrapped_sdk_failures_are_phoenix_errors() -> None:
     async with _client(lambda _: httpx.Response(200)) as client:
         with pytest.raises(PhoenixError, match="422"):
             await client.call(upload())
+
+
+# --- References ---
+
+
+def test_references_can_name_their_server() -> None:
+    assert parse_phoenix_ref("phoenix:staging/questions@v1") == PhoenixRef(
+        "staging/questions", "v1"
+    )
+    named = parse_phoenix_ref("phoenix:https://phoenix.example.com:8443/staging/q@v/1=")
+    assert named == PhoenixRef("staging/q", "v/1=", "https://phoenix.example.com:8443")
+    assert str(named) == "phoenix:https://phoenix.example.com:8443/staging/q@v/1="
+    assert parse_phoenix_ref("http://localhost:6006/labels").version is None
+    with pytest.raises(ValueError, match="HOST/NAME"):
+        parse_phoenix_ref("phoenix:https://phoenix.example.com")
+    assert named.server(None) == "https://phoenix.example.com:8443"
+    assert named.server("HTTPS://Phoenix.Example.com:8443/") == named.base_url
+    with pytest.raises(ValueError, match="names the server"):
+        named.server("https://elsewhere.example.com")
+    assert PhoenixRef("q").server("https://elsewhere.example.com") == (
+        "https://elsewhere.example.com"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_named_server_wins_over_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = "http://phoenix.example.com"
+    record = to_phoenix_record(Example[str, str](id="q1", input="2+2?", reference="4"))
+    meta = {
+        "name": "staging/questions",
+        "dataset_id": "RGF0YXNldDox",
+        "version_id": "v7",
+        "description": None,
+        "base_url": server,
+        "count": 1,
+    }
+    row = {"id": record.id, "input": record.input, "output": record.output}
+    path = _cache_path(tmp_path, server, "staging/questions", "v7")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(meta) + "\n" + json.dumps(row) + "\n")
+    # Pinned versions come from the cache of the server the reference names,
+    # so no request is made (the environment's server does not exist).
+    monkeypatch.setenv("PHOENIX_BASE_URL", "https://phoenix.test")
+    dataset = await load_phoenix_dataset(
+        f"phoenix:{server}/staging/questions@v7", cache_dir=tmp_path
+    )
+    assert dataset.ids == ["q1"]
+    assert dataset.source == phoenix_source(server, "RGF0YXNldDox")
+
+
+# --- Push safety ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_backoff")
+async def test_trial_posts_the_server_dedupes_are_retried() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) == 1:
+            return httpx.Response(502)
+        return httpx.Response(200, json={})
+
+    async with _client(handler) as client:
+        for path in ("v1/experiments/RXhw/runs", "v1/experiment_evaluations"):
+            calls.clear()
+            assert (await client.http.post(path, json={})).status_code == 200
+            assert len(calls) == 2
+        calls.clear()
+        # Creating an experiment is not repeatable.
+        assert (
+            await client.http.post("v1/datasets/RGF0/experiments", json={})
+        ).status_code == 502
+        assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_backoff")
+async def test_an_unavailable_server_is_not_called_foreign() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="Bad Gateway")
+
+    async with _client(handler, retries=1) as client:
+        with pytest.raises(PhoenixUnavailableError, match="unavailable"):
+            await client.check_server()
+
+
+def test_nul_characters_are_scrubbed_everywhere() -> None:
+    value = {"a\x00": ["x\x00y", 1, {"k": "ok"}], "b": "fine"}
+    cleaned, altered = scrub(value)
+    assert altered
+    assert cleaned == {"a�": ["x�y", 1, {"k": "ok"}], "b": "fine"}
+    same = {"b": ["fine", 2]}
+    assert scrub(same) == (same, False)
+    record = to_phoenix_record(
+        Example[str, str](
+            id="e", input="in\x00put", reference="r", metadata={"n": "\x00"}
+        )
+    )
+    assert record.input == {"value": "in�put"}
+    assert record.metadata["n"] == "�"
+
+
+def test_retention_policies_are_described() -> None:
+    assert describe_retention({"name": "Default", "rule": {"maxDays": 0.0}}) == (
+        "kept indefinitely (policy 'Default')",
+        False,
+    )
+    assert describe_retention(
+        {"name": "short", "rule": {"maxDays": 4.0, "maxCount": 1000}}
+    ) == ("kept for 4 days or the newest 1000 traces (policy 'short')", True)
+
+
+@pytest.mark.asyncio
+async def test_experiment_ids_stay_inside_their_path() -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.raw_path.decode())
+        return httpx.Response(404)
+
+    async with _client(handler) as client:
+        assert not await client.delete_experiment("../datasets/7")
+    (path,) = paths
+    assert path.startswith("/v1/experiments/")
+    assert "/datasets/" not in path
+
+
+def test_references_to_a_server_under_a_path_leave_it_out() -> None:
+    ref = PhoenixRef("labels", "3", "https://host.example.com/phoenix")
+    assert str(ref) == "phoenix:labels@3"
+    assert parse_phoenix_ref(str(ref)) == PhoenixRef("labels", "3")
+
+
+@pytest.mark.asyncio
+async def test_server_errors_are_unavailability() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    async with _client(handler, retries=0) as client:
+        with pytest.raises(PhoenixUnavailableError, match="500"):
+            await client.request_json("GET", "v1/datasets")
+
+
+def test_the_trace_exporter_keeps_the_key_with_its_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from grasp_agents.telemetry.phoenix import (
+        _phoenix_auth,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    monkeypatch.setenv("PHOENIX_API_KEY", "secret")
+    monkeypatch.delenv("PHOENIX_BASE_URL", raising=False)
+    assert _phoenix_auth("https://collector.example.com/v1/traces") == {
+        "authorization": "Bearer secret"
+    }
+    monkeypatch.setenv("PHOENIX_BASE_URL", "https://phoenix.example.com")
+    assert _phoenix_auth("https://collector.example.com/v1/traces") is None
+    assert _phoenix_auth("https://phoenix.example.com:443/v1/traces") == {
+        "authorization": "Bearer secret"
+    }
