@@ -280,7 +280,7 @@ _DEPENDENCIES: dict[str, tuple[dict[str, str], tuple[str, str], str]] = {
     ),
     "wrapping decorator": (
         {
-            "decos.py": """
+            "wrappers.py": """
                 import functools
                 def normalized(fn):
                     @functools.wraps(fn)
@@ -289,7 +289,7 @@ _DEPENDENCIES: dict[str, tuple[dict[str, str], tuple[str, str], str]] = {
                     return wrapper
                 """,
             "main.py": """
-                from decos import normalized
+                from wrappers import normalized
                 @normalized
                 def score(ctx):
                     return ctx == "a"

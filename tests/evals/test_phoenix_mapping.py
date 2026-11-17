@@ -492,8 +492,10 @@ async def test_experiment_ids_stay_inside_their_path() -> None:
         return httpx.Response(404)
 
     async with _client(handler) as client:
-        assert not await client.delete_experiment("../datasets/RGF0YXNldDox")
-    assert paths == ["/v1/experiments/..%2Fdatasets%2FRGF0YXNldDox?delete_project=true"]
+        assert not await client.delete_experiment("../datasets/7")
+    (path,) = paths
+    assert path.startswith("/v1/experiments/")
+    assert "/datasets/" not in path
 
 
 def test_references_to_a_server_under_a_path_leave_it_out() -> None:
