@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,25 @@ def store(tmp_path: Path) -> LocalRunStore:
 
 
 class TestEvaluate:
+    @pytest.mark.asyncio
+    async def test_plain_function_tasks_run_in_worker_threads(self) -> None:
+        loop_thread = threading.get_ident()
+        seen: list[tuple[int, int]] = []
+        both_started = threading.Barrier(2, timeout=5)
+
+        def blocking(x: int, trial: TrialContext) -> int:
+            # Two trials meet here: they run at once, off the event loop.
+            both_started.wait()
+            seen.append((threading.get_ident(), trial.repetition))
+            return x * 2
+
+        run = await evaluate(
+            FunctionTask(blocking), _numbers(2), [correct], concurrency=2, persist=False
+        )
+        assert run.counts.task_errors == 0
+        assert all(ident != loop_thread for ident, _ in seen)
+        assert len(seen) == 2
+
     @pytest.mark.asyncio
     async def test_scores_persist_and_reload(self, store: LocalRunStore) -> None:
         run = await evaluate(double, _numbers(), [correct], store=store)

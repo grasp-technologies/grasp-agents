@@ -29,7 +29,7 @@ Dataset ─select─▶ Example ─Task─▶ Trial (output | error) ─Scorers�
 | Concept | What it is | Code |
 |---|---|---|
 | `Example` | `id`, `input`, `reference`, `metadata`, `splits`. Frozen. Identity is `id` plus the `content_hash` of the stored record | `evals/types.py` → `Example` |
-| `Task` | The system under test: an async function (`FunctionTask`), any `Processor` (`ProcessorTask`), or a `Task` subclass | `evals/task.py` |
+| `Task` | The system under test: a function (`FunctionTask`; a plain one runs in a worker thread), any `Processor` (`ProcessorTask`), or a `Task` subclass | `evals/task.py` |
 | `Trial` | One run of one example at one repetition: a JSON output or an `error`, plus duration, usage, models, trace id and scores | `evals/types.py` → `Trial` |
 | `Scorer` | Produces the scores of one trial. Judges are scorers too | `evals/scorer.py`, `evals/judge.py` |
 | `Score.value` | `bool` (pass/fail), a number, a `str` label, or `None` (unscored) | `evals/types.py` → `Score` |

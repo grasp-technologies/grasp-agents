@@ -1,6 +1,6 @@
 # Evaluations
 
-`grasp_agents.evals` measures a processor (or any async function) against a
+`grasp_agents.evals` measures a processor (or any function) against a
 dataset: run it on every example, score each output with scorers, aggregate
 with metrics, and compare runs. Every run is an append-only record on disk that
 never changes once completed; rescoring, retrying and pairwise judging create
@@ -46,7 +46,8 @@ integrity functions (`example -> problem message | None`) run before every run.
 
 ## Tasks
 
-`evaluate` accepts a `Task`, any `Processor`, or an async function. A
+`evaluate` accepts a `Task`, any `Processor`, or a function — async, or plain,
+which `FunctionTask` runs in a worker thread so it does not block other trials. A
 `ProcessorTask(processor_or_factory, version=, ctx_factory=, input_mode=,
 input_fn=, output_fn=, output_type=)` runs each trial in its own
 `SessionContext`, with that session ambient for the whole trial:

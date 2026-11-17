@@ -26,6 +26,7 @@ from ._util import (
     short_hash,
     to_jsonable,
 )
+from .scorer import call_off_loop
 from .types import ComponentInfo, Example, Usage
 
 
@@ -99,8 +100,12 @@ class Task[InT, OutT](ABC):
 
 
 type TaskFn[InT, OutT] = (
-    Callable[[InT], Awaitable[OutT]] | Callable[[InT, TrialContext], Awaitable[OutT]]
+    Callable[[InT], Awaitable[OutT]]
+    | Callable[[InT, TrialContext], Awaitable[OutT]]
+    | Callable[[InT], OutT]
+    | Callable[[InT, TrialContext], OutT]
 )
+"""An async or plain function of the input (and optionally the trial)."""
 
 
 def _trial_passing(fn: Callable[..., Any]) -> Literal["keyword", "positional"] | None:
@@ -119,11 +124,21 @@ def _trial_passing(fn: Callable[..., Any]) -> Literal["keyword", "positional"] |
     return "positional" if len(positional) >= 2 else None
 
 
+def _is_async(fn: Callable[..., Any]) -> bool:
+    # A callable object is async when its ``__call__`` is.
+    return inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(
+        type(fn).__call__
+    )
+
+
 class FunctionTask[InT, OutT](Task[InT, OutT]):
     """
-    Wraps ``async def fn(input)`` or ``async def fn(input, trial)``; the trial
-    is passed when ``fn`` takes a second required positional parameter or a
-    parameter named ``trial``.
+    Wraps ``fn(input)`` or ``fn(input, trial)``; the trial is passed when
+    ``fn`` takes a second required positional parameter or a parameter named
+    ``trial``. An ``async`` function runs on the event loop; a plain one runs
+    in a worker thread of its own, so a blocking or CPU-bound task does not
+    stall concurrent trials (on a timeout its thread is abandoned, not
+    stopped).
     """
 
     def __init__(
@@ -141,6 +156,7 @@ class FunctionTask[InT, OutT](Task[InT, OutT]):
         self._config = dict(config or {})
         parameters = list(inspect.signature(fn).parameters)
         self._trial_passing = _trial_passing(fn)
+        self._async = _is_async(fn)
         try:
             hints = get_type_hints(fn)
         except Exception:
@@ -170,12 +186,16 @@ class FunctionTask[InT, OutT](Task[InT, OutT]):
         return [self._fn]
 
     async def run(self, input: InT, trial: TrialContext) -> OutT:  # ruff: ignore[builtin-argument-shadowing]
-        call = cast("Callable[..., Awaitable[OutT]]", self._fn)
-        if self._trial_passing == "keyword":
-            return await call(input, trial=trial)
-        if self._trial_passing == "positional":
-            return await call(input, trial)
-        return await call(input)
+        fn = cast("Callable[..., OutT | Awaitable[OutT]]", self._fn)
+
+        def call(_: None) -> OutT | Awaitable[OutT]:
+            if self._trial_passing == "keyword":
+                return fn(input, trial=trial)
+            if self._trial_passing == "positional":
+                return fn(input, trial)
+            return fn(input)
+
+        return await call_off_loop(call, None, is_async=self._async)
 
 
 type ProcessorSource[InT, OutT] = (
@@ -262,7 +282,7 @@ def processor_code(root: Processor[Any, Any, Any]) -> list[Any]:
     grasp-agents, installed packages and the standard library is left out.
     """
     from grasp_agents.llm.llm import LLM  # ruff: ignore[import-outside-top-level]
-    from grasp_agents.tools.base import (
+    from grasp_agents.tools.base import (  # ruff: ignore[import-outside-top-level]
         BaseTool,
     )
 
