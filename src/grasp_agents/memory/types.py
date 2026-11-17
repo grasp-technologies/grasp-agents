@@ -47,10 +47,11 @@ class MemoryFrontmatter(BaseModel):
     """
     YAML frontmatter for a topic memory file.
 
-    ``name`` and ``description`` are required;
-    ``type`` is one of ``user|feedback|project|reference`` (closed
-    taxonomy with graceful degradation — unknown values are preserved as
-    ``raw_type`` but :attr:`memory_type` returns ``None``). Recency comes
+    ``name`` and ``description`` are required; ``type`` is free text, kept as
+    ``raw_type``. :attr:`memory_type` returns it when it is one of the default
+    types (``user|feedback|project|reference``) and ``None`` otherwise, and
+    :attr:`type_label` renders any type, so a host's own taxonomy
+    (``MemoryProvider(memory_types=...)``) shows up as written. Recency comes
     from filesystem ``mtime``, not a frontmatter field.
     """
 

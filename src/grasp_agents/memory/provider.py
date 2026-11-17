@@ -112,16 +112,16 @@ class MemoryProvider:
             fields: ``{memdir}``, ``{index_file}``, ``{index_path}``,
             ``{memory_types}``, ``{max_lines}``, ``{max_bytes}`` and
             ``{selector_instructions}``; literal braces must be doubled.
-
-    Raises:
-        ValueError: ``memory_types`` is empty or differs from the defaults
-            without an ``instructions_template``, or the template does not
-            render.
         auto_create_index: When True (default) and ``MEMORY.md`` is absent,
             bootstrap an empty index (creating the memdir if needed) on first
             load so the agent has a file to append topic pointers to. Best-
             effort: silently falls back to no index if the backend can't
             write (read-only / no write path). Set False for read-only memdirs.
+
+    Raises:
+        ValueError: ``memory_types`` is empty or differs from the defaults
+            without an ``instructions_template``, or the template does not
+            render.
 
     Carries an optional relevance selector (:meth:`set_selector`)
     consumed by per-turn user-message attachments (e.g. the

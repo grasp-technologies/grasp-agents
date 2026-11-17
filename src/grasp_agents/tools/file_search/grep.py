@@ -59,8 +59,8 @@ class GrepInput(BaseModel):
 
     pattern: str = Field(
         description=(
-            "Regular expression to search for. Uses ripgrep's default "
-            "Rust regex flavor (Perl-style syntax minus lookbehinds). "
+            "Regular expression to search for, in Perl-style syntax; "
+            "lookbehinds may not be supported. "
             "Examples: ``def \\w+``, ``TODO|FIXME``, ``import \\S+``. "
             "Escape literal braces (``interface\\{\\}`` to match Go "
             "``interface{}``)."

@@ -344,7 +344,7 @@ class MCPFileBackend(FileBackend):
             context,
         )
         raise NotImplementedError(
-            "MCPFileBackend does not implement grep yet. The current "
+            "MCPFileBackend does not implement grep. The current "
             "file-tool protocol only mandates read/write/delete; servers "
             "that want grep would need to expose a dedicated tool. "
             "Use Glob (via find_files) + Read instead for content "
