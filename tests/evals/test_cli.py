@@ -611,3 +611,28 @@ def test_outputs_produced_elsewhere_are_imported(
     assert run["counts"]["trials_done"] == 4  # the sealed split is left out
     assert run["metrics"]["pass_rate(correct)"]["value"] == 1.0
     assert run["cost_usd"] == pytest.approx(2.0)
+
+
+def test_runs_carry_links_and_notes(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = str(tmp_path / "evals")
+    _, base = _run_json(capsys, "--root", root, "run", f"{module}:buggy", "--json")
+    code, annotated = _run_json(
+        capsys,
+        "--root",
+        root,
+        "annotate",
+        base["id"],
+        "--link",
+        "preview=https://example.com/p",
+        "--note",
+        "first pass",
+    )
+    assert code == 0
+    assert annotated["links"] == {"preview": "https://example.com/p"}
+    _, shown = _run_json(capsys, "--root", root, "show", base["id"], "--json")
+    assert shown["links"] == {"preview": "https://example.com/p"}
+    assert shown["notes"] == ["first pass"]
+    assert main(["--root", root, "annotate", base["id"], "--link", "nope"]) == 2
+    assert main(["--root", root, "annotate", base["id"], "--remove-link", "x"]) == 2

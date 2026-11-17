@@ -30,6 +30,7 @@ from grasp_agents.evals.types import (
     Example,
     ExampleRecord,
     PhoenixLink,
+    RunStatus,
     Score,
     ScoreReason,
     Trial,
@@ -506,6 +507,32 @@ def _evaluation_fields(score: Score) -> dict[str, Any]:
     return {**fields, "score": float(value)}
 
 
+_HEADLINE_METRICS = 4
+
+
+def experiment_description(run: EvaluationRun) -> str:
+    """The run's question with its status and headline metrics."""
+    parts = [run.description or run.name]
+    if run.status != RunStatus.COMPLETED:
+        parts.append(f"status: {run.status}")
+    if run.invalid_reason:
+        parts.append(f"INVALID: {run.invalid_reason}")
+    headline = [
+        f"{m.name} = {m.value:.3g}"
+        + (
+            f" [{m.ci_low:.3g}, {m.ci_high:.3g}]"
+            if m.ci_low is not None and m.ci_high is not None
+            else ""
+        )
+        + f" (n={m.n})"
+        for m in run.metrics
+        if m.value is not None
+    ][:_HEADLINE_METRICS]
+    if headline:
+        parts.append("; ".join(headline))
+    return " — ".join(parts)
+
+
 def _experiment_metadata(run: EvaluationRun, withheld: int) -> dict[str, Any]:
     return {
         "grasp_run_id": run.id,
@@ -529,6 +556,11 @@ def _experiment_metadata(run: EvaluationRun, withheld: int) -> dict[str, Any]:
         "git_commit": run.provenance.git_commit,
         "git_dirty": run.provenance.git_dirty,
         "invalid_reason": run.invalid_reason,
+        "lower_is_better": sorted(n for n, d in run.directions.items() if d == "lower"),
+        "trace_ids": sum(1 for t in run.trials if t.trace_id and not t.sealed),
+        "nul_replaced_trials": len(run.phoenix.altered_trials) if run.phoenix else 0,
+        "links": dict(run.links),
+        "notes": list(run.notes),
     }
 
 
@@ -664,8 +696,8 @@ async def _experiment_for(
             dataset_id=link.dataset_id,
             dataset_version_id=link.dataset_version_id,
             experiment_name=run.id,
-            experiment_description=run.description or run.name,
-            experiment_metadata=_experiment_metadata(run, withheld),
+            experiment_description=_scrubbed(experiment_description(run)),
+            experiment_metadata=_scrubbed(_experiment_metadata(run, withheld)),
             splits=_experiment_splits(run.dataset.selection),
             repetitions=run.config.repetitions,
             timeout=int(client.timeout_s),
@@ -875,9 +907,18 @@ async def push_run(
         link.altered_trials = sorted(altered)
         if store is not None:
             store.save(run)
-    if existed and pending:
-        await client.update_experiment_metadata(
-            experiment_id, _experiment_metadata(run, withheld)
+    if existed or pending:
+        # Refreshed on every push (after a resume, new links, the trials just
+        # logged); keys added on Phoenix are kept.
+        remote = await client.get_experiment(experiment_id)
+        metadata = {
+            **cast("dict[str, Any]", remote.get("metadata") or {}),
+            **_experiment_metadata(run, withheld),
+        }
+        await client.update_experiment(
+            experiment_id,
+            description=_scrubbed(experiment_description(run)),
+            metadata=_scrubbed(metadata),
         )
     return link
 

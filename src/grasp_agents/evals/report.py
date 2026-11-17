@@ -164,6 +164,9 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
         lines.append(f"- **Parent run:** `{run.parent_run_id}`")
     if run.description:
         lines.append(f"- **Question:** {run.description}")
+    for name, url in run.links.items():
+        lines.append(f"- **{_cell(name)}:** {url}")
+    lines.extend(f"- **Note:** {note}" for note in run.notes)
     task_version = f"@{run.task.version}" if run.task.version else ""
     lines.append(f"- **Task:** {run.task.name}{task_version} (`{run.task.kind}`)")
     if run.provenance.observed_models:
@@ -408,6 +411,8 @@ def run_summary(run: EvaluationRun) -> dict[str, Any]:
         "config_hash": run.config_hash,
         "git_commit": run.provenance.git_commit,
         "git_dirty": run.provenance.git_dirty,
+        "links": dict(run.links),
+        "notes": list(run.notes),
     }
 
 

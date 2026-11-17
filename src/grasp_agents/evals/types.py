@@ -535,6 +535,10 @@ class EvaluationRun(BaseModel):
     invalid_reason: str | None = None
     tags: list[str] = Field(default_factory=list[str])
     metadata: dict[str, Any] = Field(default_factory=dict[str, Any])
+    # Links (name → URL) and notes added to the run after it ran, e.g. a
+    # report or a preview page; pushed with it.
+    links: dict[str, str] = Field(default_factory=dict[str, str])
+    notes: list[str] = Field(default_factory=list[str])
     phoenix: PhoenixLink | None = None
     # The process that last executed the run (``None`` for runs recorded
     # before processes were).

@@ -766,3 +766,31 @@ def close_run(
     done = sum(1 for key in order if executor.get(key) is not None)
     status = RunStatus.COMPLETED if done >= len(order) else RunStatus.PARTIAL
     return executor.finalize(status, metrics=metrics, order=order)
+
+
+def annotate_run(
+    run: "str | EvaluationRun",
+    *,
+    links: Mapping[str, str] | None = None,
+    notes: Sequence[str] = (),
+    remove_links: Sequence[str] = (),
+    store: RunStore | None = None,
+) -> EvaluationRun:
+    """
+    Add ``links`` (name → URL, replacing a link of the same name) and
+    ``notes`` to a run, or drop links by name. Only the run's header changes:
+    its trials and results stay as they are. A Phoenix push carries them into
+    the experiment's metadata.
+    """
+    run_store = resolve_store(store, persist=True)
+    if run_store is None:
+        raise ValueError("Annotating a run needs a store")
+    loaded = load_run(run_store, run)
+    unknown = sorted(set(remove_links) - set(loaded.links))
+    if unknown:
+        raise ValueError(f"Run {loaded.id} has no links named {unknown}")
+    kept = {k: v for k, v in loaded.links.items() if k not in set(remove_links)}
+    loaded.links = {**kept, **(links or {})}
+    loaded.notes = [*loaded.notes, *notes]
+    run_store.save(loaded)
+    return loaded

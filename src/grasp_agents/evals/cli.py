@@ -50,7 +50,7 @@ from .report import (
     run_summary,
     trial_summary,
 )
-from .runner import ResumeError, SealedSelectionError, close_run
+from .runner import ResumeError, SealedSelectionError, annotate_run, close_run
 from .store import LocalRunStore, RunNotFoundError, store_for_ref
 from .types import EvaluationRun, RunStatus, Trial
 from .validation import UnvalidatedJudgeError
@@ -292,6 +292,7 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     push_error: str | None = None
     push_exit = EXIT_OK
     if args.push:
+        _warn_untraced(run)
         try:
             pushed = await _push(
                 run, store, args.base_url, create_dataset=args.create_dataset
@@ -352,8 +353,18 @@ async def _push(
     return experiment_url(link) or link.base_url
 
 
+def _warn_untraced(run: EvaluationRun) -> None:
+    shared = [t for t in run.trials if not t.sealed]
+    if shared and not any(t.trace_id for t in shared):
+        sys.stderr.write(
+            f"note: no trial of {run.id} has a trace id, so its experiment links no "
+            "traces (run with --trace PROJECT)\n"
+        )
+
+
 async def _cmd_push(args: argparse.Namespace) -> int:
     store, run = _resolve_run(args.run, args.root)
+    _warn_untraced(run)
     url = await _push(
         run,
         store,
@@ -431,6 +442,24 @@ async def _cmd_import(args: argparse.Namespace) -> int:
     else:
         _print_markdown(render_run_markdown(run))
         sys.stderr.write(f"run stored in {store.run_dir(run.id)}\n")
+    return EXIT_OK
+
+
+def _cmd_annotate(args: argparse.Namespace) -> int:
+    store, run = _resolve_run(args.run, args.root)
+    links: dict[str, str] = {}
+    for item in args.link:
+        name, sep, url = item.partition("=")
+        if not sep or not name or not url:
+            raise CLIError(f"--link expects NAME=URL, got {item!r}")
+        links[name] = url
+    annotated = annotate_run(
+        run, links=links, notes=args.note, remove_links=args.remove_link, store=store
+    )
+    payload = {"id": annotated.id, "links": annotated.links, "notes": annotated.notes}
+    _print_json(payload)
+    if annotated.phoenix is not None and (links or args.note or args.remove_link):
+        sys.stderr.write("push the run again to show them on its experiment\n")
     return EXIT_OK
 
 
@@ -1057,6 +1086,23 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(imp_run)
     _add_progress(imp_run)
 
+    annotate = sub.add_parser(
+        "annotate", help="add links and notes to a run (pushed with it; JSON output)"
+    )
+    annotate.add_argument("run")
+    annotate.add_argument(
+        "--link",
+        action="append",
+        default=[],
+        metavar="NAME=URL",
+        help="add or replace a link (repeatable)",
+    )
+    annotate.add_argument(
+        "--note", action="append", default=[], help="add a note (repeatable)"
+    )
+    annotate.add_argument("--remove-link", action="append", default=[], metavar="NAME")
+    _add_json(annotate)
+
     close = sub.add_parser(
         "close", help="finalize a run whose process is gone (partial or completed)"
     )
@@ -1252,6 +1298,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             return _run_async(_cmd_rescore(args))
         case "close":
             return _cmd_close(args)
+        case "annotate":
+            return _cmd_annotate(args)
         case "import":
             return _run_async(_cmd_import(args))
         case "push":

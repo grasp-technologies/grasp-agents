@@ -50,6 +50,7 @@ What each action does to runs:
 | `import` outputs produced elsewhere | A new `import` run, scored like a rescore | — |
 | `pairwise` | A `pairwise` run whose trials hold both arms' outputs | Unchanged |
 | `push` (Phoenix) | No new run | Only the Phoenix link is written to `run.json` |
+| `annotate` | No new run | Only `links` and `notes` are written to `run.json` |
 
 ## Workflow 1: a quick eval from Python
 

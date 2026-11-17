@@ -319,11 +319,24 @@ class PhoenixClient:
         found = cast("list[dict[str, Any]]", body.get("data") or [])
         return found[0] if found else None
 
-    async def update_experiment_metadata(
-        self, experiment_id: str, metadata: Mapping[str, Any]
+    async def get_experiment(self, experiment_id: str) -> dict[str, Any]:
+        body = await self.request_json("GET", f"v1/experiments/{experiment_id}")
+        return cast("dict[str, Any]", body.get("data") or {})
+
+    async def update_experiment(
+        self,
+        experiment_id: str,
+        *,
+        description: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> None:
-        await self.request_json(
-            "PATCH",
-            f"v1/experiments/{experiment_id}",
-            json={"metadata": dict(metadata)},
-        )
+        """Set an experiment's description and metadata (which is replaced)."""
+        body: dict[str, Any] = {}
+        if description is not None:
+            body["description"] = description
+        if metadata is not None:
+            body["metadata"] = dict(metadata)
+        if body:
+            await self.request_json(
+                "PATCH", f"v1/experiments/{experiment_id}", json=body
+            )

@@ -31,6 +31,7 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 | `compare BASE CAND` | Paired comparison; `--top N`; gate flags | Exits 1 only with `--fail-on-regression` |
 | `rescore RUN` | Child run with re-scored stored outputs | `--spec` defaults to the run's recorded spec; `--rerun`; `--allow-unvalidated`; `--split S` / `--ids a,b` for a child of those trials only (sealed splits whole); `--dataset FILE\|phoenix:...` to score against a newer dataset version |
 | `import SPEC FILE` | Scores outputs produced elsewhere as a run (`kind=import`) | JSONL of `{example_id, repetition?, output \| error, duration_s?, cost_usd?, usage?, models?, measurements?, trace_id?, started_at?}`. `--task` (default: the file's stem) and `--task-version` identify what produced them. Selection flags as for `run` (sealed splits left out); outputs outside the selection are ignored, unknown ids and repeated (id, repetition) are errors; `-r` defaults to the most repetitions in the file |
+| `annotate RUN [--link NAME=URL]... [--note TEXT]... [--remove-link NAME]...` | Adds links and notes to a run's header | Shown by `show`; pushed into the experiment metadata (`links`, `notes`) on the next push |
 | `close RUN` | Finalizes a run left `running` by a killed process: `partial` (or `completed`) from its stored trials | Refused while its process runs on this host, or when that cannot be told (another host, a run recorded before processes were), unless `--force`. Metrics from `--spec`, else the run's spec |
 | `pairwise BASE CAND --judge MOD:ATTR` | Order-swapped A/B judging | `--one-order`; types come from `--spec` or the base run's spec; stored in the base run's store |
 | `runs` | Newest first; `--name`, `--limit` (default 20) | One line per run: id, kind, spec attribute@task version, status, first metric |
@@ -181,7 +182,11 @@ See [metrics.md](metrics.md#regression-gate).
   - withholds sealed trials (their count goes into the experiment metadata);
   - scopes the experiment to the run's split when it selected exactly one
     (`--split dev`); otherwise the experiment covers every example;
-  - on a repeat push, logs only trials that changed.
+  - on a repeat push, logs only trials that changed;
+  - refreshes the experiment's description (the question, status and headline
+    metrics) and metadata on every push, merging into the metadata on Phoenix so
+    keys added there survive;
+  - notes on stderr when no trial has a trace id (the experiment links no traces).
 - **Trace ids.** Trials get a `trace_id` only when an OpenTelemetry tracer provider is active during
   the run. For example, call `grasp_agents.telemetry.init_tracing(project_name=...)` and
   `grasp_agents.telemetry.phoenix.init_phoenix(...)` in the spec module;

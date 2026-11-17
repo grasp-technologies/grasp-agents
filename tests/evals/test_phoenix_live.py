@@ -20,6 +20,7 @@ from grasp_agents.evals import (
     LocalRunStore,
     Score,
     ScoreContext,
+    annotate_run,
     evaluate,
     scorer,
 )
@@ -480,6 +481,41 @@ async def test_nul_characters_are_replaced_on_push(
         relinked = await push_run(client, again, store=store)
         assert relinked.dataset_id == link.dataset_id
         assert store.load(run.id).phoenix == link
+
+
+@pytest.mark.asyncio
+async def test_every_push_refreshes_the_experiment_and_keeps_foreign_keys(
+    base_url: str, tmp_path: Path
+) -> None:
+    store = LocalRunStore(tmp_path / "evals")
+    run = await evaluate(
+        FunctionTask(add), _dataset(_name("refresh")), [exact], store=store
+    )
+    async with PhoenixClient(base_url) as client:
+        link = await push_run(client, run, store=store, create_dataset=True)
+        assert link.experiment_id is not None
+        experiment = await client.get_experiment(link.experiment_id)
+        assert "pass_rate(exact) = 0.75" in experiment["description"]
+        # Someone links a preview page on Phoenix.
+        await client.update_experiment(
+            link.experiment_id,
+            metadata={**experiment["metadata"], "preview": "https://example.com/p"},
+        )
+        annotated = annotate_run(
+            run.id,
+            links={"report": "https://example.com/report"},
+            notes=["judge v2"],
+            store=store,
+        )
+        annotated.description = "Does it add?"
+        await push_run(client, annotated, store=store)
+        refreshed = await client.get_experiment(link.experiment_id)
+        assert refreshed["description"].startswith("Does it add? — ")
+        metadata = refreshed["metadata"]
+        assert metadata["preview"] == "https://example.com/p"
+        assert metadata["links"] == {"report": "https://example.com/report"}
+        assert metadata["notes"] == ["judge v2"]
+        assert metadata["grasp_run_id"] == run.id
 
 
 # --- Labels from human annotations ---

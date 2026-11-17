@@ -254,6 +254,7 @@ A judge is validated like any other system:
 | `run SPEC [--split --ids --sample --limit --include-sealed -r -c --timeout --max-cost --resume --baseline --fail-under M=V --fail-on-regression --push]` | run an `Evaluation` |
 | `rescore RUN [--spec SPEC --split --ids --dataset --rerun --allow-unvalidated]` | score stored outputs again (`--spec` defaults to the run's recorded spec) |
 | `close RUN [--spec SPEC --force]` | finalize a run whose process is gone |
+| `annotate RUN [--link NAME=URL --note TEXT --remove-link NAME]` | add links and notes to a run |
 | `import SPEC FILE [--task NAME --task-version V --split --ids ...]` | score outputs produced elsewhere as a run |
 | `show RUN [--failures --trials --outputs --example ID]` | inspect a run |
 | `compare BASE CANDIDATE [--fail-on-regression --gate T --min-effect X]` | paired comparison |
@@ -291,6 +292,11 @@ different `--base-url`). `PHOENIX_API_KEY` is still sent only to
 versions are cached per server and pulled once. `load_phoenix_dataset` and
 `parse_phoenix_ref` are exported for loaders of your own.
 
+Every push refreshes the experiment's description (the question, status
+and headline metrics) and metadata, merging into what Phoenix holds, so keys
+added there survive; a run's own `links` and `notes` (`annotate_run`,
+`grasp-evals annotate`) go into that metadata.
+
 `push` attaches a run to the dataset its examples were pulled from, or to a
 Phoenix dataset (`--dataset NAME`, default the run's dataset name) that holds
 exactly its examples; it creates a missing dataset only with
@@ -309,7 +315,8 @@ the spec module (`init_tracing` + `init_phoenix`; see
 
 1. A completed run's trials and results are never modified; retries and
    rescoring create child runs (`EvaluationRun.parent_run_id`). `push` only adds
-   the Phoenix link and digests to `run.json`.
+   the Phoenix link and digests to `run.json`, and `annotate_run` only its
+   `links` and `notes`.
 2. Examples pair across runs only by id with unchanged content (declared
    descriptive metadata keys aside).
 3. Unscored values are never counted as numbers in metrics.
