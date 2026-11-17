@@ -29,19 +29,70 @@ from .validation import (
 )
 
 PHOENIX_PREFIX = "phoenix:"
+_SCHEMES = ("http://", "https://")
 
 
-def parse_phoenix_ref(ref: str) -> tuple[str, str | None]:
-    """``(name, version)`` of ``[phoenix:]NAME[@VERSION]``."""
+@dataclass(frozen=True)
+class PhoenixRef:
+    """
+    A Phoenix dataset: its ``name``, optionally pinned to a ``version`` —
+    which only means something on the server that issued it, so a pinned
+    reference should name that server (``base_url``). Written as
+    ``phoenix:[https://HOST/]NAME[@VERSION]``.
+    """
+
+    name: str
+    version: str | None = None
+    base_url: str | None = None
+
+    def __str__(self) -> str:
+        server = f"{self.base_url}/" if self.base_url else ""
+        version = f"@{self.version}" if self.version else ""
+        return f"{PHOENIX_PREFIX}{server}{self.name}{version}"
+
+    def server(self, base_url: str | None = None) -> str | None:
+        """
+        The server to pull from: the one this reference names, else
+        ``base_url`` (else ``$PHOENIX_BASE_URL``, read by the client).
+        Raises ``ValueError`` when both are given and differ.
+        """
+        if self.base_url is None:
+            return base_url
+        from .phoenix import (  # ruff: ignore[import-outside-top-level]
+            normalize_base_url,
+        )
+
+        if base_url is not None and normalize_base_url(base_url) != normalize_base_url(
+            self.base_url
+        ):
+            raise ValueError(f"{self} names the server {self.base_url}, not {base_url}")
+        return self.base_url
+
+
+def parse_phoenix_ref(ref: str) -> PhoenixRef:
+    """
+    The :class:`PhoenixRef` of ``[phoenix:][https://HOST/]NAME[@VERSION]``.
+    A server is a scheme and host (with a port, no path); everything after
+    it up to the last ``@`` is the dataset name.
+    """
     body = ref.removeprefix(PHOENIX_PREFIX)
+    base_url: str | None = None
+    if body.startswith(_SCHEMES):
+        scheme, _, rest = body.partition("://")
+        host, _, body = rest.partition("/")
+        if not host or not body:
+            raise ValueError(
+                f"Expected phoenix:{scheme}://HOST/NAME[@VERSION], got {ref!r}"
+            )
+        base_url = f"{scheme}://{host}"
     name, at, version = body.rpartition("@")
     if not at:
-        return body, None
-    return name, version or None
+        return PhoenixRef(body, None, base_url)
+    return PhoenixRef(name, version or None, base_url)
 
 
 async def load_phoenix_dataset(
-    ref: str,
+    ref: "str | PhoenixRef",
     *,
     input_type: Any = Any,
     reference_type: Any = Any,
@@ -49,20 +100,21 @@ async def load_phoenix_dataset(
     cache_dir: str | Path | None = None,
 ) -> Dataset[Any, Any]:
     """
-    Pull ``phoenix:NAME[@VERSION]`` from ``base_url`` (``$PHOENIX_BASE_URL``),
-    caching it in ``cache_dir`` (default ``<evals dir>/datasets``).
+    Pull a Phoenix dataset (``phoenix:[https://HOST/]NAME[@VERSION]`` or a
+    :class:`PhoenixRef`) from the server it names, else from ``base_url``
+    (``$PHOENIX_BASE_URL``), caching pinned versions in ``cache_dir``.
     """
     from .phoenix import (  # ruff: ignore[import-outside-top-level]
         PhoenixClient,
         pull_dataset,
     )
 
-    name, version = parse_phoenix_ref(ref)
-    async with PhoenixClient(base_url) as client:
+    parsed = ref if isinstance(ref, PhoenixRef) else parse_phoenix_ref(ref)
+    async with PhoenixClient(parsed.server(base_url)) as client:
         return await pull_dataset(
             client,
-            name,
-            version=version,
+            parsed.name,
+            version=parsed.version,
             input_type=input_type,
             reference_type=reference_type,
             cache_dir=cache_dir,
@@ -83,7 +135,9 @@ async def load_dataset_source(
     """
     if isinstance(source, Dataset):
         return cast("Dataset[Any, Any]", source)
-    if isinstance(source, str) and source.startswith(PHOENIX_PREFIX):
+    if isinstance(source, PhoenixRef) or (
+        isinstance(source, str) and source.startswith(PHOENIX_PREFIX)
+    ):
         return await load_phoenix_dataset(
             source,
             input_type=input_type,
@@ -110,6 +164,7 @@ type DatasetSource = (
     Dataset[Any, Any]
     | str
     | Path
+    | PhoenixRef
     | Callable[[], Dataset[Any, Any] | Awaitable[Dataset[Any, Any]]]
 )
 
@@ -122,7 +177,9 @@ class Evaluation:
 
     Definitions are cheap to import: ``task`` may be a zero-argument factory
     (called on the first run, so no clients are built at import time) and
-    ``dataset`` a path, a ``phoenix:NAME[@VERSION]`` reference or a loader.
+    ``dataset`` a path, a Phoenix reference
+    (``phoenix:[https://HOST/]NAME[@VERSION]`` or :class:`PhoenixRef`) or a
+    loader.
     Run with :meth:`run`, or from the CLI as ``grasp-evals run
     package.module:attr``.
     """

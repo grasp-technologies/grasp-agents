@@ -36,7 +36,7 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 | `datasets schema SPEC` | JSON Schema of one record, exactly what the loader accepts | Unknown keys are rejected (`additionalProperties: false`) |
 | `datasets validate SPEC [--dataset P]` | Types plus `dataset_checks` | Exit 1 on problems |
 | `datasets show PATH` | Count, fingerprint, splits, ids | No spec needed |
-| `datasets pull NAME[@VER] [-o FILE]` | Pull from Phoenix (cached by version) | |
+| `datasets pull [URL/]NAME[@VER] [-o FILE]` | Pull from Phoenix (cached by server and version) | A server in the reference wins over `$PHOENIX_BASE_URL`; a different `--base-url` is an error |
 | `datasets push PATH [--name --base-version --force --allow-deletes]` | Make a Phoenix dataset match a file | Uploads every example, sealed ones included |
 | `labels sample RUN -o FILE` | Writes a to-label JSONL | See [judges.md](judges.md#labeling-loop) |
 | `labels import FILES --into LABELS.jsonl` | Merges filled-in labels | |
@@ -50,7 +50,7 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 
 | Option | Meaning |
 |---|---|
-| `--dataset PATH\|phoenix:NAME[@VER]` | Overrides the spec's dataset |
+| `--dataset PATH\|phoenix:[URL/]NAME[@VER]` | Overrides the spec's dataset. A server in the reference wins over `$PHOENIX_BASE_URL` |
 | `--split S`, `--ids a,b`, `--sample N --seed S`, `--limit N` | Applied in this order: split → (sealed splits left out) → ids → sample → limit. An empty selection is an error |
 | `--include-sealed` | Keep the sealed splits, which are otherwise left out unless `--split` names one |
 | `-r`, `-c`, `--timeout`, `--max-cost` | Override the spec's repetitions, concurrency, per-trial task timeout and budget |

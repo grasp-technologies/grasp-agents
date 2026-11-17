@@ -1,12 +1,22 @@
 import asyncio
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 from pydantic import BaseModel, TypeAdapter
 
-from grasp_agents.evals import Dataset, Example, Score, Trial
+from grasp_agents.evals import (
+    Dataset,
+    Example,
+    PhoenixRef,
+    Score,
+    Trial,
+    load_phoenix_dataset,
+    parse_phoenix_ref,
+)
 from grasp_agents.evals.phoenix import (
     PhoenixClient,
     PhoenixCompatibilityError,
@@ -21,6 +31,7 @@ from grasp_agents.evals.phoenix.client import (
 )
 from grasp_agents.evals.phoenix.sync import (
     GRASP_KEY,
+    _cache_path,  # pyright: ignore[reportPrivateUsage]
     _digest,  # pyright: ignore[reportPrivateUsage]
     _experiment_splits,  # pyright: ignore[reportPrivateUsage]
     _is_example_node_id,  # pyright: ignore[reportPrivateUsage]
@@ -353,3 +364,53 @@ async def test_wrapped_sdk_failures_are_phoenix_errors() -> None:
     async with _client(lambda _: httpx.Response(200)) as client:
         with pytest.raises(PhoenixError, match="422"):
             await client.call(upload())
+
+
+# --- References ---
+
+
+def test_references_can_name_their_server() -> None:
+    assert parse_phoenix_ref("phoenix:staging/questions@v1") == PhoenixRef(
+        "staging/questions", "v1"
+    )
+    named = parse_phoenix_ref("phoenix:https://phoenix.example.com:8443/staging/q@v/1=")
+    assert named == PhoenixRef("staging/q", "v/1=", "https://phoenix.example.com:8443")
+    assert str(named) == "phoenix:https://phoenix.example.com:8443/staging/q@v/1="
+    assert parse_phoenix_ref("http://localhost:6006/labels").version is None
+    with pytest.raises(ValueError, match="HOST/NAME"):
+        parse_phoenix_ref("phoenix:https://phoenix.example.com")
+    assert named.server(None) == "https://phoenix.example.com:8443"
+    assert named.server("HTTPS://Phoenix.Example.com:8443/") == named.base_url
+    with pytest.raises(ValueError, match="names the server"):
+        named.server("https://elsewhere.example.com")
+    assert PhoenixRef("q").server("https://elsewhere.example.com") == (
+        "https://elsewhere.example.com"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_named_server_wins_over_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = "http://phoenix.example.com"
+    record = to_phoenix_record(Example[str, str](id="q1", input="2+2?", reference="4"))
+    meta = {
+        "name": "staging/questions",
+        "dataset_id": "RGF0YXNldDox",
+        "version_id": "v7",
+        "description": None,
+        "base_url": server,
+        "count": 1,
+    }
+    row = {"id": record.id, "input": record.input, "output": record.output}
+    path = _cache_path(tmp_path, server, "staging/questions", "v7")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(meta) + "\n" + json.dumps(row) + "\n")
+    # Pinned versions come from the cache of the server the reference names,
+    # so no request is made (the environment's server does not exist).
+    monkeypatch.setenv("PHOENIX_BASE_URL", "https://phoenix.test")
+    dataset = await load_phoenix_dataset(
+        f"phoenix:{server}/staging/questions@v7", cache_dir=tmp_path
+    )
+    assert dataset.ids == ["q1"]
+    assert dataset.source == phoenix_source(server, "RGF0YXNldDox")

@@ -70,7 +70,7 @@ from grasp_agents.evals import judge_validation
 
 judge_v1_validation = judge_validation(  # an Evaluation: define it in a spec module
     judge,
-    LABELS,  # a path, "phoenix:NAME[@VER]", a Dataset or a loader
+    LABELS,  # a path, "phoenix:https://HOST/NAME@VER", a Dataset or a loader
     against=DATA,  # the dataset the labeled outputs answer: refuses outdated labels
     input_type=Submission,  # the judged evaluation's types, so the judge sees typed values
     output_type=Grade,

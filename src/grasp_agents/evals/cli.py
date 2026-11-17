@@ -547,13 +547,14 @@ async def _cmd_phoenix_datasets(args: argparse.Namespace) -> int:
         push_dataset,
     )
 
-    async with PhoenixClient(args.base_url) as client:
-        if args.datasets_command == "pull":
-            name, version = parse_phoenix_ref(args.name)
+    ref = parse_phoenix_ref(args.name) if args.datasets_command == "pull" else None
+    server = ref.server(args.base_url) if ref is not None else args.base_url
+    async with PhoenixClient(server) as client:
+        if ref is not None:
             dataset = await pull_dataset(
                 client,
-                name,
-                version=version,
+                ref.name,
+                version=ref.version,
                 cache_dir=(args.root / "datasets") if args.root else None,
             )
             if args.output:
@@ -822,7 +823,8 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="run an Evaluation (module:attr or file.py:attr)")
     run.add_argument("spec")
     run.add_argument(
-        "--dataset", help="override the evaluation's dataset (file or phoenix:NAME)"
+        "--dataset",
+        help="override the evaluation's dataset (file or phoenix:[URL/]NAME[@VER])",
     )
     run.add_argument("--split")
     run.add_argument("--ids", help="comma-separated example ids")
@@ -948,7 +950,9 @@ def build_parser() -> argparse.ArgumentParser:
     info.add_argument("--limit", type=_positive_int, default=20)
     _add_json(info)
     pull = dsub.add_parser("pull", help="fetch a Phoenix dataset version")
-    pull.add_argument("name", help="NAME or NAME@VERSION_ID")
+    pull.add_argument(
+        "name", help="[https://HOST/]NAME[@VERSION_ID] (a server named here wins)"
+    )
     pull.add_argument("-o", "--output", help="also save it to this file")
     pull.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     _add_json(pull)

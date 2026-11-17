@@ -30,10 +30,13 @@ from .dataset import (
 )
 from .evaluation import (
     Evaluation,
+    PhoenixRef,
     SpecError,
     list_evaluations,
     load_evaluation,
     load_object,
+    load_phoenix_dataset,
+    parse_phoenix_ref,
 )
 from .judge import (
     JudgedPair,
@@ -148,6 +151,7 @@ __all__ = [
     "PassRate",
     "Percentile",
     "Perturbation",
+    "PhoenixRef",
     "ProcessorPairwiseJudge",
     "ProcessorScorer",
     "ProcessorTask",
@@ -187,7 +191,9 @@ __all__ = [
     "list_evaluations",
     "load_evaluation",
     "load_object",
+    "load_phoenix_dataset",
     "pairwise",
+    "parse_phoenix_ref",
     "render_comparison_markdown",
     "render_run_markdown",
     "rescore",

@@ -25,6 +25,7 @@ them. The `grasp-evals` CLI drives the same API from the shell.
 | `pairwise`, `PairwiseJudge`, `FunctionPairwiseJudge` | `evals/pairwise.py` | A/B judging, both orders |
 | `ProcessorScorer`, `judge_validation`, `judge_probes`, `ValidationGate`, `Perturbation` | `evals/judge.py`, `evals/validation.py` | Judges and their validation |
 | `sample_for_labeling`, `import_labels`, `judged_outputs` | `evals/labeling.py` | Label collection |
+| `PhoenixRef`, `parse_phoenix_ref`, `load_phoenix_dataset` | `evals/evaluation.py` | Phoenix dataset references |
 
 Nothing here is exported from the root package; import from `grasp_agents.evals`.
 
@@ -121,7 +122,7 @@ defaults are picked from the scores produced.
 An `Evaluation(name=, task=, dataset=, scorers=, metrics=, input_type=,
 reference_type=, repetitions=, sealed_splits=, dataset_checks=,
 validation_gates=, ...)` packages all of this. `task` may be a factory and
-`dataset` a path, a `phoenix:NAME[@VERSION]` reference or a loader, so
+`dataset` a path, a Phoenix reference or a loader, so
 importing a definition builds no clients. Run it with `await ev.run(split=...)`
 or `grasp-evals run module_or_file.py:attr`.
 
@@ -242,10 +243,20 @@ progress goes to stderr (`--progress json` for one object per trial).
 ## Phoenix
 
 With the `phoenix` extra and `PHOENIX_BASE_URL` (plus `PHOENIX_API_KEY`) set,
-datasets can be pushed to and pulled from Phoenix (`phoenix:NAME[@VERSION]`
-dataset references), runs are mirrored as experiments (`push`; sealed trials
-are withheld, and a run on one split gets an experiment over that split), and `labels pull` reads human annotations of traced trials back
-as labels. Phoenix 20.0 or later is required; older servers raise
+datasets can be pushed to and pulled from Phoenix, runs are mirrored as
+experiments (`push`; sealed trials are withheld, and a run on one split gets
+an experiment over that split), and `labels pull` reads human annotations of
+traced trials back as labels.
+
+A dataset reference is `phoenix:[https://HOST/]NAME[@VERSION]`, or a
+`PhoenixRef(name, version, base_url)`. A version id only means something on
+the server that issued it, so a pinned reference should name its server: the
+server a reference names wins over `PHOENIX_BASE_URL` (and conflicts with a
+different `--base-url`). `PHOENIX_API_KEY` is still sent only to
+`PHOENIX_BASE_URL`'s server, or to any server when that is unset. Pinned
+versions are cached per server and pulled once. `load_phoenix_dataset` and
+`parse_phoenix_ref` are exported for loaders of your own. Phoenix 20.0 or
+later is required; older servers raise
 `PhoenixCompatibilityError`. To give trials trace ids, initialize tracing in
 the spec module (`init_tracing` + `init_phoenix`; see
 [Observability](observability.md)).
