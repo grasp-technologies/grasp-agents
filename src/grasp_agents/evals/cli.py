@@ -358,6 +358,11 @@ async def _push(
         link = await push_run(
             client, run, store=store, dataset=dataset, create_dataset=create_dataset
         )
+    if link.trace_retention is not None:
+        sys.stderr.write(
+            f"traces in Phoenix project {link.trace_project!r}: "
+            f"{link.trace_retention}\n"
+        )
     return experiment_url(link) or link.base_url
 
 
@@ -450,6 +455,21 @@ async def _cmd_import(args: argparse.Namespace) -> int:
     else:
         _print_markdown(render_run_markdown(run))
         sys.stderr.write(f"run stored in {store.run_dir(run.id)}\n")
+    return EXIT_OK
+
+
+async def _cmd_experiments(args: argparse.Namespace) -> int:
+    from .phoenix import (  # ruff: ignore[import-outside-top-level]
+        PhoenixClient,
+        delete_experiment,
+    )
+
+    store, run = _resolve_run(args.run, args.root)
+    experiment_id = run.phoenix.experiment_id if run.phoenix else None
+    base_url = args.base_url or (run.phoenix.base_url if run.phoenix else None)
+    async with PhoenixClient(base_url) as client:
+        deleted = await delete_experiment(client, run, store=store)
+    _print_json({"id": run.id, "experiment_id": experiment_id, "deleted": deleted})
     return EXIT_OK
 
 
@@ -693,7 +713,7 @@ async def _cmd_datasets(args: argparse.Namespace) -> int:
             }
         )
         return EXIT_GATE if problems else EXIT_OK
-    if args.datasets_command in {"pull", "push"}:
+    if args.datasets_command in {"pull", "push", "delete"}:
         return await _cmd_phoenix_datasets(args)
     dataset = Dataset.load(args.path)
     _print_json(
@@ -717,6 +737,8 @@ async def _cmd_phoenix_datasets(args: argparse.Namespace) -> int:
 
     ref = parse_phoenix_ref(args.name) if args.datasets_command == "pull" else None
     server = ref.server(args.base_url) if ref is not None else args.base_url
+    if args.datasets_command == "delete":
+        return await _delete_dataset(args)
     async with PhoenixClient(server) as client:
         if ref is not None:
             dataset = await pull_dataset(
@@ -749,6 +771,23 @@ async def _cmd_phoenix_datasets(args: argparse.Namespace) -> int:
         )
         _print_json(result.model_dump())
         return EXIT_OK
+
+
+async def _delete_dataset(args: argparse.Namespace) -> int:
+    from .phoenix import (  # ruff: ignore[import-outside-top-level]
+        PhoenixClient,
+        delete_dataset,
+    )
+
+    if not args.yes:
+        raise CLIError(
+            f"Deleting Phoenix dataset {args.name!r} deletes its experiments too; "
+            "pass --yes"
+        )
+    async with PhoenixClient(args.base_url) as client:
+        result = await delete_dataset(client, args.name)
+    _print_json(result.model_dump())
+    return EXIT_OK
 
 
 def _cmd_labels(args: argparse.Namespace) -> int:
@@ -1234,6 +1273,25 @@ def build_parser() -> argparse.ArgumentParser:
     push_ds.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     _add_json(push_ds)
 
+    delete_ds = dsub.add_parser(
+        "delete", help="delete a Phoenix dataset with its experiments and projects"
+    )
+    delete_ds.add_argument("name")
+    delete_ds.add_argument("--yes", action="store_true", help="confirm the deletion")
+    delete_ds.add_argument(
+        "--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)"
+    )
+    _add_json(delete_ds)
+
+    experiments = sub.add_parser("experiments", help="Phoenix experiments of runs")
+    esub = experiments.add_subparsers(dest="experiments_command", required=True)
+    edelete = esub.add_parser(
+        "delete", help="delete a run's experiment and its project (JSON output)"
+    )
+    edelete.add_argument("run")
+    edelete.add_argument("--base-url", help="Phoenix URL (default: the run's)")
+    _add_json(edelete)
+
     labels = sub.add_parser(
         "labels", help="collect labels for judge validation (JSON output)"
     )
@@ -1317,6 +1375,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             return _cmd_close(args)
         case "annotate":
             return _cmd_annotate(args)
+        case "experiments":
+            return _run_async(_cmd_experiments(args))
         case "import":
             return _run_async(_cmd_import(args))
         case "push":

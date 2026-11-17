@@ -703,7 +703,57 @@ async def _experiment_for(
             timeout=int(client.timeout_s),
         )
     )
+    # Phoenix makes a project per experiment for traces of its own runner;
+    # these trials' traces stay in their tracing project, so it would stay
+    # empty (and outlive the experiment if deleted elsewhere).
+    project = created.get("project_name")
+    if project:
+        await client.delete_project(str(project))
     return str(created["id"]), False
+
+
+def describe_retention(policy: Mapping[str, Any]) -> tuple[str, bool]:
+    """A retention policy in words, and whether it ever deletes traces."""
+    name = policy.get("name") or "unnamed"
+    rule = cast("Mapping[str, Any]", policy.get("rule") or {})
+    days = float(rule.get("maxDays") or 0.0)
+    count = int(rule.get("maxCount") or 0)
+    limits: list[str] = []
+    if days > 0:
+        limits.append(f"{days:g} days")
+    if count > 0:
+        limits.append(f"the newest {count} traces")
+    if not limits:
+        return f"kept indefinitely (policy {name!r})", False
+    return f"kept for {' or '.join(limits)} (policy {name!r})", True
+
+
+async def _trace_retention(
+    client: PhoenixClient, run: EvaluationRun, link: PhoenixLink
+) -> None:
+    traced = [t.trace_id for t in run.trials if t.trace_id and not t.sealed]
+    if not traced:
+        return
+    project = run.trace_project
+    if project is None:
+        project = await client.trace_project(traced[0])
+    if project is None:
+        return
+    policy = await client.retention(project)
+    link.trace_project = project
+    if policy is None:
+        link.trace_retention = None
+        return
+    described, expires = describe_retention(policy)
+    link.trace_retention = described
+    if expires:
+        logger.warning(
+            "Traces of project %r are %s: the experiment's trace links stop "
+            "working once they are deleted; put the project under a policy that "
+            "keeps them",
+            project,
+            described,
+        )
 
 
 async def push_run(
@@ -907,6 +957,9 @@ async def push_run(
         link.altered_trials = sorted(altered)
         if store is not None:
             store.save(run)
+    await _trace_retention(client, run, link)
+    if store is not None:
+        store.save(run)
     if existed or pending:
         # Refreshed on every push (after a resume, new links, the trials just
         # logged); keys added on Phoenix are kept.
@@ -921,6 +974,49 @@ async def push_run(
             metadata=_scrubbed(metadata),
         )
     return link
+
+
+async def delete_experiment(
+    client: PhoenixClient, run: EvaluationRun, *, store: RunStore | None = None
+) -> bool:
+    """
+    Delete a run's Phoenix experiment, with its project, and forget the link
+    (a later push creates a new experiment). ``False`` when Phoenix had none.
+    """
+    link = run.phoenix
+    if link is None or link.experiment_id is None:
+        raise ValueError(f"Run {run.id} has no Phoenix experiment")
+    if link.base_url != client.base_url:
+        raise ValueError(f"Run {run.id}'s experiment is on {link.base_url}")
+    deleted = await client.delete_experiment(link.experiment_id)
+    run.phoenix = None
+    if store is not None:
+        store.save(run)
+    return deleted
+
+
+async def delete_dataset(client: PhoenixClient, name: str) -> DatasetPushResult:
+    """
+    Delete the Phoenix dataset ``name`` with its experiments and their
+    projects; returns what it held.
+    """
+    check_dataset_name(name)
+    found = await client.find_dataset(name)
+    if found is None:
+        raise DatasetError(f"No Phoenix dataset named {name!r} at {client.base_url}")
+    dataset_id = str(found["id"])
+    remote = await client.call(
+        client.sdk.datasets.get_dataset(
+            dataset=dataset_id, timeout=int(client.timeout_s)
+        )
+    )
+    await client.delete_dataset(dataset_id)
+    return DatasetPushResult(
+        name=name,
+        dataset_id=dataset_id,
+        version_id=remote.version_id,
+        deleted=len(remote.examples),
+    )
 
 
 def experiment_url(link: PhoenixLink) -> str | None:

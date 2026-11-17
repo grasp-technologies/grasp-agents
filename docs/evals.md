@@ -260,7 +260,8 @@ A judge is validated like any other system:
 | `compare BASE CANDIDATE [--fail-on-regression --gate T --min-effect X]` | paired comparison |
 | `pairwise BASE CANDIDATE --judge MODULE:ATTR [--one-order]` | A/B judging |
 | `runs`, `list MODULE` | list runs / evaluations |
-| `datasets {schema, validate, show, pull, push}` | dataset utilities |
+| `datasets {schema, validate, show, pull, push, delete}` | dataset utilities |
+| `experiments delete RUN` | delete a run's Phoenix experiment |
 | `labels {sample, import, pull, show}` | label collection |
 | `push RUN [--dataset NAME --create-dataset]` | mirror a finished run to Phoenix |
 
@@ -295,7 +296,13 @@ versions are cached per server and pulled once. `load_phoenix_dataset` and
 Every push refreshes the experiment's description (the question, status
 and headline metrics) and metadata, merging into what Phoenix holds, so keys
 added there survive; a run's own `links` and `notes` (`annotate_run`,
-`grasp-evals annotate`) go into that metadata.
+`grasp-evals annotate`) go into that metadata. Push deletes the empty
+project Phoenix creates for each experiment: trials' traces stay in their
+tracing project, and push reports that project's retention policy
+(`run.phoenix.trace_retention`), warning when it will delete the traces the
+experiment links to. `grasp-evals experiments delete RUN` and `datasets
+delete NAME --yes` (`delete_experiment`, `delete_dataset`) remove
+experiments and datasets with their projects.
 
 `push` attaches a run to the dataset its examples were pulled from, or to a
 Phoenix dataset (`--dataset NAME`, default the run's dataset name) that holds

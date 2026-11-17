@@ -36,6 +36,7 @@ from grasp_agents.evals.phoenix.sync import (
     _digest,  # pyright: ignore[reportPrivateUsage]
     _experiment_splits,  # pyright: ignore[reportPrivateUsage]
     _is_example_node_id,  # pyright: ignore[reportPrivateUsage]
+    describe_retention,
     parse_phoenix_source,
     record_id,
     record_node_id,
@@ -470,3 +471,13 @@ def test_nul_characters_are_scrubbed_everywhere() -> None:
     )
     assert record.input == {"value": "in�put"}
     assert record.metadata["n"] == "�"
+
+
+def test_retention_policies_are_described() -> None:
+    assert describe_retention({"name": "Default", "rule": {"maxDays": 0.0}}) == (
+        "kept indefinitely (policy 'Default')",
+        False,
+    )
+    assert describe_retention(
+        {"name": "short", "rule": {"maxDays": 4.0, "maxCount": 1000}}
+    ) == ("kept for 4 days or the newest 1000 traces (policy 'short')", True)

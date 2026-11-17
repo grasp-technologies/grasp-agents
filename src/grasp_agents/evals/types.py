@@ -480,6 +480,10 @@ class PhoenixLink(BaseModel):
     # Trials logged with NUL characters replaced (Phoenix's PostgreSQL store
     # cannot hold them).
     altered_trials: list[str] = Field(default_factory=list[str])
+    # The project holding the trials' traces, and how long Phoenix keeps them
+    # there (the experiment's trace links stop working once they are gone).
+    trace_project: str | None = None
+    trace_retention: str | None = None
 
 
 class RunProcess(BaseModel):

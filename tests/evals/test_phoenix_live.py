@@ -32,6 +32,8 @@ from grasp_agents.evals.phoenix import (
     PhoenixClient,
     PhoenixError,
     StaleDatasetError,
+    delete_dataset,
+    delete_experiment,
     phoenix_source,
     pull_dataset,
     push_dataset,
@@ -571,6 +573,90 @@ async def test_run_trace_sends_trials_to_the_named_project(
                     break
                 await asyncio.sleep(0.5)
             assert found == project
+
+
+async def _traced_run(
+    base_url: str, tmp_path: Path, project: str
+) -> tuple[LocalRunStore, Any]:
+    spec = tmp_path / "traced_evals.py"
+    spec.write_text(_TRACED_MODULE)
+    root = tmp_path / "evals"
+    result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+        [sys.executable, "-m", "grasp_agents.evals", "--root", str(root), "run"]
+        + [f"{spec}:traced", "--trace", project, "-q"],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "TELEMETRY_COLLECTOR_HTTP_ENDPOINT": f"{base_url}/v1/traces",
+        },
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    store = LocalRunStore(root)
+    return store, store.load(store.resolve("latest"))
+
+
+async def _project_names(client: PhoenixClient) -> set[str]:
+    body = await client.request_json(
+        "GET", "v1/projects", params={"include_experiment_projects": "true"}
+    )
+    return {str(p["name"]) for p in body["data"]}
+
+
+@pytest.mark.asyncio
+async def test_pushes_leave_no_empty_projects_and_report_trace_retention(
+    base_url: str, tmp_path: Path
+) -> None:
+    project = _name("kept")
+    store, run = await _traced_run(base_url, tmp_path, project)
+    async with PhoenixClient(base_url) as client:
+        for _ in range(20):
+            if await client.trace_project(run.trials[0].trace_id) == project:
+                break
+            await asyncio.sleep(0.5)
+        run.dataset.name = _name("traced")
+        link = await push_run(client, run, store=store, create_dataset=True)
+        assert link.experiment_id is not None
+        experiment = await client.get_experiment(link.experiment_id)
+        assert experiment["project_name"] not in await _project_names(client)
+        assert link.trace_project == project
+        assert link.trace_retention == "kept indefinitely (policy 'Default')"
+
+        data = await client.graphql(
+            "query($n: String!) { getProjectByName(name: $n) { id } }", {"n": project}
+        )
+        await client.graphql(
+            "mutation($input: CreateProjectTraceRetentionPolicyInput!) "
+            "{ createProjectTraceRetentionPolicy(input: $input) { node { id } } }",
+            {
+                "input": {
+                    "name": _name("four-days"),
+                    "cronExpression": "0 0 * * 0",
+                    "rule": {"maxDays": {"maxDays": 4}},
+                    "addProjects": [data["getProjectByName"]["id"]],
+                }
+            },
+        )
+        again = await push_run(client, store.load(run.id), store=store)
+        assert again.trace_retention is not None
+        assert again.trace_retention.startswith("kept for 4 days")
+
+        assert await delete_experiment(client, store.load(run.id), store=store)
+        assert store.load(run.id).phoenix is None
+        assert experiment["project_name"] not in await _project_names(client)
+        relinked = await push_run(client, store.load(run.id), store=store)
+        assert relinked.experiment_id is not None
+        assert relinked.experiment_id != link.experiment_id
+        second = await client.get_experiment(relinked.experiment_id)
+
+        deleted = await delete_dataset(client, run.dataset.name)
+        assert deleted.deleted == 3
+        assert await client.find_dataset(run.dataset.name) is None
+        assert second["project_name"] not in await _project_names(client)
+        # The tracing project and its traces stay.
+        assert project in await _project_names(client)
 
 
 # --- Labels from human annotations ---

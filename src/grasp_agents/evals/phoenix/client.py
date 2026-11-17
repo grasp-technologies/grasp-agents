@@ -12,6 +12,7 @@ import re
 import time
 from collections.abc import Awaitable, Mapping
 from typing import TYPE_CHECKING, Any, Literal, Self, cast, override
+from urllib.parse import quote
 
 import httpx
 
@@ -275,6 +276,59 @@ class PhoenixClient:
             detail = "; ".join(str(e.get("message")) for e in errors)
             raise PhoenixError(200, "POST", "graphql", detail)
         return cast("dict[str, Any]", body.get("data") or {})
+
+    async def delete_project(self, name: str) -> bool:
+        """Delete a project and its traces; ``False`` when there is none."""
+        response = await self.http.delete(f"v1/projects/{quote(name, safe='')}")
+        if response.status_code == 404:
+            return False
+        if not response.is_success:
+            raise PhoenixError(
+                response.status_code, "DELETE", "v1/projects", response.text[:500]
+            )
+        return True
+
+    async def delete_experiment(self, experiment_id: str) -> bool:
+        """Delete an experiment with its project; ``False`` when there is none."""
+        response = await self.http.delete(
+            f"v1/experiments/{experiment_id}", params={"delete_project": "true"}
+        )
+        if response.status_code == 404:
+            return False
+        if not response.is_success:
+            raise PhoenixError(
+                response.status_code, "DELETE", "v1/experiments", response.text[:500]
+            )
+        return True
+
+    async def delete_dataset(self, dataset_id: str) -> None:
+        """
+        Delete a dataset with its experiments and their projects (Phoenix's REST
+        delete leaves the projects behind; its GraphQL mutation does not).
+        """
+        await self.graphql(
+            "mutation($id: ID!) { deleteDataset(input: {datasetId: $id}) "
+            "{ dataset { id } } }",
+            {"id": dataset_id},
+        )
+
+    async def retention(self, project: str) -> dict[str, Any] | None:
+        """
+        The trace retention policy of a project (``{name, rule}``), or
+        ``None`` when there is no such project.
+        """
+        data = await self.graphql(
+            "query($name: String!) { getProjectByName(name: $name) "
+            "{ traceRetentionPolicy { name rule { __typename "
+            "... on TraceRetentionRuleMaxDays { maxDays } "
+            "... on TraceRetentionRuleMaxCount { maxCount } "
+            "... on TraceRetentionRuleMaxDaysOrCount { maxDays maxCount } } } } }",
+            {"name": project},
+        )
+        found = cast("dict[str, Any] | None", data.get("getProjectByName"))
+        if found is None:
+            return None
+        return cast("dict[str, Any]", found["traceRetentionPolicy"])
 
     async def trace_project(self, trace_id: str) -> str | None:
         """The project holding a trace (by its OTel id), or ``None``."""

@@ -698,3 +698,11 @@ def test_pushing_an_untraced_run_says_so(
     _, run = _run_json(capsys, "--root", root, "run", f"{module}:fixed", "--json")
     assert main(["--root", root, "push", run["id"]]) == 2
     assert f"no trial of {run['id']} has a trace id" in capsys.readouterr().err
+
+
+def test_deleting_a_phoenix_dataset_needs_confirmation(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code, payload = _run_json(capsys, "datasets", "delete", "staging/x", "--json")
+    assert code == 2
+    assert "--yes" in payload["error"]["message"]

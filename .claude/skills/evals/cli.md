@@ -31,6 +31,8 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 | `compare BASE CAND` | Paired comparison; `--top N`; gate flags | Exits 1 only with `--fail-on-regression` |
 | `rescore RUN` | Child run with re-scored stored outputs | `--spec` defaults to the run's recorded spec; `--rerun`; `--allow-unvalidated`; `--split S` / `--ids a,b` for a child of those trials only (sealed splits whole); `--dataset FILE\|phoenix:...` to score against a newer dataset version |
 | `import SPEC FILE` | Scores outputs produced elsewhere as a run (`kind=import`) | JSONL of `{example_id, repetition?, output \| error, duration_s?, cost_usd?, usage?, models?, measurements?, trace_id?, started_at?}`. `--task` (default: the file's stem) and `--task-version` identify what produced them. Selection flags as for `run` (sealed splits left out); outputs outside the selection are ignored, unknown ids and repeated (id, repetition) are errors; `-r` defaults to the most repetitions in the file |
+| `experiments delete RUN` | Deletes the run's Phoenix experiment and its project | JSON output |
+| `datasets delete NAME --yes` | Deletes a Phoenix dataset with its experiments and their projects | Refused without `--yes` |
 | `annotate RUN [--link NAME=URL]... [--note TEXT]... [--remove-link NAME]...` | Adds links and notes to a run's header | Shown by `show`; pushed into the experiment metadata (`links`, `notes`) on the next push |
 | `close RUN` | Finalizes a run left `running` by a killed process: `partial` (or `completed`) from its stored trials | Refused while its process runs on this host, or when that cannot be told (another host, a run recorded before processes were), unless `--force`. Metrics from `--spec`, else the run's spec |
 | `pairwise BASE CAND --judge MOD:ATTR` | Order-swapped A/B judging | `--one-order`; types come from `--spec` or the base run's spec; stored in the base run's store |
@@ -187,7 +189,17 @@ See [metrics.md](metrics.md#regression-gate).
   - refreshes the experiment's description (the question, status and headline
     metrics) and metadata on every push, merging into the metadata on Phoenix so
     keys added there survive;
-  - notes on stderr when no trial has a trace id (the experiment links no traces).
+  - notes on stderr when no trial has a trace id (the experiment links no traces);
+  - deletes the empty `Experiment-<id>` project Phoenix creates with each experiment
+    (trials' traces stay in their tracing project, where the experiment's trace
+    links find them);
+  - reports how long Phoenix keeps the linked traces (the tracing project's retention
+    policy, in `run.phoenix.trace_retention`) and warns when it deletes them: the
+    experiment's trace links stop working then.
+- **Deleting.** `experiments delete RUN` deletes a run's experiment with its project and
+  forgets the link (a later push makes a new one). `datasets delete NAME --yes` deletes
+  a dataset with its experiments and their projects (Phoenix's own REST delete leaves
+  the projects behind).
 - **Trace ids.** Trials get a `trace_id` only when an OpenTelemetry tracer provider is
   active during the run; otherwise nothing reaches Phoenix and nothing warns at run time
   (`push` notes it). `run --trace PROJECT` (or `$GRASP_EVALS_TRACE_PROJECT`) sets
