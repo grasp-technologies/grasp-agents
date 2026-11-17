@@ -131,6 +131,10 @@ On the file-tool plane, the file backend adds guards of its own (see
 - `Copy` validates every file it reads for read access. Inside a directory it
   skips files the policy refuses, symbolic links and special files, and lists
   them, so a copy reads nothing the path policy denies.
+- `Glob` and `Grep` drop every result the backend would refuse to `Read`,
+  names and lines alike, so a search reveals nothing under a `deny_read`
+  carve-out or among the credential dotfiles. The filter is the backend's own
+  `validate_path`, so on an MCP server it is the server's policy that applies.
 - The pure-Python grep (`grep_texts_async`, which `InMemoryFileBackend`
   uses) refuses patterns and globs over 1,000 characters, runs in a worker
   thread, and stops at a time budget (5 s by default) with partial results and
@@ -149,6 +153,8 @@ On the file-tool plane, the file backend adds guards of its own (see
    `validate_path` and in each mutating call (`CompositeFileBackend`).
 7. `Copy` reads only files that pass `validate_path(access="read")` and, inside
    a directory, resolve to their own path under the source (`CopyTool`).
+8. `Glob` and `Grep` return only results whose paths pass
+   `validate_path(access="read")` (`tools/file_search/_read_access.py`).
 
 ## Limitations
 

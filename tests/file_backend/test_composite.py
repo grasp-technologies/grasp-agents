@@ -612,3 +612,35 @@ async def test_grep_tool_renders_notes() -> None:
     assert result.output.splitlines()[0] == "/user/notes/b.md"
     assert "Note:" in result.output
     assert "/user/memory" in result.output
+
+
+class _ListingFails(InMemoryFileBackend):
+    """Searches contents but fails to list the files that match."""
+
+    async def grep(self, root: Path, pattern: str, **kwargs: Any) -> GrepRawResult:
+        if kwargs.get("output_mode", "files_with_matches") == "files_with_matches":
+            raise RuntimeError("index unavailable")
+        return await super().grep(root, pattern, **kwargs)
+
+
+async def test_grep_tool_notes_a_mount_whose_content_lines_it_dropped() -> None:
+    # Content mode lists the matching files to attribute lines to them, so a
+    # mount that fails only that listing loses its lines, which a note explains.
+    backend = CompositeFileBackend(
+        [
+            Mount(
+                MEMORY, _ListingFails([MEMORY], files={str(MEMORY / "a.md"): "TODO\n"})
+            ),
+            Mount(NOTES, _mem(NOTES, **{"b.md": "TODO\n"})),
+        ]
+    )
+    ctx: SessionContext[Any] = SessionContext(file_backend=backend, session_key="s")
+
+    result = await FileToolkit().grep.run(
+        GrepInput(pattern="TODO", path="/user", output_mode="content"), ctx=ctx
+    )
+
+    assert isinstance(result, GrepResult)
+    assert result.output.splitlines()[0] == "/user/notes/b.md:1:TODO"
+    assert "Note: /user/memory was not searched: index unavailable" in result.output
+    assert (result.num_matches, result.num_files_matched) == (1, 1)
