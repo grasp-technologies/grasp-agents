@@ -306,7 +306,7 @@ A dataset reference is `phoenix:[https://HOST/]NAME[@VERSION]`, or a
 `PhoenixRef(name, version, base_url)`. A version id only means something on
 the server that issued it, so a pinned reference should name its server: the
 server a reference names wins over `PHOENIX_BASE_URL` (and conflicts with a
-different `--base-url`). `PHOENIX_API_KEY` is still sent only to
+different `--base-url`). `PHOENIX_API_KEY` is sent only to
 `PHOENIX_BASE_URL`'s server, or to any server when that is unset. Pinned
 versions are cached per server and pulled once. `load_phoenix_dataset` and
 `parse_phoenix_ref` are exported for loaders of your own.
@@ -331,8 +331,9 @@ PostgreSQL store rejects, are replaced with U+FFFD in everything pushed
 (`run.phoenix.altered_trials` lists the trials affected). Trial posts that
 Phoenix deduplicates are retried on gateway errors, and a failure names the
 trial; a 5xx from the server is `PhoenixUnavailableError`. Phoenix 20.0 or
-later is required; older servers raise
-`PhoenixCompatibilityError`. Trials get trace ids only while tracing is on:
+later is required; older servers raise `PhoenixCompatibilityError`.
+
+Trials get trace ids only while tracing is on:
 `grasp-evals run --trace PROJECT` (or `$GRASP_EVALS_TRACE_PROJECT`;
 `grasp_agents.evals.tracing.start_tracing` in Python) sets it up before the
 first trial, sending to `TELEMETRY_COLLECTOR_HTTP_ENDPOINT` or

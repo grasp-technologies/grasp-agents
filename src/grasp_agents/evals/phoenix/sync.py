@@ -53,7 +53,7 @@ _SOURCE_PREFIX = "phoenix:"
 DATASET_PREFIX_ENV = "GRASP_EVALS_DATASET_PREFIX"
 # PostgreSQL rejects NUL in text and JSONB; Phoenix answers a bare 500.
 _NUL = "\x00"
-NUL_REPLACEMENT = "\ufffd"
+NUL_REPLACEMENT = "\N{REPLACEMENT CHARACTER}"
 
 
 class StaleDatasetError(RuntimeError):

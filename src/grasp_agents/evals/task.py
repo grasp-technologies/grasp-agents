@@ -63,7 +63,7 @@ class Task[InT, OutT](ABC):
     """
     The system under test: maps one example input to an output.
 
-    Declare ``version`` (and ``config`` for anything that changes behaviour —
+    Declare ``version`` (and ``config`` for anything that changes behavior —
     models, prompt versions, flags); both are recorded in every run.
     """
 

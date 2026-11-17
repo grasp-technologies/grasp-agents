@@ -31,6 +31,7 @@ from grasp_agents.evals import (
 from grasp_agents.evals.cli import main
 from grasp_agents.evals.labeling import write_records
 from grasp_agents.evals.phoenix import (
+    NUL_REPLACEMENT,
     DatasetPushError,
     PhoenixClient,
     PhoenixError,
@@ -483,7 +484,7 @@ async def test_nul_characters_are_replaced_on_push(
         outputs = sorted(
             str(r["output"]) for r in await _task_runs(client, link.experiment_id)
         )
-        assert "page\ufffd1" in outputs
+        assert f"page{NUL_REPLACEMENT}1" in outputs
         # A second run on the same local dataset attaches to the scrubbed rows.
         again = await evaluate(FunctionTask(with_nul), dataset, [kept], store=store)
         relinked = await push_run(client, again, store=store)
@@ -546,25 +547,8 @@ traced = Evaluation(
 async def test_run_trace_sends_trials_to_the_named_project(
     base_url: str, tmp_path: Path
 ) -> None:
-    spec = tmp_path / "traced_evals.py"
-    spec.write_text(_TRACED_MODULE)
     project = _name("traced")
-    root = tmp_path / "evals"
-    result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
-        [sys.executable, "-m", "grasp_agents.evals", "--root", str(root), "run"]
-        + [f"{spec}:traced", "--trace", project, "-q"],
-        cwd=tmp_path,
-        env={
-            **os.environ,
-            "TELEMETRY_COLLECTOR_HTTP_ENDPOINT": f"{base_url}/v1/traces",
-        },
-        capture_output=True,
-        timeout=120,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr.decode()
-    store = LocalRunStore(root)
-    run = store.load(store.resolve("latest"))
+    store, run = await asyncio.to_thread(_traced_run, base_url, tmp_path, project)
     assert run.trace_project == project
     async with PhoenixClient(base_url) as client:
         for trial in run.trials:
@@ -578,7 +562,7 @@ async def test_run_trace_sends_trials_to_the_named_project(
             assert found == project
 
 
-async def _traced_run(
+def _traced_run(
     base_url: str, tmp_path: Path, project: str
 ) -> tuple[LocalRunStore, Any]:
     spec = tmp_path / "traced_evals.py"
@@ -613,7 +597,7 @@ async def test_pushes_leave_no_empty_projects_and_report_trace_retention(
     base_url: str, tmp_path: Path
 ) -> None:
     project = _name("kept")
-    store, run = await _traced_run(base_url, tmp_path, project)
+    store, run = await asyncio.to_thread(_traced_run, base_url, tmp_path, project)
     async with PhoenixClient(base_url) as client:
         for _ in range(20):
             if await client.trace_project(run.trials[0].trace_id) == project:

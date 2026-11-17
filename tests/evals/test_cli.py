@@ -645,13 +645,13 @@ def test_runs_carry_links_and_notes(
 class _Collector(http.server.BaseHTTPRequestHandler):
     received: ClassVar[list[str]] = []
 
-    def do_POST(self) -> None:  # ruff: ignore[invalid-function-name]
+    def do_POST(self) -> None:
         self.rfile.read(int(self.headers.get("content-length") or 0))
         self.received.append(self.path)
         self.send_response(200)
         self.end_headers()
 
-    def log_message(self, format: str, *args: Any) -> None:  # ruff: ignore[builtin-argument-shadowing]
+    def log_message(self, format: str, *args: Any) -> None:
         return
 
 
@@ -696,6 +696,11 @@ def test_pushing_an_untraced_run_says_so(
     monkeypatch.delenv("PHOENIX_BASE_URL", raising=False)
     root = str(tmp_path / "evals")
     _, run = _run_json(capsys, "--root", root, "run", f"{module}:fixed", "--json")
+    # Untraced whatever tracing other tests set up in this process.
+    store = LocalRunStore(root)
+    for trial in store.load(run["id"]).trials:
+        trial.trace_id = None
+        store.append_trial(run["id"], trial)
     assert main(["--root", root, "push", run["id"]]) == 2
     assert f"no trial of {run['id']} has a trace id" in capsys.readouterr().err
 

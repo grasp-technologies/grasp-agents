@@ -149,8 +149,6 @@ def test_lower_is_better_names_the_scores() -> None:
     def defects(ctx: ScoreContext[Any, Any, Any]) -> float:
         return 0.0
 
-    assert FunctionScorer(defects, lower_is_better=True).lower_is_better == {
-        "defects"
-    }
+    assert FunctionScorer(defects, lower_is_better=True).lower_is_better == {"defects"}
     assert scorer(lower_is_better={"a", "b"})(defects).lower_is_better == {"a", "b"}
     assert not FunctionScorer(defects).lower_is_better

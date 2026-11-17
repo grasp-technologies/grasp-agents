@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import shutil
 import subprocess  # ruff: ignore[suspicious-subprocess-import]
@@ -120,7 +121,13 @@ async def test_a_default_store_inside_a_repository_is_flagged(
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)  # ruff: ignore[subprocess-without-shell-equals-true]
+    git = shutil.which("git")
+    assert git is not None
+    await asyncio.to_thread(
+        subprocess.run,
+        [git, "init", "-q", str(repo)],
+        check=True,
+    )
     monkeypatch.chdir(repo)
     monkeypatch.delenv("GRASP_EVALS_DIR", raising=False)
     caplog.set_level(logging.WARNING, logger="grasp_agents.evals.store")

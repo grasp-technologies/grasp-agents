@@ -399,10 +399,10 @@ class TestDescriptiveMetadata:
     def test_descriptive_keys_are_left_out_of_identity(self) -> None:
         first = self._data("sampled by hand", descriptive_metadata=["note"])
         reworded = self._data("hand-picked", descriptive_metadata=["note"])
-        retopiced = self._data("hand-picked", "logic", descriptive_metadata=["note"])
+        other_topic = self._data("hand-picked", "logic", descriptive_metadata=["note"])
         assert first["q"].content_hash == reworded["q"].content_hash
         assert first.fingerprint == reworded.fingerprint
-        assert first["q"].content_hash != retopiced["q"].content_hash
+        assert first["q"].content_hash != other_topic["q"].content_hash
         assert self._data("a")["q"].content_hash != self._data("b")["q"].content_hash
         assert first.ref().descriptive_metadata == ["note"]
         # The content as stored keeps every key.

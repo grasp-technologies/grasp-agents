@@ -76,7 +76,8 @@ step "12. Everything recorded so far"
 evals runs
 
 if [[ -n "${PHOENIX_BASE_URL:-}" ]]; then
-  step "13. Mirror the runs to Phoenix (the sealed test run as aggregates only)"
+  step "13. Share the dataset, then mirror the runs (the sealed test run as aggregates only)"
+  evals datasets push src/grasp_agents/examples/evals/data/short_answers.jsonl
   evals push "$V2"
   evals push "$TEST"
 fi

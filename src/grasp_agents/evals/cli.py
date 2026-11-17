@@ -85,9 +85,9 @@ class _Parser(argparse.ArgumentParser):
 class Stopped(Exception):
     """The process was asked to stop (SIGTERM, SIGHUP)."""
 
-    def __init__(self, signum: int) -> None:
-        super().__init__(f"stopped by {signal.Signals(signum).name}")
-        self.signum = signum
+    def __init__(self, signal_number: int) -> None:
+        super().__init__(f"stopped by {signal.Signals(signal_number).name}")
+        self.signal_number = signal_number
 
 
 _STOP_SIGNALS = tuple(
@@ -106,18 +106,18 @@ def _run_async(command: Coroutine[Any, Any, int]) -> int:
         task = asyncio.current_task()
         received: list[int] = []
 
-        def stop(signum: int) -> None:
-            received.append(signum)
+        def stop(signal_number: int) -> None:
+            received.append(signal_number)
             if task is not None:
                 task.cancel()
 
         handled: list[int] = []
-        for signum in _STOP_SIGNALS:
+        for signal_number in _STOP_SIGNALS:
             try:
-                loop.add_signal_handler(signum, stop, signum)
+                loop.add_signal_handler(signal_number, stop, signal_number)
             except (NotImplementedError, RuntimeError, ValueError):
                 continue  # no loop signal handlers here (Windows, a thread)
-            handled.append(signum)
+            handled.append(signal_number)
         try:
             return await command
         except asyncio.CancelledError:
@@ -125,8 +125,8 @@ def _run_async(command: Coroutine[Any, Any, int]) -> int:
                 raise Stopped(received[0]) from None
             raise
         finally:
-            for signum in handled:
-                loop.remove_signal_handler(signum)
+            for signal_number in handled:
+                loop.remove_signal_handler(signal_number)
 
     return asyncio.run(main())
 
@@ -1367,13 +1367,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(delete_ds)
 
     experiments = sub.add_parser("experiments", help="Phoenix experiments of runs")
-    esub = experiments.add_subparsers(dest="experiments_command", required=True)
-    edelete = esub.add_parser(
+    experiments_sub = experiments.add_subparsers(
+        dest="experiments_command", required=True
+    )
+    delete_run_experiment = experiments_sub.add_parser(
         "delete", help="delete a run's experiment and its project (JSON output)"
     )
-    edelete.add_argument("run")
-    edelete.add_argument("--base-url", help="Phoenix URL (default: the run's)")
-    _add_json(edelete)
+    delete_run_experiment.add_argument("run")
+    delete_run_experiment.add_argument(
+        "--base-url", help="Phoenix URL (default: the run's)"
+    )
+    _add_json(delete_run_experiment)
 
     labels = sub.add_parser(
         "labels", help="collect labels for judge validation (JSON output)"
@@ -1551,7 +1555,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 130
     except Stopped as exc:
         sys.stderr.write(f"grasp-evals: {exc}\n")
-        return 128 + exc.signum
+        return 128 + exc.signal_number
     except Exception as exc:
         code = _exit_code(exc)
         _report_error(exc, code, as_json=getattr(args, "json", False))

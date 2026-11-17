@@ -14,6 +14,7 @@ from .client import (
     normalize_base_url,
 )
 from .sync import (
+    NUL_REPLACEMENT,
     DatasetPushError,
     DatasetPushResult,
     StaleDatasetError,
@@ -29,6 +30,7 @@ from .sync import (
 )
 
 __all__ = [
+    "NUL_REPLACEMENT",
     "DatasetPushError",
     "DatasetPushResult",
     "PhoenixClient",

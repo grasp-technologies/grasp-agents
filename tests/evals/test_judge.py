@@ -460,7 +460,9 @@ class TestJudgeSpend:
 
 
 class TestDeclaredIdentity:
-    def test_declared_parts_join_the_processor_fingerprint(self, tmp_path: Path) -> None:
+    def test_declared_parts_join_the_processor_fingerprint(
+        self, tmp_path: Path
+    ) -> None:
         rubric = tmp_path / "rubric.md"
         rubric.write_text("v1")
         plain = ProcessorScorer(_judge_with(), to_scores=_passed).describe()
