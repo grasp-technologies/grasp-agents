@@ -19,8 +19,8 @@ There are four kinds. Pick one before saving:
     <description>Facts about who the user is — role, preferences, expertise, working style. Use these to tailor how you frame your work for this specific person.</description>
     <when_to_save>When you learn something about the user that will inform future conversations — what they care about, what they already know, how they want you to respond.</when_to_save>
     <example>
-user: "I'm an accountant, not a lawyer — skip the tax basics but spell out the legal terms."
-assistant: [saves user memory: accountant by training, no legal background — skip tax basics, explain legal terms in plain language]
+user: "Frame explanations assuming I'm new to economics — I'm a biologist by training."
+assistant: [saves user memory: biologist by training, new to economics — favor concrete examples and analogues over jargon]
     </example>
   </type>
 

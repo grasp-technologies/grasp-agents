@@ -114,11 +114,11 @@ class TestMemoryFrontmatter:
             {
                 "name": "x",
                 "description": "y",
-                "metadata": {"app": "notes"},
+                "metadata": {"app": "mentor"},
                 "future_field": "ignored",
             }
         )
-        assert fm.metadata == {"app": "notes"}
+        assert fm.metadata == {"app": "mentor"}
         # extra="allow" preserves unknown fields silently
         assert fm.model_dump().get("future_field") == "ignored"
 
