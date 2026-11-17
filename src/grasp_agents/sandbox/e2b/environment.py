@@ -1,35 +1,52 @@
 """
 ``E2BEnvironment`` + the :func:`e2b_environment` factory — an
 :class:`ExecutionEnvironment` over an E2B cloud sandbox, with
-:class:`SnapshotCapable` wired to E2B's native pause/resume.
+:class:`SnapshotCapable` wired to E2B's native snapshots.
 """
 
 from __future__ import annotations
 
-import contextlib
+import asyncio
 import logging
 import time
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Self, TypedDict
+from typing import TYPE_CHECKING, Any, Self, TypedDict
 
 from e2b import AsyncSandbox
 
-from grasp_agents.sandbox.environment import ExecutionEnvironment, SnapshotCapable
+from grasp_agents.sandbox.environment import (
+    ExecutionEnvironment,
+    NetworkUpdatable,
+    SnapshotCapable,
+)
 from grasp_agents.sandbox.policy import NetworkPolicy, SandboxPolicy
 
 from ._handle import (
     DEFAULT_EXEC_TIMEOUT,
     DEFAULT_WORKSPACE,
+    E2BSandboxExpiredError,
     SandboxHandle,
+    consume_outcome,
+    kill_quietly,
     wire,
 )
+from ._names import METADATA_KEY, check_label, snapshot_name
+from ._network import e2b_egress
 from .exec import E2BExecBackend
 from .file_backend import E2BFileBackend
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Coroutine, Mapping, Sequence
+
+    from e2b import SandboxNetworkOpts, SandboxNetworkUpdate
+    from e2b.connection_config import ApiParams
 
 logger = logging.getLogger(__name__)
+
+FRESH_SNAPSHOT_REF = "e2b-fresh"
+"""Snapshot ref of a sandbox that never started: restoring it starts over."""
 
 
 class E2BCreateParams(TypedDict, total=False):
@@ -49,8 +66,31 @@ class E2BCreateParams(TypedDict, total=False):
     envs: dict[str, str] | None
     secure: bool
     allow_internet_access: bool
+    network: SandboxNetworkOpts
     api_key: str
     domain: str
+
+
+async def _outlive_cancellation(
+    body: Callable[[asyncio.Event], Coroutine[Any, Any, None]],
+    pending: set[asyncio.Task[None]],
+) -> None:
+    """
+    Run ``body`` in a task of its own, so cancelling the caller does not stop
+    it midway, after E2B may already have created or resumed a sandbox.
+    ``body`` gets an event set once the caller was cancelled, and must then
+    let go of what it obtained instead of installing it.
+    """
+    abandoned = asyncio.Event()
+    task = asyncio.create_task(body(abandoned))
+    pending.add(task)
+    task.add_done_callback(pending.discard)
+    task.add_done_callback(consume_outcome)
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        abandoned.set()
+        raise
 
 
 def _sandbox_cls(code_interpreter: bool) -> type[AsyncSandbox]:
@@ -58,7 +98,7 @@ def _sandbox_cls(code_interpreter: bool) -> type[AsyncSandbox]:
     if not code_interpreter:
         return AsyncSandbox
     try:
-        from e2b_code_interpreter import (
+        from e2b_code_interpreter import (  # ruff: ignore[import-outside-top-level]
             AsyncSandbox as CISandbox,
         )
     except ImportError as exc:  # pragma: no cover - the e2b extra installs both
@@ -69,17 +109,19 @@ def _sandbox_cls(code_interpreter: bool) -> type[AsyncSandbox]:
     return CISandbox
 
 
-class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
+class E2BEnvironment(ExecutionEnvironment, SnapshotCapable, NetworkUpdatable):
     """
     An :class:`ExecutionEnvironment` over an E2B cloud sandbox, with
-    :class:`SnapshotCapable` wired to E2B's native pause/resume.
+    :class:`SnapshotCapable` wired to E2B's native snapshots (``snapshot`` /
+    ``restore`` rewind to a point-in-time copy; ``pause`` / ``resume`` suspend
+    and reconnect the same sandbox).
 
     Prefer the :func:`e2b_environment` factory. The async context manager owns
-    sandbox create (``__aenter__`` — where the optional ``e2b`` import happens)
-    and teardown (``__aexit__`` — kill, or pause when ``pause_on_exit``). The
-    ``file_backend`` / ``exec_backend`` objects exist before entry (so a
-    ``SessionContext`` can source them), but their I/O raises until the context is
-    entered and the sandbox is live.
+    sandbox create (``__aenter__``, or the first file or exec call with
+    ``lazy=True``) and teardown (``__aexit__`` — kill, or pause when
+    ``pause_on_exit``). The ``file_backend`` / ``exec_backend`` objects exist
+    before entry (so a ``SessionContext`` can source them), but their I/O raises
+    until the context is entered.
     """
 
     def __init__(
@@ -93,7 +135,11 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         owns_sandbox: bool = True,
         pause_on_exit: bool = False,
         code_interpreter: bool = False,
+        lazy: bool = False,
+        label: str | None = None,
     ) -> None:
+        self._lazy = lazy
+        self._label = check_label(label)
         self._policy = policy
         self._holder = holder
         self._file_backend = file_backend
@@ -102,6 +148,9 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         self._owns_sandbox = owns_sandbox
         self._pause_on_exit = pause_on_exit
         self._code_interpreter = code_interpreter
+        self._entered = False
+        # Restores and resumes that outlive their cancelled caller.
+        self._pending: set[asyncio.Task[None]] = set()
 
     @property
     def policy(self) -> SandboxPolicy:
@@ -123,15 +172,21 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         policy: SandboxPolicy,
         owns_sandbox: bool = False,
         pause_on_exit: bool = False,
+        label: str | None = None,
     ) -> Self:
         """
         Wrap an already-created e2b ``AsyncSandbox`` (or a test double).
 
         The ``policy`` is the single source of ``allowed_roots`` + carve-outs
-        for both surfaces. ``owns_sandbox=False`` by default: the caller created
-        it, so teardown is the caller's responsibility. Used for connecting to a
-        pre-existing sandbox and for tests.
+        for both surfaces, and of the network a :meth:`restore` creates its
+        sandbox with; ``label`` tags those sandboxes and names snapshots, as
+        :func:`e2b_environment`'s does. ``owns_sandbox=False`` by default: the
+        caller created it, so teardown is the caller's responsibility. Used for
+        connecting to a pre-existing sandbox and for tests.
+
+        Raises ``NotImplementedError`` for a network policy E2B cannot enforce.
         """
+        e2b_egress(policy)
         holder = SandboxHandle(sandbox)
         return cls(
             policy=policy,
@@ -141,52 +196,91 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
             create_params=None,
             owns_sandbox=owns_sandbox,
             pause_on_exit=pause_on_exit,
+            label=label,
         )
 
+    @property
+    def started(self) -> bool:
+        """
+        True while the environment holds a sandbox: from entry until exit, or,
+        with ``lazy=True``, from the first file or exec call. Restoring
+        :data:`FRESH_SNAPSHOT_REF` on a lazy environment drops it until the
+        next call.
+        """
+        return self._holder.sandbox is not None
+
     async def __aenter__(self) -> Self:
-        created_here = False
-        if self._holder.sandbox is None:
-            if self._create_params is None:
-                raise RuntimeError(
-                    "E2BEnvironment has no sandbox and no create params; build "
-                    "it via e2b_environment(...) or E2BEnvironment.from_sandbox(...)."
-                )
-            sandbox_cls = _sandbox_cls(self._code_interpreter)
-            logger.info("creating E2B sandbox (%s)", sandbox_cls.__name__)
-            t0 = time.monotonic()
-            self._holder.sandbox = await sandbox_cls.create(**self._create_params)
-            logger.info("E2B sandbox ready in %.1fs", time.monotonic() - t0)
-            created_here = True
-        sandbox = self._holder.require()
+        # A sandbox E2B removes is replaced on the next call, when there are
+        # create params to start one from.
+        self._holder.replace_expired_with(
+            self._start if self._create_params is not None else None
+        )
+        if self._holder.sandbox is not None:
+            await self._prepare(self._holder.sandbox, created_here=False)
+            self._entered = True
+            return self
+        if self._create_params is None:
+            raise RuntimeError(
+                "E2BEnvironment has no sandbox and no create params; build "
+                "it via e2b_environment(...) or E2BEnvironment.from_sandbox(...)."
+            )
+        if self._lazy:
+            self._holder.arm(self._start)
+        else:
+            self._holder.sandbox = await self._start()
+        self._entered = True
+        return self
+
+    def _require_entered(self, operation: str) -> None:
+        if not self._entered:
+            raise RuntimeError(
+                f"E2B environment is not entered: {operation}() needs "
+                "`async with env:`; after exit, nothing would kill the sandbox "
+                "it starts."
+            )
+
+    async def _start(self) -> AsyncSandbox:
+        """Create a sandbox from the create params and prepare its roots."""
+        if self._create_params is None:
+            raise RuntimeError(
+                "E2BEnvironment has no create params to start a fresh sandbox "
+                "from; it wraps an existing one (from_sandbox)."
+            )
+        sandbox_cls = _sandbox_cls(self._code_interpreter)
+        logger.info("creating E2B sandbox (%s)", sandbox_cls.__name__)
+        t0 = time.monotonic()
+        sandbox = await sandbox_cls.create(**self._create_params)
+        logger.info("E2B sandbox ready in %.1fs", time.monotonic() - t0)
+        await self._prepare(sandbox, created_here=True)
+        return sandbox
+
+    async def _prepare(self, sandbox: AsyncSandbox, *, created_here: bool) -> None:
+        """Make the allowed roots; kill a sandbox created here if that fails."""
         try:
             for root in self._file_backend.allowed_roots:
                 await sandbox.files.make_dir(wire(root))
         except BaseException:
             # Don't orphan a just-created (billed) sandbox when setup fails.
             if created_here:
-                self._holder.sandbox = None
-                try:
-                    await sandbox.kill()
-                except Exception:
-                    logger.warning(
-                        "Failed to kill E2B sandbox after setup failure; "
-                        "it may keep running (and billing) until its timeout.",
-                        exc_info=True,
-                    )
+                await kill_quietly(sandbox)
             raise
-        return self
 
     async def __aexit__(self, *exc: object) -> None:
-        sandbox = self._holder.sandbox
-        if sandbox is None or not self._owns_sandbox:
-            return
-        try:
-            if self._pause_on_exit:
-                await sandbox.pause()
-            else:
-                await sandbox.kill()
-        finally:
-            self._holder.sandbox = None
+        # Disarm before waiting for the lock: a start in flight then kills its
+        # sandbox when it finishes, and no new start begins.
+        self._entered = False
+        self._holder.disarm()
+        async with self._holder.lock:
+            sandbox = self._holder.sandbox
+            if sandbox is None or not self._owns_sandbox:
+                return
+            try:
+                if self._pause_on_exit:
+                    await sandbox.pause()
+                else:
+                    await sandbox.kill()
+            finally:
+                self._holder.sandbox = None
 
     async def snapshot(self) -> str:
         """
@@ -197,8 +291,21 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         sandbox briefly pauses during creation, then keeps running. :meth:`restore`
         spawns a *fresh* sandbox from it — a true rewind. (To suspend/resume the
         same sandbox instead, use :meth:`pause` / :meth:`resume`.)
+
+        A lazy environment whose sandbox has not started yet returns
+        :data:`FRESH_SNAPSHOT_REF` without starting one.
         """
-        snap = await self._holder.require().create_snapshot()
+        if self._holder.sandbox is None and self._holder.armed:
+            return FRESH_SNAPSHOT_REF
+        sandbox = self._holder.require()
+        try:
+            name = snapshot_name(self._label, datetime.now(UTC))
+            snap = await sandbox.create_snapshot(name=name)
+        except Exception as exc:
+            await self._holder.raise_if_expired(sandbox, exc)
+            raise
+        finally:
+            self._holder.drop_streams()
         return str(snap.snapshot_id)
 
     async def restore(self, ref: str) -> None:
@@ -206,15 +313,139 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         Rewind to a snapshot: spawn a fresh sandbox from ``ref`` (its filesystem
         + memory at snapshot time) and swap the live handle under both backends.
         The previous sandbox, if owned, is killed.
+
+        :data:`FRESH_SNAPSHOT_REF` rewinds to a sandbox that never ran: a lazy
+        environment drops its sandbox and starts a new one on next use, even
+        after a failed start; an eager one starts a new one from its create
+        params (its configured template) now. An environment that wraps an
+        existing sandbox (:meth:`from_sandbox`) has no create params, so it
+        refuses this ref.
+
+        Cancelling the call does not cancel a create E2B may already be
+        running: the sandbox it creates is killed instead of installed. Raises
+        ``RuntimeError`` outside ``async with env:``, where nothing would kill
+        the sandbox it creates.
         """
-        previous = self._holder.sandbox
-        # Create from the snapshot, not a base template.
-        params: E2BCreateParams = {**(self._create_params or {}), "template": ref}
-        sandbox_cls = _sandbox_cls(self._code_interpreter)
-        self._holder.sandbox = await sandbox_cls.create(**params)
-        if previous is not None and self._owns_sandbox:
-            with contextlib.suppress(Exception):
-                await previous.kill()
+        await _outlive_cancellation(
+            lambda abandoned: self._restore(ref, abandoned), self._pending
+        )
+
+    async def _restore(self, ref: str, abandoned: asyncio.Event) -> None:
+        async with self._holder.lock:
+            if abandoned.is_set():
+                return
+            self._require_entered("restore")
+            previous = self._holder.sandbox
+            if ref == FRESH_SNAPSHOT_REF and self._holder.armed:
+                self._holder.sandbox = None
+                # Re-arming forgets a failed start: the next call retries.
+                self._holder.arm(self._start)
+            else:
+                restored = await self._create_from(ref)
+                if abandoned.is_set():
+                    await kill_quietly(restored)
+                    return
+                self._holder.sandbox = restored
+            self._holder.drop_streams()
+            if previous is not None and self._owns_sandbox:
+                await kill_quietly(previous)
+
+    async def _create_from(self, ref: str) -> AsyncSandbox:
+        if ref == FRESH_SNAPSHOT_REF:
+            return await self._start()
+        # Create from the snapshot instead of the configured template.
+        params: E2BCreateParams = {
+            **(self._create_params or self._wrapped_create_params()),
+            "template": ref,
+        }
+        return await _sandbox_cls(self._code_interpreter).create(**params)
+
+    async def update_network(
+        self,
+        network: NetworkPolicy,
+        *,
+        allowed_domains: Sequence[str] = (),
+        denied_domains: Sequence[str] = (),
+    ) -> None:
+        """
+        Change the sandbox's egress to ``network`` (with ``allowed_domains``
+        and ``denied_domains``, as :func:`e2b_environment` takes them), and
+        record it: :attr:`policy` and the exec backend's report it, and every
+        sandbox the environment creates afterwards (a lazy start, a restore,
+        the replacement of one E2B removed) starts with it. Before a lazy
+        start it only records.
+
+        When E2B no longer has the sandbox, the change is still recorded for
+        its replacement and :class:`E2BSandboxExpiredError` is raised. A
+        sandbox :meth:`pause` paused refuses the change; :meth:`resume` it
+        first. ``resume()`` of another sandbox keeps that sandbox's own
+        network.
+
+        Raises ``NotImplementedError``, changing nothing, for a policy E2B
+        cannot enforce (``LOOPBACK``; ``denied_domains`` with ``ALL``; a denied
+        host an allowed wildcard covers), and ``ValueError`` for an unknown
+        ``network``.
+        """
+        policy = replace(
+            self._policy,
+            network=NetworkPolicy(network),
+            allowed_domains=tuple(allowed_domains),
+            denied_domains=tuple(denied_domains),
+        )
+        internet, options = e2b_egress(policy)
+        update: SandboxNetworkUpdate = {"allow_internet_access": internet}
+        if options is not None and "deny_out" in options:
+            update["deny_out"] = options["deny_out"]
+        if options is not None and "allow_out" in options:
+            update["allow_out"] = options["allow_out"]
+        async with self._holder.lock:
+            sandbox = self._holder.sandbox
+            try:
+                if sandbox is not None:
+                    await self._apply_network(sandbox, update)
+            except E2BSandboxExpiredError:
+                self._adopt_network(policy, internet, options)
+                raise
+            self._adopt_network(policy, internet, options)
+
+    async def _apply_network(
+        self, sandbox: AsyncSandbox, update: SandboxNetworkUpdate
+    ) -> None:
+        try:
+            await sandbox.update_network(update)
+        except Exception as exc:
+            await self._holder.raise_if_expired(sandbox, exc)
+            raise
+
+    def _adopt_network(
+        self,
+        policy: SandboxPolicy,
+        internet: bool,
+        options: SandboxNetworkOpts | None,
+    ) -> None:
+        self._policy = policy
+        self._exec_backend.adopt_network(policy)
+        if self._create_params is None:
+            return
+        self._create_params["allow_internet_access"] = internet
+        if options is None:
+            self._create_params.pop("network", None)
+        else:
+            self._create_params["network"] = options
+
+    def _wrapped_create_params(self) -> E2BCreateParams:
+        """
+        What a :meth:`from_sandbox` environment's restores create with: its
+        policy's network and its tag.
+        """
+        internet, network = e2b_egress(self._policy)
+        params: E2BCreateParams = {
+            "allow_internet_access": internet,
+            "metadata": {METADATA_KEY: self._label},
+        }
+        if network is not None:
+            params["network"] = network
+        return params
 
     async def pause(self) -> str:
         """
@@ -224,24 +455,90 @@ class E2BEnvironment(ExecutionEnvironment, SnapshotCapable):
         :meth:`snapshot`: pause is suspend/resume (no rewind), whereas a snapshot
         is a persistent point-in-time copy you spawn fresh sandboxes from.
         """
-        sandbox = self._holder.require()
-        await sandbox.pause()
-        return str(sandbox.sandbox_id)
+        async with self._holder.lock:
+            if self._holder.sandbox is None and self._holder.armed:
+                raise RuntimeError("Nothing to pause: the sandbox was never started.")
+            sandbox = self._holder.require()
+            try:
+                await sandbox.pause()
+            finally:
+                self._holder.drop_streams()
+            return str(sandbox.sandbox_id)
 
     async def resume(self, sandbox_id: str | None = None) -> None:
         """
         Reconnect to (and auto-resume) a paused sandbox, swapping the live
         handle. Defaults to the currently-bound sandbox's id.
+
+        Reconnects with the sandbox class the environment creates (the code
+        interpreter one with ``code_interpreter=True``) and its configured
+        API key, domain and keep-alive timeout. Resuming another sandbox lets
+        go of the previous one as exit would: an owned one is killed, or
+        paused with ``pause_on_exit``.
+
+        Cancelling the call does not cancel a connect E2B may already be
+        running: the environment lets go of the sandbox it resumed (unless it
+        is the one it already holds) instead of installing it. Raises
+        ``RuntimeError`` outside ``async with env:``, where nothing would kill
+        or pause the sandbox it connects.
         """
-        target = sandbox_id
-        if target is None:
-            current = self._holder.sandbox
-            if current is None:
-                raise RuntimeError(
-                    "resume() needs a sandbox_id when no sandbox is bound."
-                )
-            target = str(current.sandbox_id)
-        self._holder.sandbox = await AsyncSandbox.connect(target)
+        await _outlive_cancellation(
+            lambda abandoned: self._resume(sandbox_id, abandoned), self._pending
+        )
+
+    async def _resume(self, sandbox_id: str | None, abandoned: asyncio.Event) -> None:
+        async with self._holder.lock:
+            if abandoned.is_set():
+                return
+            self._require_entered("resume")
+            previous = self._holder.sandbox
+            target = sandbox_id
+            if target is None:
+                if previous is None:
+                    raise RuntimeError(
+                        "resume() needs a sandbox_id when no sandbox is bound."
+                    )
+                target = str(previous.sandbox_id)
+            params: E2BCreateParams = self._create_params or {}
+            opts: ApiParams = {}
+            if "api_key" in params:
+                opts["api_key"] = params["api_key"]
+            if "domain" in params:
+                opts["domain"] = params["domain"]
+            sandbox_cls = _sandbox_cls(self._code_interpreter)
+            resumed = await sandbox_cls.connect(
+                target, timeout=params.get("timeout"), **opts
+            )
+            replaces = previous is None or previous.sandbox_id != resumed.sandbox_id
+            if abandoned.is_set():
+                if replaces:
+                    await self._let_go(resumed)
+                return
+            self._holder.sandbox = resumed
+            self._holder.drop_streams()
+            if previous is not None and replaces:
+                await self._let_go(previous)
+
+    async def _let_go(self, sandbox: AsyncSandbox) -> None:
+        """
+        Do to a sandbox the environment no longer holds what its exit would:
+        nothing unless owned, else pause it (``pause_on_exit``) or kill it.
+        Failures are logged, not raised.
+        """
+        if not self._owns_sandbox:
+            return
+        if not self._pause_on_exit:
+            await kill_quietly(sandbox)
+            return
+        try:
+            await sandbox.pause()
+        except Exception:
+            logger.warning(
+                "Failed to pause E2B sandbox %s; it may keep running (and "
+                "billing) until its timeout.",
+                sandbox.sandbox_id,
+                exc_info=True,
+            )
 
 
 def e2b_environment(
@@ -253,6 +550,8 @@ def e2b_environment(
     template: str | None = None,
     sandbox_timeout: int | None = None,
     network: NetworkPolicy = NetworkPolicy.NONE,
+    allowed_domains: Sequence[str] = (),
+    denied_domains: Sequence[str] = (),
     env: Mapping[str, str] | None = None,
     metadata: Mapping[str, str] | None = None,
     api_key: str | None = None,
@@ -261,15 +560,17 @@ def e2b_environment(
     pause_on_exit: bool = False,
     code_interpreter: bool = False,
     default_timeout: float = DEFAULT_EXEC_TIMEOUT,
+    lazy: bool = False,
+    label: str | None = None,
 ) -> E2BEnvironment:
     """
     Build a deferred-create E2B environment; the sandbox is created on
-    ``async with``.
+    ``async with``, or on first use with ``lazy=True``.
 
     Args:
         allowed_roots: POSIX paths *inside* the sandbox the file tools may
             address. The first is the default working directory; all are
-            ``mkdir -p``'d on entry.
+            ``mkdir -p``'d when the sandbox starts.
         deny_read: Remote paths carved out of the readable space (tool plane).
         allow_read: Remote paths re-allowed within ``deny_read`` (allow wins).
         deny_write: Remote paths write-protected on the tool plane (deny wins).
@@ -279,11 +580,19 @@ def e2b_environment(
             in) and pass its name/ID here. The framework does not pip-install into
             E2B sandboxes; bake requirements into the template.
         sandbox_timeout: Sandbox keep-alive in seconds (E2B default 300).
-        network: ``NONE`` (no internet) or ``ALL`` (internet on). ``ALLOWLIST``
-            / ``LOOPBACK`` raise ``NotImplementedError`` (per-domain egress needs
-            E2B network rules — future work).
+        network: ``NONE`` (no internet), ``ALL`` (internet on) or
+            ``ALLOWLIST`` (only ``allowed_domains``). ``LOOPBACK`` raises
+            ``NotImplementedError``.
+        allowed_domains: With ``ALLOWLIST``, the hosts the sandbox may reach:
+            exact names, or ``*.``-wildcards for their subdomains. All other
+            egress is blocked, raw IP addresses included.
+        denied_domains: With ``ALLOWLIST``, hosts never reachable, checked
+            first. E2B denies only addresses, so a denied host is left out of
+            the allowlist, and one an allowed wildcard covers raises
+            ``NotImplementedError``, as does any with ``ALL``.
         env: Base environment variables for the sandbox + every command.
-        metadata: Custom sandbox metadata.
+        metadata: Custom sandbox metadata. The environment adds its own
+            ``"grasp-agents"`` key, set to ``label``.
         api_key: E2B API key (defaults to the ``E2B_API_KEY`` env var).
         domain: E2B domain (defaults to the ``E2B_DOMAIN`` env var).
         secure: Token-secure the sandbox (E2B default ``True``).
@@ -294,18 +603,28 @@ def e2b_environment(
             (``E2BExecBackend.open_kernel``). The base template is shell + files
             only. Files + commands behave identically either way.
         default_timeout: Per-command wall-clock ceiling when a call passes no
-            ``timeout`` (E2B would otherwise impose its own 60 s).
+            ``timeout``. The backend enforces it: a command that runs past it
+            is reported as ``OVERALL_TIMEOUT`` and the shell running it is
+            killed; processes that shell started may keep running.
+        lazy: Start the sandbox on the first file or exec call instead of on
+            ``async with``, so a session that never needs it never pays for
+            one. Concurrent first calls share one sandbox; ``snapshot()``
+            before the start returns :data:`FRESH_SNAPSHOT_REF`. A failed
+            start fails like a failed entry: later calls raise without
+            creating another sandbox until the environment is re-entered (or
+            restored to :data:`FRESH_SNAPSHOT_REF`).
+        label: Up to 32 lowercase letters, digits or dashes marking what this
+            environment creates: the sandbox metadata's ``"grasp-agents"``
+            value and part of every snapshot's name (``"default"`` when
+            ``None``). Deployments that share an E2B team give each its own,
+            so a sweep (:func:`~grasp_agents.sandbox.sweep_e2b`) of one never
+            touches another's.
 
     Returns:
         An :class:`E2BEnvironment` to use as ``async with``.
 
     """
-    if network in {NetworkPolicy.ALLOWLIST, NetworkPolicy.LOOPBACK}:
-        raise NotImplementedError(
-            f"E2B example backend does not implement network={network.value!r} "
-            "(per-domain / loopback egress needs E2B network rules). Use "
-            "NetworkPolicy.NONE or NetworkPolicy.ALL."
-        )
+    label = check_label(label)
 
     roots = tuple(Path(r) for r in allowed_roots)
     policy = SandboxPolicy(
@@ -313,18 +632,23 @@ def e2b_environment(
         deny_read=tuple(Path(p) for p in deny_read),
         allow_read=tuple(Path(p) for p in allow_read),
         deny_write=tuple(Path(p) for p in deny_write),
-        network=network,
+        network=NetworkPolicy(network),
+        allowed_domains=tuple(allowed_domains),
+        denied_domains=tuple(denied_domains),
         env=dict(env) if env else {},
     )
+    internet, network_options = e2b_egress(policy)
 
     create_params: E2BCreateParams = {
         "template": template,
         "timeout": sandbox_timeout,
-        "metadata": dict(metadata) if metadata else None,
+        "metadata": {**(metadata or {}), METADATA_KEY: label},
         "envs": dict(env) if env else None,
         "secure": secure,
-        "allow_internet_access": network == NetworkPolicy.ALL,
+        "allow_internet_access": internet,
     }
+    if network_options is not None:
+        create_params["network"] = network_options
     if api_key is not None:
         create_params["api_key"] = api_key
     if domain is not None:
@@ -342,4 +666,6 @@ def e2b_environment(
         owns_sandbox=True,
         pause_on_exit=pause_on_exit,
         code_interpreter=code_interpreter,
+        lazy=lazy,
+        label=label,
     )

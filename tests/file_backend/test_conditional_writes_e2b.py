@@ -3,24 +3,31 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 pytest.importorskip("e2b")
 
-from e2b import NotFoundException
+from e2b import AsyncSandbox, NotFoundException
 
 from grasp_agents.file_backend import StaleFileError
-from tests.sandbox.test_e2b import _WS, _env, _FakeEntry, _FakeFiles, _FakeSandbox
+from grasp_agents.sandbox import E2BEnvironment, SandboxPolicy
+from tests.sandbox._e2b_fakes import WS, FakeEntry, FakeFiles, FakeSandbox
 
 pytestmark = pytest.mark.asyncio
 
 
+def _env(fake: FakeSandbox) -> E2BEnvironment:
+    return E2BEnvironment.from_sandbox(
+        cast("AsyncSandbox", fake), policy=SandboxPolicy(allowed_roots=(Path(WS),))
+    )
+
+
 async def test_e2b_write_refuses_a_changed_file() -> None:
-    fake = _FakeSandbox()
-    path = f"{_WS}/a.txt"
-    fake.files.infos[path] = _FakeEntry(name="a.txt", path=path, mtime_epoch=1500.0)
+    fake = FakeSandbox()
+    path = f"{WS}/a.txt"
+    fake.files.infos[path] = FakeEntry(name="a.txt", path=path, mtime_epoch=1500.0)
     backend = _env(fake).file_backend
 
     with pytest.raises(StaleFileError):
@@ -32,9 +39,9 @@ async def test_e2b_write_refuses_a_changed_file() -> None:
 
 
 async def test_e2b_delete_refuses_a_changed_file() -> None:
-    fake = _FakeSandbox()
-    path = f"{_WS}/a.txt"
-    fake.files.infos[path] = _FakeEntry(name="a.txt", path=path, mtime_epoch=1500.0)
+    fake = FakeSandbox()
+    path = f"{WS}/a.txt"
+    fake.files.infos[path] = FakeEntry(name="a.txt", path=path, mtime_epoch=1500.0)
     backend = _env(fake).file_backend
 
     with pytest.raises(StaleFileError):
@@ -42,7 +49,7 @@ async def test_e2b_delete_refuses_a_changed_file() -> None:
     assert fake.files.removed == []
 
 
-class _StrictFiles(_FakeFiles):
+class _StrictFiles(FakeFiles):
     """Raise E2B's not-found error for unknown paths, like the real API."""
 
     async def get_info(self, path: str) -> Any:
@@ -52,10 +59,10 @@ class _StrictFiles(_FakeFiles):
 
 
 async def test_e2b_write_refuses_a_missing_file() -> None:
-    fake = _FakeSandbox(files=_StrictFiles())
+    fake = FakeSandbox(files=_StrictFiles())
     backend = _env(fake).file_backend
 
     with pytest.raises(StaleFileError):
         await backend.write_bytes(
-            Path(f"{_WS}/missing.txt"), b"x", mode=0o644, expected_mtime=1000.0
+            Path(f"{WS}/missing.txt"), b"x", mode=0o644, expected_mtime=1000.0
         )

@@ -16,12 +16,12 @@ Guards, applied in order:
    10 MB): too large to open at all, even paginated.
 4. Char cap — when the formatted window would exceed ``max_read_chars``
    (default 100 KiB) it is truncated at a line boundary and a notice is
-   appended steering the model toward ``offset`` / ``limit``. Reads are
-   no longer rejected for being too wide — only whole files past the
-   size gate are.
+   appended steering the model toward ``offset`` / ``limit``. Only whole
+   files past the size gate are rejected, never a too-wide window.
 5. Secret redaction (if configured) — final pass before content returns.
 
-The backend records the read internally so subsequent writes pass the
+The read (path + mtime) is recorded in the agent's ``FileEditSessionState``
+(``agent_ctx.file_edit_state``) so subsequent writes pass the
 read-before-write check.
 """
 

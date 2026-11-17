@@ -1,4 +1,7 @@
+import asyncio
+import logging
 import shutil
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
 from pathlib import Path
 
 import pytest
@@ -12,6 +15,7 @@ from grasp_agents.evals import (
     evaluate,
     scorer,
 )
+from grasp_agents.evals.store import CACHE_DIR_ENV, default_cache_dir
 
 
 def _numbers(n: int = 3) -> Dataset[int, int]:
@@ -95,3 +99,42 @@ async def test_a_complete_record_missing_its_newline_is_kept(
     store.append_trial(run.id, reloaded.trials[0])
     assert len(trials.read_text(encoding="utf-8").splitlines()) == 4
     assert len(store.load(run.id).trials) == 3
+
+
+# --- Where things are kept ---
+
+
+def test_pulled_datasets_are_cached_per_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(CACHE_DIR_ENV, raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    assert default_cache_dir() == tmp_path / "xdg" / "grasp-evals"
+    monkeypatch.setenv(CACHE_DIR_ENV, str(tmp_path / "mine"))
+    assert default_cache_dir() == tmp_path / "mine"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+async def test_a_default_store_inside_a_repository_is_flagged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = shutil.which("git")
+    assert git is not None
+    await asyncio.to_thread(
+        subprocess.run,
+        [git, "init", "-q", str(repo)],
+        check=True,
+    )
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("GRASP_EVALS_DIR", raising=False)
+    caplog.set_level(logging.WARNING, logger="grasp_agents.evals.store")
+    await evaluate(double, _numbers(1), [correct])
+    assert any("inside the git repository" in m for m in caplog.messages)
+    caplog.clear()
+    shutil.rmtree(repo / ".evals")
+    (repo / ".gitignore").write_text(".evals/\n")
+    await evaluate(double, _numbers(1), [correct])
+    assert not any("inside the git repository" in m for m in caplog.messages)

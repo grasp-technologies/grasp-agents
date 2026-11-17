@@ -1314,7 +1314,7 @@ wheels = [
 
 [[package]]
 name = "grasp-agents"
-version = "1.1.0"
+version = "1.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
@@ -1437,7 +1437,7 @@ requires-dist = [
     { name = "arize-phoenix-otel", marker = "extra == 'phoenix'", specifier = ">=0.13.1,<1" },
     { name = "catppuccin", marker = "extra == 'tui'", specifier = ">=2.5.0,<3" },
     { name = "chafa-py", marker = "extra == 'tui'", specifier = ">=1.2,<2" },
-    { name = "e2b", marker = "extra == 'e2b'", specifier = ">=2.0,<3" },
+    { name = "e2b", marker = "extra == 'e2b'", specifier = ">=2.41,<3" },
     { name = "e2b-code-interpreter", marker = "extra == 'e2b'", specifier = ">=2.7.0,<3" },
     { name = "google-genai", marker = "extra == 'all-llm-providers'", specifier = ">=1.65,<2" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.65,<2" },

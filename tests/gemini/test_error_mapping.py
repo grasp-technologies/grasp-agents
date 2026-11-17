@@ -24,6 +24,7 @@ from grasp_agents.types.llm_errors import (
     LlmApiTimeoutError,
     LlmAuthenticationError,
     LlmBadRequestError,
+    LlmContextWindowError,
     LlmInternalServerError,
     LlmNotFoundError,
     LlmRateLimitError,
@@ -145,3 +146,20 @@ class TestGeminiErrorMapping:
         mapped = map_api_error(aiohttp.ServerTimeoutError())
 
         assert isinstance(mapped, LlmApiTimeoutError)
+
+    def test_input_token_overflow_maps_to_context_window(self):
+        # Gemini rejects an oversized prompt as a plain 400 INVALID_ARGUMENT.
+        err = genai_errors.ClientError(
+            400,
+            {
+                "error": {
+                    "message": (
+                        "The input token count (1300000) exceeds the maximum "
+                        "number of tokens allowed (1048576)."
+                    ),
+                    "status": "INVALID_ARGUMENT",
+                }
+            },
+        )
+
+        assert isinstance(map_api_error(err), LlmContextWindowError)

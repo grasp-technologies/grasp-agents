@@ -1,7 +1,8 @@
 """
 :class:`ExecutionEnvironment` — one boundary owning two co-located surfaces
 (filesystem + exec) and a shared :class:`~grasp_agents.sandbox.policy.SandboxPolicy`,
-plus the optional :class:`SnapshotCapable` durability capability.
+plus the optional :class:`SnapshotCapable` durability capability and
+:class:`NetworkUpdatable`.
 """
 
 from __future__ import annotations
@@ -10,29 +11,55 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Protocol, Self, runtime_checkable
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from grasp_agents.file_backend.base import FileBackend
 
     from .exec_backend import ExecBackend
-    from .policy import SandboxPolicy
+    from .policy import NetworkPolicy, SandboxPolicy
 
 
 @runtime_checkable
 class SnapshotCapable(Protocol):
     """
-    Optional capability for a backend that owns versioned snapshots of its
-    state.
+    Optional capability for an environment that can snapshot and rewind its
+    filesystem (e.g. :class:`~grasp_agents.sandbox.E2BEnvironment`).
 
-    The framework delegates filesystem-state durability to whoever implements
-    this — an MCP server's append-only versioning, a sandbox provider's native
-    snapshot, or a local shadow-git / tar store. :meth:`snapshot` returns an
-    opaque ref (DB version, blob id, git sha) recorded in the checkpoint
-    manifest; :meth:`restore` rewinds to it. Backends that do not implement it
-    fall back to the per-edit transcript pre-image.
+    :meth:`snapshot` captures the current state and returns an opaque ref, which
+    the framework records in the session checkpoint and per-step watermarks;
+    :meth:`restore` rewinds the environment to a ref on resume or step rollback.
+
+    There is no fallback for environments that do not implement it:
+    ``SessionContext.fs_snapshot_policy`` must stay ``"off"`` (any other value
+    raises), checkpoints record no filesystem state, and resuming or rolling
+    back a session leaves the files as they are.
     """
 
     async def snapshot(self) -> str: ...
 
     async def restore(self, ref: str) -> None: ...
+
+
+@runtime_checkable
+class NetworkUpdatable(Protocol):
+    """
+    Optional capability for an environment whose egress can change while it
+    runs (e.g. :class:`~grasp_agents.sandbox.E2BEnvironment`).
+
+    :meth:`update_network` applies a new ``network`` policy, with its domain
+    lists, to the live sandbox and to every sandbox the environment creates
+    after it, and the environment's and exec backend's ``policy`` report it
+    from then on. Local environments fix their egress when they are built:
+    build a new one to change it.
+    """
+
+    async def update_network(
+        self,
+        network: NetworkPolicy,
+        *,
+        allowed_domains: Sequence[str] = (),
+        denied_domains: Sequence[str] = (),
+    ) -> None: ...
 
 
 class ExecutionEnvironment(ABC):
@@ -66,4 +93,4 @@ class ExecutionEnvironment(ABC):
     async def __aexit__(self, *exc: object) -> None: ...
 
 
-__all__ = ["ExecutionEnvironment", "SnapshotCapable"]
+__all__ = ["ExecutionEnvironment", "NetworkUpdatable", "SnapshotCapable"]

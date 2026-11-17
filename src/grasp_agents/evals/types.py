@@ -19,7 +19,7 @@ from pydantic_core import PydanticSerializationError, to_jsonable_python
 
 from grasp_agents.utils.errors import format_error_chain, root_cause
 
-from ._util import canonical_json, short_hash, to_jsonable
+from ._util import UNKNOWN_SOURCE, canonical_json, short_hash, to_jsonable
 
 type ScoreValue = bool | float | str
 
@@ -83,8 +83,24 @@ def input_digest(raw_input: Any) -> str:
     return short_hash(canonical_json(raw_input))
 
 
-def content_digest(raw_input: Any, raw_reference: Any, metadata: Any) -> str:
-    """Hash of everything an evaluation can depend on (not split membership)."""
+def content_digest(
+    raw_input: Any,
+    raw_reference: Any,
+    metadata: Any,
+    *,
+    descriptive: Iterable[str] = (),
+) -> str:
+    """
+    Hash of everything an evaluation can depend on (not split membership,
+    nor the ``descriptive`` metadata keys, which no scorer reads).
+    """
+    left_out = set(descriptive)
+    if left_out and isinstance(metadata, Mapping):
+        metadata = {
+            k: v
+            for k, v in cast("Mapping[str, Any]", metadata).items()
+            if k not in left_out
+        }
     return short_hash(
         canonical_json(
             {"input": raw_input, "reference": raw_reference, "metadata": metadata}
@@ -218,6 +234,10 @@ class Score(BaseModel):
     reason: str | None = None
     # Name of the scorer that produced this score (stamped by the runner).
     scorer: str | None = None
+    # How much this value counts in pooled aggregates (``Pooled``, pooled
+    # comparisons): e.g. the number of items a share is over, so a share over
+    # 40 headings outweighs one over 2. ``None`` counts as 1.
+    weight: float | None = Field(default=None, ge=0.0, allow_inf_nan=False)
     metadata: dict[str, Any] = Field(default_factory=dict[str, Any])
 
     @classmethod
@@ -373,6 +393,8 @@ class DatasetRef(BaseModel):
     size: int
     # Derivation steps applied to the source, e.g. ["split=dev", "sample=20 seed=0"].
     selection: list[str] = Field(default_factory=list[str])
+    # Metadata keys left out of example content hashes (descriptive only).
+    descriptive_metadata: list[str] = Field(default_factory=list[str])
     selected_fingerprint: str
     selected_size: int
 
@@ -389,12 +411,21 @@ class ComponentInfo(BaseModel):
     annotator: Literal["CODE", "LLM", "HUMAN"] | None = None
     # Tasks and processor judges: hash of what the processor is made of
     # (models, settings, prompts, tools, structure) when it can be read before
-    # running.
+    # running; for scorers, also of their declared identity parts.
     fingerprint: str | None = None
-    # Scorers only: hash of the scorer's own code (its function or
-    # class). Outside the config hash; rescoring re-runs a scorer whose
-    # code changed, and comparisons warn about it.
+    # Scorers only: hash of the scorer's code (its function or class, and the
+    # user-code helpers and constants they refer to), tagged with the hashing
+    # scheme; ``None`` for library code and ``"unknown"`` for user code
+    # without readable source. Outside the config hash; rescoring re-runs a
+    # scorer whose code changed, and comparisons warn about it.
     source: str | None = None
+
+    def matches(self, other: "ComponentInfo | None") -> bool:
+        """
+        Whether ``other`` is the same component. Code whose source could not
+        be read never matches, since it may have changed.
+        """
+        return other is not None and self == other and self.source != UNKNOWN_SOURCE
 
     @field_validator("config")
     @classmethod
@@ -458,9 +489,25 @@ class PhoenixLink(BaseModel):
     # Trial key ("<example_id>#<repetition>") → digest of what was logged for
     # it, so trials that changed since (resumed, re-scored) are logged again.
     logged_trials: dict[str, str] = Field(default_factory=dict[str, str])
+    # Trials logged with NUL characters replaced (Phoenix's PostgreSQL store
+    # cannot hold them).
+    altered_trials: list[str] = Field(default_factory=list[str])
+    # The project holding the trials' traces, and how long Phoenix keeps them
+    # there (the experiment's trace links stop working once they are gone).
+    trace_project: str | None = None
+    trace_retention: str | None = None
 
 
-type RunKind = Literal["evaluation", "rescore", "pairwise", "retry"]
+class RunProcess(BaseModel):
+    """The process executing a run: where to look before declaring it dead."""
+
+    host: str
+    pid: int = Field(gt=0)
+    started_at: datetime
+
+
+type RunKind = Literal["evaluation", "rescore", "pairwise", "retry", "import"]
+type Direction = Literal["higher", "lower"]
 
 
 class EvaluationRun(BaseModel):
@@ -495,12 +542,25 @@ class EvaluationRun(BaseModel):
     counts: RunCounts = Field(default_factory=RunCounts)
     usage: Usage = Field(default_factory=Usage)
     metrics: list[MetricResult] = Field(default_factory=list[MetricResult])
+    # Which values are better for each numeric score (and each measurement a
+    # metric declared a direction for): "lower" when a scorer's
+    # ``lower_is_better`` or a metric's ``higher_is_better=False`` says so.
+    directions: dict[str, Direction] = Field(default_factory=dict[str, Direction])
     # Set when the run finished but its numbers should not be trusted (e.g.
     # the task error rate exceeded ``config.max_error_rate``).
     invalid_reason: str | None = None
     tags: list[str] = Field(default_factory=list[str])
     metadata: dict[str, Any] = Field(default_factory=dict[str, Any])
+    # Links (name → URL) and notes added to the run after it ran, e.g. a
+    # report or a preview page; pushed with it.
+    links: dict[str, str] = Field(default_factory=dict[str, str])
+    notes: list[str] = Field(default_factory=list[str])
     phoenix: PhoenixLink | None = None
+    # The process that last executed the run (``None`` for runs recorded
+    # before processes were).
+    process: RunProcess | None = None
+    # The Phoenix project its trials were traced into, when tracing was on.
+    trace_project: str | None = None
 
     trials: list[Trial] = Field(default_factory=list[Trial], exclude=True)
     examples: list[Example[Any, Any]] = Field(
@@ -539,3 +599,24 @@ class EvaluationRun(BaseModel):
             for score in trial.scores:
                 names.setdefault(score.name, None)
         return list(names)
+
+
+def pairing_hashes(*runs: "EvaluationRun") -> list[dict[str, str]]:
+    """
+    Per run, each example's content hash for pairing it across ``runs``:
+    without the metadata keys any of them declared descriptive, so runs made
+    before a descriptive key was added or changed still pair.
+    """
+    descriptive = {k for run in runs for k in run.dataset.descriptive_metadata}
+    found: list[dict[str, str]] = []
+    for run in runs:
+        recorded = {t.example_id: t.example_hash for t in run.trials}
+        if descriptive:
+            recorded.update(
+                {
+                    e.id: content_digest(*e.record, descriptive=descriptive)
+                    for e in run.examples
+                }
+            )
+        found.append(recorded)
+    return found

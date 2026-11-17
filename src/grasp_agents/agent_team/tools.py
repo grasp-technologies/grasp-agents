@@ -57,7 +57,7 @@ class SendMessageTool(BaseTool[SendMessageInput, str, Any]):
     Asynchronous: the recipient receives the message at the start of its next
     turn and the sender does not block for a reply (any reply arrives as a later
     message). Stateless — the sender identity comes from the calling agent's
-    context and the transport from the run context — so one instance is shared
+    context and the transport from the session context — so one instance is shared
     across every team member.
     """
 

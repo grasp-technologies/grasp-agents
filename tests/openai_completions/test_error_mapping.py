@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 import openai
+import pytest
 from openai.types.chat import ChatCompletion
 
 from grasp_agents.llm_providers.openai_completions.error_mapping import map_api_error
@@ -16,6 +17,7 @@ from grasp_agents.types.llm_errors import (
     LlmAuthenticationError,
     LlmBadRequestError,
     LlmContentFilterError,
+    LlmContextWindowError,
     LlmInternalServerError,
     LlmNotFoundError,
     LlmQuotaExceededError,
@@ -39,6 +41,18 @@ def _status_error(
 ) -> Exception:
     response = httpx.Response(code, request=_REQUEST, headers=headers or {})
     return openai.APIStatusError("boom", response=response, body=body)
+
+
+# The error body OpenAI's Responses API returns for an oversized input.
+_CONTEXT_WINDOW_BODY = {
+    "message": (
+        "Your input exceeds the context window of this model. Please adjust "
+        "your input and try again."
+    ),
+    "type": "invalid_request_error",
+    "param": "input",
+    "code": "context_length_exceeded",
+}
 
 
 class TestOpenAICompletionsErrorMapping:
@@ -212,3 +226,56 @@ class TestOpenAIContentFilterDetection:
 
     def test_plain_bad_request_is_not_a_block(self) -> None:
         assert not isinstance(map_api_error(_status_error(400)), LlmContentFilterError)
+
+
+class TestOpenAIContextWindowDetection:
+    """
+    An oversized input must map to ``LlmContextWindowError`` so the agent loop
+    can compact and retry, rather than surfacing as a programmer bug.
+    """
+
+    def test_status_code_maps_to_context_window(self) -> None:
+        mapped = map_api_error(_status_error(400, body=_CONTEXT_WINDOW_BODY))
+        assert isinstance(mapped, LlmContextWindowError)
+
+    def test_streamed_failure_maps_to_context_window(self) -> None:
+        # A streamed overflow arrives as an error frame inside a 200 stream,
+        # which the SDK raises as an APIError with no status.
+        err = openai.APIError(
+            message=_CONTEXT_WINDOW_BODY["message"],
+            request=_REQUEST,
+            body=_CONTEXT_WINDOW_BODY,
+        )
+        assert isinstance(map_api_error(err), LlmContextWindowError)
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            # OpenAI Chat Completions, relayed by a gateway that drops the code.
+            (
+                "This model's maximum context length is 128000 tokens. However, "
+                "your messages resulted in 700008 tokens. Please reduce the length "
+                "of the messages."
+            ),
+            # OpenRouter.
+            (
+                "This endpoint's maximum context length is 128000 tokens. However, "
+                "you requested about 129782 tokens (1782 of text input, 128000 in "
+                "the output). Please reduce the length of either one."
+            ),
+            # Mistral.
+            (
+                "Prompt contains 65673 tokens, too large for model with 32768 "
+                "maximum context length"
+            ),
+        ],
+    )
+    def test_overflow_message_without_code_maps(self, message: str) -> None:
+        err = openai.APIStatusError(
+            message, response=httpx.Response(400, request=_REQUEST), body=None
+        )
+        assert isinstance(map_api_error(err), LlmContextWindowError)
+
+    def test_plain_bad_request_is_not_context_window(self) -> None:
+        mapped = map_api_error(_status_error(400))
+        assert not isinstance(mapped, LlmContextWindowError)

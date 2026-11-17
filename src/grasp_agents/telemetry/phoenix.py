@@ -1,6 +1,7 @@
 import importlib
 import os
 from logging import getLogger
+from urllib.parse import urlsplit
 from weakref import WeakSet
 
 from opentelemetry import trace as trace_api
@@ -29,28 +30,61 @@ def _instrument(tracer_provider: TracerProvider, module: str, cls_name: str) -> 
         logger.debug("Phoenix: skipped %s (not installed)", cls_name, exc_info=True)
 
 
+def _origin(url: str) -> tuple[str, str | None, int | None]:
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    default = {"http": 80, "https": 443}.get(scheme)
+    return scheme, parts.hostname, parts.port or default
+
+
+def _phoenix_auth(endpoint: str) -> dict[str, str] | None:
+    """
+    The ``PHOENIX_API_KEY`` header for ``endpoint``, withheld when
+    ``PHOENIX_BASE_URL`` names another server.
+    """
+    key = os.getenv("PHOENIX_API_KEY")
+    if not key:
+        return None
+    base_url = os.getenv("PHOENIX_BASE_URL")
+    if base_url and _origin(base_url) != _origin(endpoint):
+        logger.warning(
+            "Not sending PHOENIX_API_KEY to the collector: it is not on the "
+            "PHOENIX_BASE_URL server"
+        )
+        return None
+    return {"authorization": f"Bearer {key}"}
+
+
 def init_phoenix(
     batch: bool = False,
     use_litellm_instr: bool = True,
     use_llm_provider_instr: bool = True,
     project_name: str = "grasp-agents",
+    collector_endpoint: str | None = None,
 ) -> None:
     """
     Attach the Phoenix exporter (and provider instrumentors) to the tracer
-    provider. Re-entry against the same provider is a no-op — the span
-    processors would otherwise duplicate and double every exported span.
+    provider, sending spans to ``collector_endpoint`` (default
+    ``$TELEMETRY_COLLECTOR_HTTP_ENDPOINT``) with ``$PHOENIX_API_KEY``, unless
+    ``$PHOENIX_BASE_URL`` names another server. Re-entry against the same
+    provider is a no-op — the span processors would otherwise duplicate and
+    double every exported span.
     """
     # Deferred: these need the optional grasp-agents[phoenix] extra.
     from openinference.instrumentation.openllmetry import (  # ruff: ignore[import-outside-top-level]
         OpenInferenceSpanProcessor,
     )
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # ruff: ignore[import-outside-top-level]
+        OTLPSpanExporter,
+    )
     from phoenix.otel import (  # ruff: ignore[import-outside-top-level]
         BatchSpanProcessor,
-        HTTPSpanExporter,
         SimpleSpanProcessor,
     )
 
-    collector_endpoint = os.getenv("TELEMETRY_COLLECTOR_HTTP_ENDPOINT")
+    collector_endpoint = collector_endpoint or os.getenv(
+        "TELEMETRY_COLLECTOR_HTTP_ENDPOINT"
+    )
 
     if not collector_endpoint:
         logger.warning(
@@ -77,7 +111,11 @@ def init_phoenix(
         LLM_PROVIDER_NAMES if use_llm_provider_instr or use_litellm_instr else set()
     )
     exporter = FilteringExporter(
-        inner=HTTPSpanExporter(endpoint=collector_endpoint, headers=None),
+        # The plain OTLP exporter: Phoenix's own adds the API key whatever
+        # the endpoint.
+        inner=OTLPSpanExporter(
+            endpoint=collector_endpoint, headers=_phoenix_auth(collector_endpoint)
+        ),
         llm_provider_blocklist=blocklist,
         attribute_filter={"http.url": CLOUD_PROVIDERS_NAMES},
     )

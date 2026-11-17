@@ -10,7 +10,8 @@ import asyncio
 import contextlib
 import time
 from dataclasses import replace
-from typing import TYPE_CHECKING, Literal
+from functools import partial
+from typing import TYPE_CHECKING, Any, Literal
 
 from e2b import AsyncCommandHandle, CommandExitException
 
@@ -37,10 +38,33 @@ from .kernel import E2BKernel
 from .session import E2BExecSession
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import AsyncIterator, Coroutine, Mapping
     from pathlib import Path
 
     from grasp_agents.sandbox.policy import SandboxPolicy
+
+
+async def _stop_command(handle: AsyncCommandHandle, waiter: asyncio.Task[None]) -> None:
+    with contextlib.suppress(Exception):
+        await handle.kill()
+    with contextlib.suppress(Exception):
+        await handle.disconnect()
+    waiter.cancel()
+    await asyncio.wait([waiter])
+
+
+async def _finish_despite_cancellation(cleanup: Coroutine[Any, Any, None]) -> None:
+    """Run ``cleanup`` to its end even if the caller is cancelled, then re-raise."""
+    task = asyncio.ensure_future(cleanup)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+    task.result()
 
 
 class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
@@ -49,9 +73,12 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
 
     Bridges E2B's callback-driven streaming onto our ``ExecChunk`` generator,
     returns non-zero exits as data (catching ``CommandExitException`` instead
-    of letting it raise), and maps ``timeout=None`` to a bounded default
-    (E2B would otherwise impose its own 60 s ceiling). Co-located with the
-    paired :class:`E2BFileBackend` via the shared :class:`SandboxHandle`.
+    of letting it raise), and enforces the command timeout itself
+    (``timeout=None`` uses ``default_timeout``): a command that runs past it
+    is reported as ``OVERALL_TIMEOUT``. A timeout or an early stop kills the
+    shell E2B runs the command in (``/bin/bash -l -c``); processes that shell
+    started may keep running. Co-located with the paired
+    :class:`E2BFileBackend` via the shared :class:`SandboxHandle`.
     """
 
     def __init__(
@@ -76,6 +103,19 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
     @property
     def policy(self) -> SandboxPolicy:
         return self._policy
+
+    def adopt_network(self, policy: SandboxPolicy) -> None:
+        """
+        Report ``policy``'s egress (``network`` and the domain lists) from now
+        on, as :meth:`E2BEnvironment.update_network` applied it to the
+        sandbox; the rest of the policy stays.
+        """
+        self._policy = replace(
+            self._policy,
+            network=policy.network,
+            allowed_domains=policy.allowed_domains,
+            denied_domains=policy.denied_domains,
+        )
 
     async def execute(
         self,
@@ -109,7 +149,7 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
         stdin: bytes | None = None,
         env: Mapping[str, str] | None = None,
     ) -> AsyncIterator[ExecChunk | ExecResult]:
-        sb = self._holder.require()
+        sb = await self._holder.ensure()
 
         wrapped = wrap_stdin(command, stdin)
         eff_timeout = timeout if timeout is not None else self._default_timeout
@@ -141,18 +181,22 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
             _push("stderr", data)
 
         start = time.monotonic()
+        deadline = asyncio.get_running_loop().time() + eff_timeout
         try:
+            # The deadline is enforced below rather than by E2B: its command
+            # timeout cancels whichever task called ``run``, not the stream.
             handle = await sb.commands.run(
                 wrapped,
                 background=True,
                 cwd=cwd_str,
                 envs=envs,
-                timeout=eff_timeout,
+                timeout=0,
                 stdin=False,
                 on_stdout=on_stdout,
                 on_stderr=on_stderr,
             )
-        except BaseException as exc:
+        except Exception as exc:
+            await self._holder.raise_if_expired(sb, exc)
             reason = (
                 TerminationReason.OVERALL_TIMEOUT
                 if is_timeout(exc)
@@ -180,32 +224,46 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
                 queue.put_nowait(None)
 
         waiter = asyncio.create_task(_drain())
-        completed = False
+        completed = timed_out = False
         try:
             while True:
-                item = await queue.get()
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        item = await queue.get()
+                except TimeoutError:
+                    timed_out = True
+                    break
                 if item is None:
                     completed = True
                     break
                 yield item
         finally:
-            # Early exit (the consumer cancelled / closed us — e.g. KillTask):
-            # kill the remote command so it doesn't keep running in the sandbox,
-            # then cancel the drain (its ``handle.wait()`` would otherwise block
-            # forever on a long-running command). On normal completion the drain
-            # already finished, so just reap it.
-            if not completed and not waiter.done():
-                with contextlib.suppress(Exception):
-                    await handle.kill()
-                waiter.cancel()
-            with contextlib.suppress(BaseException):
-                await waiter
+            if completed:
+                await asyncio.wait([waiter])
+            else:
+                # Timed out, or the consumer stopped early (cancelled / closed
+                # us — e.g. KillTask): kill the command's shell and stop
+                # listening to it, even if a second cancellation arrives
+                # meanwhile.
+                await _finish_despite_cancellation(_stop_command(handle, waiter))
 
+        runtime_ms = (time.monotonic() - start) * 1000
+        if timed_out:
+            yield ExecResult(
+                stdout="",
+                stderr="",
+                returncode=-1,
+                reason=TerminationReason.OVERALL_TIMEOUT,
+                runtime_ms=runtime_ms,
+                backend=self._name,
+                truncated=truncated,
+            )
+            return
+        failure = outcome.get("exc")
+        if isinstance(failure, Exception):
+            await self._holder.raise_if_expired(sb, failure)
         yield self._terminal(
-            handle,
-            outcome.get("exc"),
-            runtime_ms=(time.monotonic() - start) * 1000,
-            truncated=truncated,
+            handle, failure, runtime_ms=runtime_ms, truncated=truncated
         )
 
     def _terminal(
@@ -278,12 +336,16 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
         self, *, cwd: Path | None = None, env: Mapping[str, str] | None = None
     ) -> E2BExecSession:
         """Open a persistent shell on the sandbox (see :class:`E2BExecSession`)."""
+        sandbox = await self._holder.ensure()
+        holder = self._holder
         return E2BExecSession(
-            self._holder.require,
+            partial(holder.live, sandbox.sandbox_id),
             cwd=self._resolve_cwd(cwd),
             env=self._merged_env(env),
             backend=self._name,
             max_output_chars=self._max_output_chars,
+            get_stream_epoch=lambda: holder.stream_epoch,
+            raise_if_expired=holder.raise_if_expired,
         )
 
     async def open_kernel(
@@ -303,8 +365,10 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
         :attr:`E2BKernel.context_id`) to **re-attach** to an existing code
         context instead of creating a fresh one — e.g. when resuming a session
         whose sandbox was paused/snapshotted, so the kernel's variables persist.
+        If the sandbox has no such context, the kernel creates a fresh one on
+        its first call and reports a reset (:meth:`E2BKernel.take_reset`).
         """
-        sandbox = self._holder.require()
+        sandbox = await self._holder.ensure()
         if not hasattr(sandbox, "run_code"):
             raise ValueError(
                 "RunCell on E2B needs a code-interpreter sandbox. Build the "
@@ -312,10 +376,11 @@ class E2BExecBackend(ExecBackend, SessionCapable, KernelCapable):
                 "(needs the e2b-code-interpreter package, in the 'e2b' extra)."
             )
         return E2BKernel(
-            self._holder.require,
+            partial(self._holder.live, sandbox.sandbox_id),
             cwd=self._resolve_cwd(cwd),
             env=self._merged_env(env),
             backend=self._name,
             default_timeout=self._default_timeout,
             context_id=context_id,
+            raise_if_expired=self._holder.raise_if_expired,
         )

@@ -22,7 +22,10 @@ if TYPE_CHECKING:
 
 from pydantic import BaseModel
 
-from grasp_agents.context.compaction import Compaction
+from grasp_agents.context.compaction import (
+    Compactor,
+    make_compaction_section,
+)
 from grasp_agents.context.env_section import (
     make_current_time_attachment,
     make_env_info_section,
@@ -44,13 +47,14 @@ from grasp_agents.hooks import (
     AfterToolHook,
     BeforeLlmHook,
     BeforeToolHook,
-    Compactor,
+    CompactionSummarizer,
     FinalAnswerExtractor,
     InitialContextBuilder,
     InputContentBuilder,
     OutputParser,
     ToolInputConverter,
     ToolOutputConverter,
+    UsageHook,
     ViewProjector,
 )
 from grasp_agents.llm.llm import LLM
@@ -173,16 +177,15 @@ class LLMAgent[InT, OutT, CtxT](
         # Memory feature toggle (opt-in). When True, the agent gets:
         # - the ``memory`` system-prompt section (taxonomy + index)
         # - the ``relevant_memories_attachment`` (per-turn surfacing)
-        # - in agentic mode, a :class:`FileToolkit` auto-attached so the
-        #   agent can search, author, and maintain memory files via the
-        #   generic file tools.
+        # - a :class:`FileToolkit` auto-attached so the agent can search,
+        #   author, and maintain memory files via the generic file tools.
         # Default is False — the agent should know it's adding memory
         # to its system prompt before it happens.
         enable_memory: bool = False,
         # Skills feature toggle (opt-in). When True, the agent gets:
         # - the ``skills`` system-prompt section (catalog of available
         #   skills, when ``ctx.skills`` is set)
-        # - in agentic mode, the ``load_skill`` tool appended
+        # - the ``load_skill`` tool auto-attached
         # Default is False — same rationale as ``enable_memory``.
         enable_skills: bool = False,
         # Per-agent scoping over the session-shared skill catalog (only
@@ -198,6 +201,16 @@ class LLMAgent[InT, OutT, CtxT](
         # giving the agent a clock for deadlines / staleness / "now". Pass an
         # ``InputAttachment`` to customize. Default False.
         time_aware: "bool | InputAttachment" = False,
+        # Compaction toggle (opt-in). When True, the conversation before the
+        # recent rounds is folded into a summary written by the agent's own
+        # model once the view outgrows the ``compactor``'s threshold, and the
+        # ``compaction`` system-prompt section tells the model how to read
+        # summaries. ``compactor`` configures it (default: a ``Compactor``
+        # with the budget derived from the model). Fixed for the agent's
+        # lifetime. The agent's replies must be able to be plain text: not
+        # allowed with a structured output schema or ``force_react_mode``.
+        enable_compaction: bool = False,
+        compactor: Compactor | None = None,
         # Tracing on/off
         tracing_enabled: bool = True,
         # Fields to exclude from tracing input events
@@ -448,6 +461,14 @@ class LLMAgent[InT, OutT, CtxT](
             explicit_tool_names=explicit_tool_names,
             skill_filter=self._skill_filter,
         )
+        if compactor is not None and not enable_compaction:
+            raise ValueError(
+                f"Agent {self.name!r} got a compactor without enable_compaction=True."
+            )
+        if enable_compaction:
+            self._agent_ctx.cw.set_compactor(compactor or Compactor())
+            self._prompt_builder.add_system_prompt_section(make_compaction_section())
+
         self._loop: AgentLoop[CtxT] = AgentLoop[CtxT](
             llm=llm,
             ctx=self._ctx,
@@ -763,7 +784,9 @@ class LLMAgent[InT, OutT, CtxT](
         # save's prefix check rewrites the log rather than appending.
         resume_state = prepare_messages_for_resume(checkpoint.messages)
         self._agent_ctx.cw.replace_transcript(
-            resume_state.messages, folds=checkpoint.folds
+            resume_state.messages,
+            folds=checkpoint.folds,
+            usage=checkpoint.usage,
         )
 
         # Kernel-context ids are only meaningful inside the snapshotted
@@ -1050,6 +1073,7 @@ class LLMAgent[InT, OutT, CtxT](
             current=current,
             step_watermarks=list(self._step_watermarks),
             folds=list(self._agent_ctx.cw.folds),
+            usage=self._agent_ctx.cw.last_usage,
             output=output,
             location=location,
             stop_reason=stop_reason,
@@ -1226,6 +1250,7 @@ class LLMAgent[InT, OutT, CtxT](
                 current=self._committed.model_copy(update={"step": step}),
                 step_watermarks=list(self._step_watermarks),
                 folds=list(self._agent_ctx.cw.folds),
+                usage=self._agent_ctx.cw.last_usage,
                 location=AgentCheckpointLocation.ROLLING_BACK,
             )
             await self._serialize_rollback_checkpoint(self._ctx, marker)
@@ -1333,6 +1358,7 @@ class LLMAgent[InT, OutT, CtxT](
             current=current,
             step_watermarks=list(self._step_watermarks),
             folds=list(self._agent_ctx.cw.folds),
+            usage=self._agent_ctx.cw.last_usage,
             location=AgentCheckpointLocation.ROLLED_BACK,
         )
         await self._serialize_rollback_checkpoint(self._ctx, checkpoint)
@@ -1474,10 +1500,12 @@ class LLMAgent[InT, OutT, CtxT](
             chat_inputs=chat_inputs, in_args=inp, exec_id=exec_id
         )
         if input_message:
-            # Attachments see the conversation the input will join — none
-            # when this run resets it.
+            # Attachments see the conversation the input will join, as the
+            # model sees it — none when this run resets it.
             context: list[InputItem] = (
-                [] if self.reset_transcript_on_run else list(self.transcript)
+                []
+                if self.reset_transcript_on_run
+                else self._agent_ctx.cw.folded_messages()
             )
             input_message = await self._prompt_builder.apply_input_attachments(
                 input_message,
@@ -1657,6 +1685,11 @@ class LLMAgent[InT, OutT, CtxT](
             messages_to_expose.extend(self._agent_ctx.cw.initial_context)
 
         if not resumes_step:
+            if not self.reset_transcript_on_run:
+                # Fold before the step's input lands: the summary never covers
+                # it, and its input attachments see the summarized view.
+                async for event in self._loop.maybe_compact(exec_id=exec_id):
+                    yield event
             # Start a fresh step: append the input message to the transcript
             messages_to_expose.extend(
                 await self._start_step(chat_inputs, inp=inp, exec_id=exec_id)
@@ -1757,8 +1790,8 @@ class LLMAgent[InT, OutT, CtxT](
 
     # --- Decorator API ---
     #
-    # Preferred over subclassing. Each decorator sets a callback slot
-    # on the appropriate component (AgentLoop or PromptBuilder).
+    # Preferred over subclassing. Each decorator registers its callback on the
+    # appropriate component (AgentLoop, PromptBuilder, or ContextWindowManager).
 
     def add_output_parser(
         self, func: OutputParser[InT, OutT]
@@ -1798,9 +1831,8 @@ class LLMAgent[InT, OutT, CtxT](
 
         Sections are rendered after the static ``sys_prompt``, in registration
         order. Skills, env info, MCP instructions, and memory plug in via this
-        method.
-        Names are not enforced unique — the same section may appear twice if
-        you register it twice; deduplicate on the caller side if needed.
+        method. Re-registering the same ``name`` replaces the prior section in
+        place, so an auto-attached section can be overridden by name.
         """
         self._prompt_builder.add_system_prompt_section(section)
 
@@ -1834,29 +1866,22 @@ class LLMAgent[InT, OutT, CtxT](
         self._agent_ctx.cw.add_view_projector(func)
         return func
 
-    def add_compactor(self, func: Compactor) -> Compactor:
-        # Single-slot (replace): the turn-boundary compactor that records a
-        # summary fold under context-window pressure.
-        self._agent_ctx.cw.set_compactor(func)
+    def set_compaction_summarizer(
+        self, func: CompactionSummarizer[CtxT]
+    ) -> CompactionSummarizer[CtxT]:
+        """
+        Write compaction summaries with ``func`` instead of the agent's own
+        model. Only the summary changes: when to fold and what to keep stay
+        with the agent's compactor. Requires ``enable_compaction=True``.
+        Single-slot.
+        """
+        if self._agent_ctx.cw.compactor is None:
+            raise ValueError(
+                f"Agent {self.name!r} has no compaction to summarize for: "
+                "construct it with enable_compaction=True."
+            )
+        self._agent_ctx.cw.compaction_summarizer = func
         return func
-
-    def add_compaction(self, compaction: Compaction | None = None) -> Compaction:
-        """
-        Enable a :class:`~grasp_agents.context.Compaction` bundle: register its
-        recency-gated tool-output collapse projector and, when present, its
-        summarizing compactor.
-
-        With no argument, builds the default bundle from this agent's own model and
-        LLM (``Compaction(llm=self.llm)``) — the budget is derived from the model,
-        so ``agent.add_compaction()`` needs no configuration. Pass a custom
-        :class:`Compaction` to override (window, buffer, summarizer model, …).
-        """
-        if compaction is None:
-            compaction = Compaction(llm=self.llm)
-        self.add_view_projector(compaction.collapse)
-        if compaction.summarize is not None:
-            self.add_compactor(compaction.summarize)
-        return compaction
 
     def add_before_llm_hook(self, func: BeforeLlmHook) -> BeforeLlmHook:
         self._loop.before_llm_hooks.append(func)
@@ -1864,6 +1889,10 @@ class LLMAgent[InT, OutT, CtxT](
 
     def add_after_llm_hook(self, func: AfterLlmHook) -> AfterLlmHook:
         self._loop.after_llm_hooks.append(func)
+        return func
+
+    def add_usage_hook(self, func: UsageHook) -> UsageHook:
+        self._loop.usage_hooks.append(func)
         return func
 
     def add_before_tool_hook(self, func: BeforeToolHook[CtxT]) -> BeforeToolHook[CtxT]:
@@ -1892,7 +1921,7 @@ class LLMAgent[InT, OutT, CtxT](
     #
     # Override these in subclasses for customization.
     # Alternatively, use the @agent.add_* decorators (preferred).
-    # These read the run context off ``self.ctx`` (the single shared
+    # These read the session context off ``self.ctx`` (the single shared
     # session instance); ``on_before_tool_impl`` keeps an explicit ``ctx``
     # for symmetry with the standalone approval-hook factories.
 
@@ -1966,8 +1995,8 @@ class LLMAgent[InT, OutT, CtxT](
 
     def _register_overridden_implementations(self) -> None:
         """
-        Detect subclass overrides and set them as callback slots
-        on the appropriate components (AgentLoop, PromptBuilder).
+        Detect subclass overrides and register them as callbacks on the
+        appropriate components (AgentLoop, PromptBuilder, ContextWindowManager).
         """
         base_cls = LLMAgent[Any, Any, Any]
 
@@ -1979,10 +2008,10 @@ class LLMAgent[InT, OutT, CtxT](
                 self.build_initial_context_impl
             )
 
-        # Agent loop. ``final_answer_extractor`` / ``view_projector`` are
-        # single-slot (replace); the observer / decision hooks stack — a
-        # subclass ``*_impl`` override is appended first so it runs before
-        # any decorator-registered hook.
+        # ``final_answer_extractor`` is single-slot (replace); view projectors
+        # and the observer / decision hooks stack — a subclass ``*_impl``
+        # override is registered first so it runs before any
+        # decorator-registered one.
         if is_method_overridden("extract_final_answer_impl", self, base_cls):
             self._loop.final_answer_extractor = self.extract_final_answer_impl
         if is_method_overridden("project_view_impl", self, base_cls):

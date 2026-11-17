@@ -12,9 +12,11 @@ from grasp_agents.evals import (
     FunctionPairwiseJudge,
     FunctionTask,
     LocalRunStore,
+    Mean,
     Measure,
     PairwiseContext,
     PairwiseVerdict,
+    Pooled,
     Score,
     ScoreContext,
     Trial,
@@ -24,6 +26,7 @@ from grasp_agents.evals import (
     evaluate,
     pairwise,
     render_comparison_markdown,
+    rescore,
     scorer,
 )
 from grasp_agents.evals.compare import regressions
@@ -109,10 +112,14 @@ class TestCompare:
             ]
         )
         base = await evaluate(
-            flawed, dataset, [correct], sealed_splits=["test"], store=store
+            flawed,
+            dataset.split("test"),
+            [correct],
+            sealed_splits=["test"],
+            store=store,
         )
         candidate = await evaluate(
-            good, dataset, [correct], sealed_splits=["test"], store=store
+            good, dataset.split("test"), [correct], sealed_splits=["test"], store=store
         )
         target = compare(base, candidate).target("correct")
         assert target is not None
@@ -446,15 +453,54 @@ class TestGate:
         assert any("correct cannot be tested" in f for f in regressions(result))
 
     @pytest.mark.asyncio
+    async def test_a_score_missing_from_the_candidate_fails_the_gate(
+        self, store: LocalRunStore
+    ) -> None:
+        @scorer(name="correct")
+        def broken(ctx: Ctx) -> bool:
+            raise RuntimeError("judge down")
+
+        base = await evaluate(good, _dataset(4), [correct], store=store)
+        candidate = await evaluate(good, _dataset(4), [broken], store=store)
+        result = compare(base, candidate)
+        assert result.missing_scores == ["correct"]
+        assert any("no values for ['correct']" in w for w in result.warnings)
+        assert "the candidate has no values for correct" in regressions(result)
+        # Naming other targets leaves it out of the gate.
+        assert not any("correct" in f for f in regressions(result, targets=["error"]))
+
+    @pytest.mark.asyncio
     async def test_changed_scorer_code_is_flagged(
         self, store: LocalRunStore, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         base = await evaluate(good, _dataset(4), [correct], store=store)
         # (The package exports a function named like the module.)
         module = importlib.import_module("grasp_agents.evals.scorer")
-        monkeypatch.setattr(module, "code_hash", lambda _: "edited")
+        monkeypatch.setattr(module, "source_identity", lambda _: "v2:edited")
         candidate = await evaluate(good, _dataset(4), [correct], store=store)
         assert any("changed its code" in w for w in compare(base, candidate).warnings)
+
+    @pytest.mark.asyncio
+    async def test_code_hashes_of_an_older_scheme_are_not_called_changes(
+        self, store: LocalRunStore
+    ) -> None:
+        base = await evaluate(good, _dataset(4), [correct], store=store)
+        candidate = await evaluate(good, _dataset(4), [correct], store=store)
+        base.scorers[0].source = "0123456789ab"  # recorded before schemes
+        warnings = compare(base, candidate).warnings
+        assert any("different versions of grasp-evals" in w for w in warnings)
+        assert not any("changed its code" in w for w in warnings)
+
+    @pytest.mark.asyncio
+    async def test_changed_declared_identity_is_flagged(
+        self, store: LocalRunStore
+    ) -> None:
+        def judged(model: str) -> Any:
+            return scorer(name="correct", identity=[model])(correct.fn)
+
+        base = await evaluate(good, _dataset(4), [judged("a")], store=store)
+        candidate = await evaluate(good, _dataset(4), [judged("b")], store=store)
+        assert any("declared identity" in w for w in compare(base, candidate).warnings)
 
     @pytest.mark.asyncio
     async def test_clustered_runs_compare_on_clustered_errors(
@@ -515,6 +561,91 @@ class TestGate:
         assert any("different subsets" in w for w in compare(base, candidate).warnings)
 
 
+class TestDirections:
+    @staticmethod
+    def _defects(lower_is_better: bool) -> Any:
+        @scorer(name="defects", lower_is_better=lower_is_better)
+        def defects(ctx: Ctx) -> float:
+            return float(ctx.output != ctx.reference)
+
+        return defects
+
+    @pytest.mark.asyncio
+    async def test_a_lower_is_better_score_improves_downwards(
+        self, store: LocalRunStore
+    ) -> None:
+        defects = self._defects(lower_is_better=True)
+        base = await evaluate(flawed, _dataset(), [defects], store=store)
+        candidate = await evaluate(good, _dataset(), [defects], store=store)
+        reloaded = store.load(candidate.id)
+        assert reloaded.directions == {"defects": "lower"}
+        result = compare(base, reloaded)
+        target = result.target("defects")
+        assert target is not None
+        assert not target.higher_is_better
+        assert target.diff == pytest.approx(-0.5)
+        assert (target.improved, target.regressed) == (10, 0)
+        assert target.significant
+        assert not target.top_regressions
+        assert regressions(result) == []
+        backwards = compare(reloaded, base)
+        assert any("defects" in f for f in regressions(backwards))
+        assert "↓ defects" in render_comparison_markdown(result)
+
+    @pytest.mark.asyncio
+    async def test_runs_that_disagree_leave_the_score_out(
+        self, store: LocalRunStore
+    ) -> None:
+        base = await evaluate(
+            flawed, _dataset(), [self._defects(lower_is_better=False)], store=store
+        )
+        candidate = await evaluate(
+            good, _dataset(), [self._defects(lower_is_better=True)], store=store
+        )
+        result = compare(base, candidate)
+        assert result.target("defects") is None
+        assert any("disagree" in w and "defects" in w for w in result.warnings)
+
+    @pytest.mark.asyncio
+    async def test_a_run_without_directions_takes_the_other_runs(
+        self, store: LocalRunStore
+    ) -> None:
+        defects = self._defects(lower_is_better=True)
+        base = await evaluate(flawed, _dataset(), [defects], store=store)
+        candidate = await evaluate(good, _dataset(), [defects], store=store)
+        base.directions = {}  # recorded before directions existed
+        target = compare(base, candidate).target("defects")
+        assert target is not None
+        assert not target.higher_is_better
+
+    @pytest.mark.asyncio
+    async def test_metrics_declare_directions_of_measurements(
+        self, store: LocalRunStore
+    ) -> None:
+        async def solve(x: int, trial: TrialContext) -> int:
+            trial.record("retries", float(x % 3))
+            return x * 2
+
+        run = await evaluate(
+            solve,
+            _dataset(4),
+            [correct],
+            [Mean("retries", higher_is_better=False)],
+            store=store,
+        )
+        assert run.directions == {"correct": "higher", "retries": "lower"}
+        with pytest.raises(ValueError, match="declares the opposite"):
+            await evaluate(
+                solve,
+                _dataset(4),
+                [self._defects(lower_is_better=True)],
+                [Mean("defects", higher_is_better=True)],
+                store=store,
+            )
+        with pytest.raises(ValueError, match="built-in direction"):
+            Mean(Measure.DURATION, higher_is_better=True)
+
+
 class TestWinRateUnits:
     def test_the_sign_test_counts_examples_not_judgments(self) -> None:
         from datetime import UTC, datetime
@@ -551,3 +682,227 @@ async def test_differences_of_shares_stay_in_range(store: LocalRunStore) -> None
     assert target is not None
     assert target.ci_high is not None
     assert target.ci_high <= 1.0
+
+
+class TestPooled:
+    @staticmethod
+    def _pages() -> Dataset[int, int]:
+        # A page with 2 headings and pages with 40; arXiv papers and others.
+        return Dataset(
+            [
+                Example(
+                    id=f"p{i}",
+                    input=i,
+                    reference=2 if i == 0 else 40,
+                    metadata={"source": "arxiv" if i % 2 else "other"},
+                )
+                for i in range(12)
+            ],
+            name="pages",
+        )
+
+    @staticmethod
+    def _found(share_of_large: float) -> Any:
+        @scorer(name="found")
+        def found(ctx: ScoreContext[int, int, int]) -> Score:
+            items = ctx.reference or 0
+            share = 0.0 if items == 2 else share_of_large + 0.01 * (ctx.input % 3)
+            return Score(name="found", value=share, weight=items)
+
+        return found
+
+    @pytest.mark.asyncio
+    async def test_weighted_scores_are_pooled_in_metrics_and_comparisons(
+        self, store: LocalRunStore
+    ) -> None:
+        base = await evaluate(good, self._pages(), [self._found(0.5)], store=store)
+        pooled = base.metric("pooled(found)")
+        assert pooled is not None
+        assert pooled.value == pytest.approx(
+            sum(40 * (0.5 + 0.01 * (i % 3)) for i in range(1, 12)) / (2 + 40 * 11)
+        )
+        assert pooled.details["weight"] == pytest.approx(442)
+        candidate = await evaluate(good, self._pages(), [self._found(0.7)], store=store)
+        result = compare(base, candidate, group_by="source")
+        target = result.target("found")
+        assert target is not None
+        assert target.pooled
+        assert target.test == "pooled_randomization"
+        assert target.diff == pytest.approx(0.2 * 440 / 442)
+        assert target.significant
+        assert sorted(result.groups) == ["source=arxiv", "source=other"]
+        arxiv = result.groups["source=arxiv"]
+        assert arxiv.n_paired_examples == 6
+        arxiv_found = arxiv.target("found")
+        assert arxiv_found is not None
+        assert arxiv_found.p_adjusted is not None
+        assert regressions(compare(candidate, base))
+        only = compare(base, candidate, where={"source": "other"})
+        assert only.n_paired_examples == 6
+        text = render_comparison_markdown(result)
+        assert "found (pooled)" in text
+        assert "## By `source`" in text
+
+    @pytest.mark.asyncio
+    async def test_weights_in_one_run_only_are_compared_on_means(
+        self, store: LocalRunStore
+    ) -> None:
+        @scorer(name="found")
+        def unweighted(ctx: ScoreContext[int, int, int]) -> float:
+            return 0.5
+
+        base = await evaluate(good, self._pages(), [unweighted], store=store)
+        candidate = await evaluate(good, self._pages(), [self._found(0.5)], store=store)
+        result = compare(base, candidate)
+        target = result.target("found")
+        assert target is not None
+        assert not target.pooled
+        assert any("weights in only one run" in w for w in result.warnings)
+
+    def test_failed_repetitions_do_not_change_an_example_weight(self) -> None:
+        from datetime import UTC, datetime
+
+        def trial(example: str, rep: int, value: float | None, weight: float) -> Trial:
+            scores = (
+                [] if value is None else [Score(name="f", value=value, weight=weight)]
+            )
+            return Trial(
+                example_id=example,
+                repetition=rep,
+                example_hash="h",
+                started_at=datetime(2026, 1, 1, tzinfo=UTC),
+                duration_s=0.0,
+                scores=scores,
+            )
+
+        # "big" has one scored repetition of two; it still weighs 40, not 20.
+        trials = [
+            trial("small", 0, 1.0, 10.0),
+            trial("small", 1, 1.0, 10.0),
+            trial("big", 0, 0.0, 40.0),
+            trial("big", 1, None, 40.0),
+        ]
+        result = Pooled("f").compute(trials)
+        assert result.value == pytest.approx(10 / 50)
+        assert result.details["weight"] == pytest.approx(50)
+
+
+class TestCompareFilters:
+    @staticmethod
+    def _data() -> Dataset[int, int]:
+        flags: list[Any] = [True, 1, True, 1, "2024", 2024]
+        return Dataset(
+            [
+                Example(
+                    id=f"x{i}",
+                    input=i,
+                    reference=i * 2,
+                    metadata={"flag": flags[i % 6], "year": 2024 if i % 2 else "2024"},
+                    splits=["test" if i >= 10 else "dev"],
+                )
+                for i in range(12)
+            ],
+            name="filtered",
+        )
+
+    @pytest.mark.asyncio
+    async def test_true_and_one_are_different_groups(
+        self, store: LocalRunStore
+    ) -> None:
+        base = await evaluate(
+            flawed, self._data(), [correct], include_sealed=True, store=store
+        )
+        candidate = await evaluate(
+            good, self._data(), [correct], include_sealed=True, store=store
+        )
+        result = compare(base, candidate, group_by="flag")
+        assert result.groups["flag=True"].n_paired_examples == 4
+        assert result.groups["flag=1"].n_paired_examples == 4
+        # "2024" and 2024 have the same text, so they form one group.
+        assert result.groups["flag=2024"].n_paired_examples == 4
+        assert len(result.groups) == 3
+
+    @pytest.mark.asyncio
+    async def test_filters_match_text_and_leave_out_sealed_examples(
+        self, store: LocalRunStore
+    ) -> None:
+        data = self._data()
+        base = await evaluate(flawed, data, [correct], include_sealed=True, store=store)
+        candidate = await evaluate(
+            good, data, [correct], include_sealed=True, store=store
+        )
+        sealed_ids = {e.id for e in data if "test" in e.splits}
+        base.config.sealed_splits = ["test"]
+        for run in (base, candidate):
+            for trial in run.trials:
+                trial.sealed = trial.example_id in sealed_ids
+        result = compare(base, candidate, where={"year": "2024"})
+        assert result.n_paired_examples == 10
+        assert any("sealed splits are left out" in w for w in result.warnings)
+        assert compare(base, candidate).n_paired_examples == 12
+        nothing = compare(base, candidate, where={"year": 1999})
+        assert nothing.n_paired_examples == 0
+        assert any("No paired example matches" in w for w in nothing.warnings)
+
+
+class TestDescriptiveMetadata:
+    @staticmethod
+    def _data(**metadata: str) -> Dataset[int, int]:
+        return Dataset(
+            [
+                Example(id=f"x{i}", input=i, reference=i * 2, metadata=dict(metadata))
+                for i in range(4)
+            ],
+            name="numbers",
+        )
+
+    @pytest.mark.asyncio
+    async def test_reworded_descriptive_keys_keep_runs_pairing(
+        self, store: LocalRunStore
+    ) -> None:
+        # The base run predates the provenance note; the candidate declares it
+        # descriptive after rewording it.
+        base = await evaluate(good, self._data(), [correct], store=store)
+        candidate = await evaluate(
+            flawed,
+            self._data(note="checked twice").with_descriptive_metadata(["note"]),
+            [correct],
+            store=store,
+        )
+        assert candidate.dataset.descriptive_metadata == ["note"]
+        result = compare(base, candidate)
+        assert result.n_paired_examples == 4
+        assert result.n_changed_examples == 0
+        assert not any("different" in w for w in result.warnings)
+        judged = await pairwise(
+            base, candidate, FunctionPairwiseJudge(_always_first), store=store
+        )
+        assert judged.counts.trials_done == 4
+        undeclared = await evaluate(
+            flawed, self._data(note="checked twice"), [correct], store=store
+        )
+        assert compare(base, undeclared).n_paired_examples == 0
+
+    @pytest.mark.asyncio
+    async def test_rescoring_ignores_reworded_descriptive_keys(
+        self, store: LocalRunStore
+    ) -> None:
+        calls: list[str] = []
+
+        @scorer(name="correct")
+        def counted(ctx: Ctx) -> bool:
+            calls.append(ctx.example.id)
+            return ctx.output == ctx.reference
+
+        declared = self._data(note="first").with_descriptive_metadata(["note"])
+        parent = await evaluate(good, declared, [counted], store=store)
+        calls.clear()
+        child = await rescore(
+            parent,
+            [counted],
+            dataset=self._data(note="reworded"),
+            store=store,
+            output_type=int,
+        )
+        assert calls == []
+        assert child.counts.trials_done == 4

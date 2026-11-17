@@ -39,15 +39,44 @@ OPENAI_API_KEY=your_openai_api_key
 GEMINI_API_KEY=your_gemini_api_key
 ```
 
-- Open [src/grasp_agents/examples/notebooks/agents_demo.ipynb](https://github.com/grasp-technologies/grasp-agents/tree/master/src/grasp_agents/examples/notebooks/agents_demo.ipynb).
+- Open [src/grasp_agents/examples/notebooks/basics.ipynb](https://github.com/grasp-technologies/grasp-agents/tree/master/src/grasp_agents/examples/notebooks/basics.ipynb).
 
 You're now ready to run and experiment with the example notebook.
 
 ### 4. Recommended VS Code Extensions
 
-- [Ruff](https://marketplace.visualstudio.com/items/?itemName=charliermarsh.ruff) -- for formatting and code analysis
-- [Pylint](https://marketplace.visualstudio.com/items/?itemName=ms-python.pylint) -- for linting
-- [Pylance](https://marketplace.visualstudio.com/items/?itemName=ms-python.vscode-pylance) -- for type checking
+- [Ruff](https://marketplace.visualstudio.com/items/?itemName=charliermarsh.ruff) -- for formatting and linting
+- [Pylance](https://marketplace.visualstudio.com/items/?itemName=ms-python.vscode-pylance) -- for type checking (the project uses pyright in strict mode)
+
+### 5. Checks before opening a pull request
+
+```bash
+uv run ruff check <changed files>      # lint; ruff.toml autofixes, so scope it to your files
+uv run ruff format <changed files>     # format only what you touched
+uv run pyright src/grasp_agents        # strict type check
+uv run pytest                          # unit tests; live tests are marked `integration`
+uv run pytest -m integration tests/<path>   # live API tests (need API keys in .env)
+```
+
+New tests go in the `tests/` subdirectory that mirrors the package they cover.
+Shared helpers (a scripted `MockLLM`, response builders, sample tools) are in
+`tests/_helpers.py`.
+
+### 6. Design reference
+
+Each subsystem has a reference page in [docs/](docs/README.md) describing its
+current design and the contracts changes must preserve. Read the relevant page
+before changing a subsystem. Update the page in the same pull request.
+
+Also update any text that describes what you changed:
+- the README;
+- the skills in `.claude/skills/`;
+- `CLAUDE.md`;
+- the examples;
+- tool descriptions and prompt files.
+
+[CLAUDE.md](CLAUDE.md) ("Keep documentation in sync") lists what to check, and
+summarizes the code conventions.
 
 ## Releasing a New Version (Maintainers Only)
 
@@ -70,3 +99,5 @@ To release a new version of the package, follow these steps:
 8. Push the tag to the remote repository: `git push --tags`.
 
 9. This will trigger the [release workflow](.github/workflows/workflow.yml), which will build and publish the package to PyPI.
+
+The frozen `grasp_agents_legacy` distribution in `legacy/` is versioned separately and published by pushing a `legacy-vX.Y.Z` tag ([workflow](.github/workflows/publish-legacy.yml)).

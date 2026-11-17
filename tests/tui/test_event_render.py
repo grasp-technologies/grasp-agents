@@ -773,40 +773,91 @@ def test_web_search_find_in_page_rendered() -> None:
 
 
 def test_renders_compaction_notice() -> None:
-    from grasp_agents.types.events import CompactionEvent, CompactionInfo
+    from grasp_agents.types.events import CompactionDoneEvent, CompactionInfo
 
-    ev = CompactionEvent(
+    ev = CompactionDoneEvent(
         source="a",
         data=CompactionInfo(
-            folded_turns=7,
-            preserved_turns=3,
+            folded_rounds=7,
+            kept_rounds=3,
+            pinned_messages=2,
             context_tokens=1850,
             context_window=2000,
             summary="Kept the goal and the key results discovered so far.",
         ),
     )
-    text = _render_to_text(render_event(ev))
+    text = _render_to_text(render_event(ev), width=100)
     assert "compacted" in text
-    assert "7 turns" in text
-    assert "3 recent turns kept" in text
+    assert "7 rounds folded, 3 kept, 2 pinned" in text
     assert "1,850" in text
     assert "2,000" in text
     assert "Kept the goal" in text  # the summary itself is shown
     # shown raw — the exact wrapped message the agent receives (like a skill call)
-    assert "system-reminder" in text
-    assert "summarized" in text  # the injected subject is visible
+    assert "conversation_summary" in text
 
 
-def test_compaction_notice_singular_turn() -> None:
-    from grasp_agents.types.events import CompactionEvent, CompactionInfo
+def test_compaction_start_is_one_muted_line() -> None:
+    from grasp_agents.types.events import CompactionStartEvent, CompactionStartInfo
 
-    ev = CompactionEvent(
+    ev = CompactionStartEvent(
         source="a",
-        data=CompactionInfo(folded_turns=1, preserved_turns=1, context_tokens=900),
+        data=CompactionStartInfo(context_tokens=1850, context_window=2000),
+    )
+    rendered = render_event(ev)
+    assert isinstance(rendered, Text)
+    assert rendered.plain == "⊙ compacting context · 1,850 / 2,000 tokens"
+
+    forced = CompactionStartEvent(
+        source="a", data=CompactionStartInfo(context_tokens=900, forced=True)
+    )
+    assert "compacting context (overflow) · ~900 tokens" in _render_to_text(
+        render_event(forced)
+    )
+
+
+def test_compaction_failure_is_one_warning_line_with_the_reason() -> None:
+    from grasp_agents.types.events import (
+        CompactionFailedEvent,
+        CompactionFailureInfo,
+    )
+
+    ev = CompactionFailedEvent(
+        source="a",
+        data=CompactionFailureInfo(reason="LlmContextWindowError: too long"),
+    )
+    rendered = render_event(ev)
+    assert isinstance(rendered, Text)
+    assert rendered.plain == ("⊙ compaction failed — LlmContextWindowError: too long")
+
+    forced = CompactionFailedEvent(
+        source="a", data=CompactionFailureInfo(reason="x", forced=True)
+    )
+    assert "compaction failed (overflow)" in _render_to_text(render_event(forced))
+
+
+def test_compaction_notice_singular_round() -> None:
+    from grasp_agents.types.events import CompactionDoneEvent, CompactionInfo
+
+    ev = CompactionDoneEvent(
+        source="a",
+        data=CompactionInfo(folded_rounds=1, kept_rounds=1, context_tokens=900),
     )
     text = _render_to_text(render_event(ev))
-    assert "folded 1 turn" in text
-    assert "1 turns" not in text
+    assert "1 round folded" in text
+    assert "1 rounds" not in text
+    assert "pinned" not in text
+
+
+def test_forced_compaction_notice_says_why() -> None:
+    from grasp_agents.types.events import CompactionDoneEvent, CompactionInfo
+
+    ev = CompactionDoneEvent(
+        source="a",
+        data=CompactionInfo(
+            folded_rounds=4, kept_rounds=1, context_tokens=900, forced=True
+        ),
+    )
+    assert "context compacted (overflow)" in _render_to_text(render_event(ev))
 
 
 def test_bg_launched_notice_cites_log_only_when_present() -> None:
@@ -876,7 +927,7 @@ def test_tags_beat_markdown_inside_them() -> None:
     assert isinstance(panel.renderable, Syntax)
 
 
-def test_a_long_payload_is_still_recognised_as_tagged() -> None:
+def test_a_long_payload_is_still_recognized_as_tagged() -> None:
     """
     The format is decided before the display budget is applied. Cutting first
     removes the closing tag the check anchors on, and the document then rendered
@@ -914,7 +965,10 @@ def test_a_small_result_needs_no_fold() -> None:
 def test_expanding_still_scrubs_terminal_escapes() -> None:
     """The cut is a display budget; the sanitizing is not optional."""
     hostile = (
-        "<log>\n" + "\n".join(f"line {i}" for i in range(200)) + "\n\x1b[2Jgone\n</log>"
+        "<log>\n"
+        + "\n".join(f"line {i}" for i in range(200))
+        + "\n\x1b[2J"
+        + "gone\n</log>"
     )
     ev = _tool_event(hostile)
 

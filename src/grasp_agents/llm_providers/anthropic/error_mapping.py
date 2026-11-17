@@ -6,6 +6,7 @@ import anthropic
 
 from grasp_agents.llm_providers._http_helpers import (
     is_content_filter_message,
+    is_context_window_message,
     is_quota_message,
     parse_retry_after,
 )
@@ -59,6 +60,8 @@ def map_api_error(err: Exception) -> LlmError | None:
         if code >= 500:
             return LlmInternalServerError(msg, response=resp, body=body)
         if code == 400:
+            if is_context_window_message(msg):
+                return LlmContextWindowError(msg, response=resp, body=body)
             return LlmBadRequestError(msg, response=resp, body=body)
         return LlmApiStatusError(msg, response=resp, body=body)
 

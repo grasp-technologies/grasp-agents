@@ -99,6 +99,13 @@ def test_settings_enforce_nested_required_keys() -> None:
         )
 
 
+def test_anthropic_cache_control_is_validated() -> None:
+    with pytest.raises(ValidationError, match="cache_control"):
+        TypeAdapter(AnthropicLLMSettings).validate_python(
+            {"cache_control": {"type": "ephemeral", "ttl": "1d"}}
+        )
+
+
 def test_llm_construction_rejects_mistyped_declared_key() -> None:
     with pytest.raises(ValidationError, match="temperature"):
         OpenAILLM(

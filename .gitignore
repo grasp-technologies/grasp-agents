@@ -176,10 +176,6 @@ cython_debug/
 # MAC OS files
 **/.DS_Store
 
-docs/*
-
-# grasp-agents TUI data-copilot demo workspace (default COPILOT_WORKDIR)
-copilot_workdir/
 
 # pytest-textual-snapshot failure report
 snapshot_report.html
@@ -189,13 +185,17 @@ _scratch_*.py
 tests/tui/_review/
 
 .worktreeinclude
-orchestration_workdir/
-autoresearch_workdir/
-CLAUDE.md
-.claude/
+# Claude Code: CLAUDE.md, docs/ and .claude/skills/ are tracked; personal and
+# machine-local config is not.
+CLAUDE.local.md
+.claude/*
+!.claude/skills/
 .grasp/
 src/grasp_agents/kits/
 tests/kits/
+
+# Local Phoenix data (phoenix/docker-compose.yml bind mount)
+phoenix/phoenix_data/
 
 # grasp-evals run records and dataset caches (default GRASP_EVALS_DIR)
 .evals/

@@ -25,6 +25,7 @@ from .stats import (
     cohens_kappa,
     mean_estimate,
     percentile,
+    pooled_estimate,
     proportion_estimate,
 )
 from .types import Example, MetricResult, Trial
@@ -297,6 +298,13 @@ class Metric(ABC):
     # Whether ``n`` counts examples (repetitions reduced first) or trials.
     unit: Unit = "example"
 
+    def declared_direction(self) -> tuple[str, bool] | None:
+        """
+        ``(target, higher_is_better)`` when the metric declares which values
+        of its target are better, so runs record it for comparisons.
+        """
+        return None
+
     @abstractmethod
     def compute(
         self,
@@ -310,7 +318,28 @@ class Metric(ABC):
         """
 
 
+def _checked_direction(of: Target, higher_is_better: bool | None) -> bool | None:
+    if higher_is_better is not None and isinstance(of, Measure):
+        raise ValueError(
+            f"{of} has a built-in direction; higher_is_better applies to scores "
+            "and recorded measurements"
+        )
+    return higher_is_better
+
+
+def _direction_of(of: Target, higher_is_better: bool | None) -> tuple[str, bool] | None:
+    if higher_is_better is None or isinstance(of, Measure):
+        return None
+    return str(of), higher_is_better
+
+
 class Mean(Metric):
+    """
+    Mean of a target, per example (repetitions reduced first) or per trial.
+    ``higher_is_better=False`` declares that lower values of a score or
+    measurement are better (as a scorer's ``lower_is_better`` does).
+    """
+
     def __init__(
         self,
         of: Target,
@@ -319,12 +348,18 @@ class Mean(Metric):
         unit: Unit = "example",
         name: str | None = None,
         confidence: float = 0.95,
+        higher_is_better: bool | None = None,
     ) -> None:
         self.of = as_target(of)
         self.reduce = reduce
         self.unit = unit
         self.confidence = confidence
         self.name = name or f"mean({self.of}){_reducer_suffix(reduce)}"
+        self.higher_is_better = _checked_direction(self.of, higher_is_better)
+
+    @override
+    def declared_direction(self) -> tuple[str, bool] | None:
+        return _direction_of(self.of, self.higher_is_better)
 
     @override
     def compute(
@@ -355,6 +390,103 @@ class Mean(Metric):
         )
 
 
+def weighted_value(trial: Trial, of: str) -> tuple[float, float] | None:
+    """A score's ``(value, weight)`` on one trial (weight 1 when unset)."""
+    score = trial.score(of)
+    value = None if score is None else score.as_float()
+    if score is None or value is None:
+        return None
+    return value, 1.0 if score.weight is None else score.weight
+
+
+def has_weights(trials: Iterable[Trial], of: str) -> bool:
+    """Whether any trial weighs score ``of``."""
+    return any(
+        (score := t.score(of)) is not None and score.weight is not None for t in trials
+    )
+
+
+def pooled_sums(trials: Iterable[Trial], of: str) -> tuple[float, float] | None:
+    """
+    One example's ``(mean value·weight, mean weight)`` over its repetitions
+    with a value, so failed repetitions don't change how much it counts.
+    """
+    found = [p for t in trials if (p := weighted_value(t, of)) is not None]
+    if not found:
+        return None
+    weight = math.fsum(w for _, w in found) / len(found)
+    if weight <= 0:
+        return None
+    return math.fsum(v * w for v, w in found) / len(found), weight
+
+
+class Pooled(Metric):
+    """
+    A score pooled over examples: ``Σ value·weight / Σ weight``, with
+    ``Score.weight`` (1 when unset) and each example's repetitions averaged
+    first. For shares over varying numbers of items — give each score its
+    item count as weight — this is the share over all items, where
+    :class:`Mean` weighs a page with two items like one with forty. The
+    interval uses a linearized standard error (clustered with ``cluster_by``)
+    and is approximate with few examples or very uneven weights; ``n``
+    counts examples and ``details["weight"]`` is their total weight.
+    """
+
+    def __init__(
+        self,
+        of: str,
+        *,
+        name: str | None = None,
+        confidence: float = 0.95,
+        higher_is_better: bool | None = None,
+    ) -> None:
+        self.of = of
+        self.name = name or f"pooled({of})"
+        self.confidence = confidence
+        self.higher_is_better = higher_is_better
+
+    @override
+    def declared_direction(self) -> tuple[str, bool] | None:
+        return _direction_of(self.of, self.higher_is_better)
+
+    @override
+    def compute(
+        self,
+        trials: Sequence[Trial],
+        *,
+        clusters: Mapping[str, Hashable] | None = None,
+    ) -> MetricResult:
+        sums: list[tuple[float, float]] = []
+        keys: list[Hashable] = []
+        missing = na = 0
+        for example_id, group in _group_by_example(trials).items():
+            found = pooled_sums(group, self.of)
+            if found is not None:
+                sums.append(found)
+                keys.append(
+                    clusters.get(example_id, example_id) if clusters else example_id
+                )
+            elif all(_not_applicable(t, self.of) for t in group):
+                na += 1
+            else:
+                missing += 1
+        estimate = pooled_estimate(
+            sums, clusters=keys if clusters else None, confidence=self.confidence
+        )
+        return MetricResult(
+            name=self.name,
+            value=None if math.isnan(estimate.value) else estimate.value,
+            n=len(sums),
+            n_missing=missing,
+            n_na=na,
+            stderr=estimate.stderr,
+            ci_low=estimate.ci_low,
+            ci_high=estimate.ci_high,
+            confidence=self.confidence,
+            details={"weight": math.fsum(w for _, w in sums)} if sums else {},
+        )
+
+
 class PassRate(Metric):
     """
     Share of passing examples. Bool scores pass when ``True``; numeric scores
@@ -364,7 +496,8 @@ class PassRate(Metric):
     Trials whose task failed have no score; they count as failures unless
     ``errors_as_failures=False`` excludes them (then a system that crashes on
     hard examples would look better). The error rate is reported separately
-    either way.
+    either way. ``higher_is_better=False`` declares a score whose passes are
+    bad (``has_defect``).
     """
 
     def __init__(
@@ -376,6 +509,7 @@ class PassRate(Metric):
         reduce: Reducer = mean,
         name: str | None = None,
         confidence: float = 0.95,
+        higher_is_better: bool | None = None,
     ) -> None:
         self.of = as_target(of)
         self.threshold = threshold
@@ -384,6 +518,11 @@ class PassRate(Metric):
         self.confidence = confidence
         bar = "" if threshold is None else f">={threshold:g}"
         self.name = name or f"pass_rate({self.of}{bar}){_reducer_suffix(reduce)}"
+        self.higher_is_better = _checked_direction(self.of, higher_is_better)
+
+    @override
+    def declared_direction(self) -> tuple[str, bool] | None:
+        return _direction_of(self.of, self.higher_is_better)
 
     def _passed(self, trial: Trial) -> float | None:
         value = trial_value(trial, self.of)
@@ -1038,7 +1177,10 @@ class ConfusionMatrix(Metric):
 
 
 def default_metrics(trials: Sequence[Trial]) -> list[Metric]:
-    """A metric per score (pass rate, mean or label shares), plus errors and cost."""
+    """
+    A metric per score (pass rate, mean — and the pooled value of weighted
+    scores — or label shares), plus errors and cost.
+    """
     kinds: dict[str, set[type]] = {}
     for trial in trials:
         for score in trial.scores:
@@ -1052,6 +1194,8 @@ def default_metrics(trials: Sequence[Trial]) -> list[Metric]:
             metrics.append(PassRate(name))
         elif value_types and value_types <= {float, int, bool}:
             metrics.append(Mean(name))
+            if has_weights(trials, name):
+                metrics.append(Pooled(name))
         elif str in value_types:
             metrics.append(Distribution(name))
         else:
@@ -1078,6 +1222,15 @@ Metrics for a run: a list, a function of the finished trials returning one
 """
 
 
+def select_metrics(trials: Sequence[Trial], metrics: MetricsSpec) -> list[Metric]:
+    """The metrics ``metrics`` (see :data:`MetricsSpec`) gives for ``trials``."""
+    if metrics is None:
+        return default_metrics(trials)
+    if callable(metrics):
+        return list(metrics(trials))
+    return list(metrics)
+
+
 def compute_metrics(
     trials: Sequence[Trial],
     metrics: MetricsSpec,
@@ -1092,12 +1245,7 @@ def compute_metrics(
     ``expected`` lists the trials that should exist: those that never ran
     (e.g. the budget ran out) count as missing.
     """
-    if metrics is None:
-        selected = default_metrics(trials)
-    elif callable(metrics):
-        selected = list(metrics(trials))
-    else:
-        selected = list(metrics)
+    selected = select_metrics(trials, metrics)
     by_id = {e.id: e for e in examples}
     clusters: dict[str, Hashable] | None = None
     if cluster_by is not None:

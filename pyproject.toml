@@ -1,6 +1,6 @@
 [project]
 name = "grasp_agents"
-version = "1.1.0"
+version = "1.5.0"
 description = "Grasp Agents Library"
 readme = "README.md"
 requires-python = ">=3.12,<4"
@@ -63,7 +63,7 @@ all-llm-providers = [
     "anthropic[bedrock,vertex]>=0.84,<1",
     "google-genai>=1.65,<2",
 ]
-e2b = ["e2b>=2.0,<3", "e2b-code-interpreter>=2.7.0,<3"]
+e2b = ["e2b>=2.41,<3", "e2b-code-interpreter>=2.7.0,<3"]
 mcp = ["mcp>=1.8,<2"]
 notebook-edit = ["nbformat>=5.10.4,<6"]
 code-exec = [

@@ -1,9 +1,25 @@
+import http.server
 import json
+import os
+import signal
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import sys
 import textwrap
+import threading
+import time
 from pathlib import Path
+from typing import Any, ClassVar
 
 import pytest
 
+from grasp_agents.evals import (
+    Dataset,
+    Example,
+    LocalRunStore,
+    RunStatus,
+    close_run,
+    evaluate,
+)
 from grasp_agents.evals.cli import main
 
 _MODULE = """
@@ -66,7 +82,14 @@ def test_run_show_compare_rescore(
 ) -> None:
     root = str(tmp_path / "evals")
     code, base = _run_json(
-        capsys, "--root", root, "run", f"{module}:buggy", "--json", "-q"
+        capsys,
+        "--root",
+        root,
+        "run",
+        f"{module}:buggy",
+        "--include-sealed",
+        "--json",
+        "-q",
     )
     assert code == 0
     assert base["metrics"]["pass_rate(correct)"]["value"] == pytest.approx(5 / 6)
@@ -78,6 +101,7 @@ def test_run_show_compare_rescore(
         root,
         "run",
         f"{module}:buggy",
+        "--include-sealed",
         "--json",
         "-q",
         "--fail-under",
@@ -92,6 +116,7 @@ def test_run_show_compare_rescore(
         root,
         "run",
         f"{module}:fixed",
+        "--include-sealed",
         "--json",
         "-q",
         "--baseline",
@@ -221,7 +246,11 @@ def test_errors_are_json_documents_with_usage_codes(
         (["run", str(tmp_path / "missing.py:spec")], "No spec file"),
         (["run", f"{module}:nope"], "no attribute"),
         (["run", f"{module}:buggy", "--split", "tset"], "No split 'tset'"),
-        (["run", f"{module}:buggy", "--ids", "x4"], "sealed split"),
+        (["run", f"{module}:buggy", "--ids", "x4"], "exclude_splits=test"),
+        (
+            ["run", f"{module}:buggy", "--include-sealed", "--ids", "x4"],
+            "sealed split",
+        ),
     ]:
         code, payload = _run_json(capsys, "--root", root, *args, "--json", "-q")
         assert code == 2, args
@@ -288,7 +317,15 @@ def test_progress_can_be_json_lines(
     tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     code = main(
-        ["--root", str(tmp_path), "run", f"{module}:buggy", "--progress", "json"]
+        [
+            "--root",
+            str(tmp_path),
+            "run",
+            f"{module}:buggy",
+            "--include-sealed",
+            "--progress",
+            "json",
+        ]
     )
     assert code == 0
     events = [json.loads(line) for line in capsys.readouterr().err.splitlines()[:6]]
@@ -394,3 +431,354 @@ def test_unvalidated_judges_fail_the_run_gate(
     )
     assert code == 0
     assert listed["gate_failures"] == []
+
+
+# --- Stopped and killed runs ---
+
+_SLOW_MODULE = """
+import asyncio
+
+from grasp_agents.evals import (
+    Dataset, Evaluation, Example, FunctionTask, ScoreContext, scorer,
+)
+
+
+@scorer
+def correct(ctx: ScoreContext[int, int, int]) -> bool:
+    return ctx.output == ctx.reference
+
+
+async def slow(x: int) -> int:
+    await asyncio.sleep(0.2 if x else 0.0)
+    return x * 2
+
+
+slow_eval = Evaluation(
+    name="slow",
+    task=FunctionTask(slow),
+    dataset=Dataset(
+        [Example(id=f"x{i}", input=i, reference=i * 2) for i in range(30)],
+        name="numbers",
+    ),
+    scorers=[correct],
+    concurrency=1,
+)
+"""
+
+
+_BLOCKING_MODULE = """
+import time
+
+from grasp_agents.evals import Dataset, Evaluation, Example, FunctionTask
+
+
+def blocking(x: int) -> int:
+    time.sleep(60 if x >= 2 else 0)
+    return x * 2
+
+
+slow_eval = Evaluation(
+    name="blocking",
+    task=FunctionTask(blocking),
+    dataset=Dataset([Example(id=f"x{i}", input=i, reference=i * 2) for i in range(4)]),
+    concurrency=1,
+)
+"""
+
+
+def _start_slow_run(
+    tmp_path: Path, module: str = _SLOW_MODULE
+) -> tuple[subprocess.Popen[bytes], LocalRunStore]:
+    spec = tmp_path / "slow_evals.py"
+    spec.write_text(textwrap.dedent(module))
+    root = tmp_path / "evals"
+    process = subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
+        [sys.executable, "-m", "grasp_agents.evals", "--root", str(root), "run"]
+        + [f"{spec}:slow_eval", "-q"],
+        cwd=tmp_path,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    store = LocalRunStore(root)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        trials = list(root.glob("runs/*/trials.jsonl"))
+        if trials and len(trials[0].read_text().splitlines()) >= 2:
+            return process, store
+        time.sleep(0.05)
+    process.kill()
+    raise AssertionError("the run did not start")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_sigterm_finalizes_the_run_as_cancelled(tmp_path: Path) -> None:
+    process, store = _start_slow_run(tmp_path)
+    process.send_signal(signal.SIGTERM)
+    assert process.wait(timeout=30) == 128 + signal.SIGTERM
+    assert process.stderr is not None
+    assert b"stopped by SIGTERM" in process.stderr.read()
+    run = store.load(store.resolve("latest"))
+    assert run.status == RunStatus.CANCELLED
+    assert 2 <= run.counts.trials_done < 30
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_a_second_sigterm_ends_a_run_blocked_in_a_thread(tmp_path: Path) -> None:
+    process, store = _start_slow_run(tmp_path, _BLOCKING_MODULE)
+    process.send_signal(signal.SIGTERM)
+    deadline = time.monotonic() + 30
+    while store.load(store.resolve("latest")).status == RunStatus.RUNNING:
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    assert process.poll() is None  # waiting for the blocked thread
+    process.send_signal(signal.SIGTERM)
+    assert process.wait(timeout=10) == -signal.SIGTERM
+    assert store.load(store.resolve("latest")).status == RunStatus.CANCELLED
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_a_killed_run_can_be_closed_then_rescored(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    process, store = _start_slow_run(tmp_path)
+    process.kill()
+    process.wait(timeout=30)
+    stuck = store.load(store.resolve("latest"))
+    assert stuck.status == RunStatus.RUNNING
+    assert stuck.process is not None
+    assert stuck.process.pid == process.pid
+    root = str(store.root)
+    code, closed = _run_json(capsys, "--root", root, "close", stuck.id, "--json")
+    assert code == 0
+    assert closed["status"] == "partial"
+    assert closed["counts"]["trials_done"] >= 2
+    assert closed["metrics"]["pass_rate(correct)"]["missing"] > 0
+    code, child = _run_json(
+        capsys, "--root", root, "rescore", stuck.id, "--rerun", "--json", "-q"
+    )
+    assert code == 0
+    assert child["parent_run_id"] == stuck.id
+
+
+@pytest.mark.asyncio
+async def test_a_live_or_unknown_process_keeps_its_run_open(tmp_path: Path) -> None:
+    store = LocalRunStore(tmp_path)
+
+    async def double(x: int) -> int:
+        return x * 2
+
+    run = await evaluate(
+        double,
+        Dataset([Example(id="a", input=1, reference=2)]),
+        store=store,
+    )
+    run.status = RunStatus.RUNNING
+    store.save(run)  # its process is this one
+    with pytest.raises(ValueError, match="is still running it"):
+        close_run(run.id, store=store)
+    assert run.process is not None
+    run.process = run.process.model_copy(update={"host": "elsewhere"})
+    store.save(run)
+    with pytest.raises(ValueError, match="may still be running it"):
+        close_run(run.id, store=store)
+    run.process = None
+    store.save(run)
+    with pytest.raises(ValueError, match="is unknown"):
+        close_run(run.id, store=store)
+    closed = close_run(run.id, store=store, force=True)
+    assert closed.status == RunStatus.COMPLETED
+    assert closed.metadata["closed"]["forced"] is True
+    with pytest.raises(ValueError, match="nothing to close"):
+        close_run(run.id, store=store)
+
+
+def test_rescore_selects_trials_and_takes_a_newer_dataset(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = str(tmp_path / "evals")
+    code, base = _run_json(capsys, "--root", root, "run", f"{module}:buggy", "--json")
+    assert code == 0
+    code, some = _run_json(
+        capsys, "--root", root, "rescore", base["id"], "--ids", "x0,x3", "--json"
+    )
+    assert code == 0
+    assert some["dataset"]["selection"] == ["exclude_splits=test", "ids=2"]
+    assert some["counts"]["trials_done"] == 2
+    newer = tmp_path / "doubling-v2.jsonl"
+    newer.write_text(
+        "".join(
+            json.dumps(
+                {"id": f"x{i}", "input": i, "reference": -1 if i == 3 else i * 2}
+            )
+            + "\n"
+            for i in range(4)
+        )
+    )
+    code, fixed = _run_json(
+        capsys, "--root", root, "rescore", base["id"], "--dataset", str(newer), "--json"
+    )
+    assert code == 0
+    assert fixed["dataset"]["name"] == "doubling-v2"
+    assert fixed["metrics"]["pass_rate(correct)"]["value"] == pytest.approx(1.0)
+
+
+def test_outputs_produced_elsewhere_are_imported(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = str(tmp_path / "evals")
+    outputs = tmp_path / "vendor.jsonl"
+    outputs.write_text(
+        "".join(
+            json.dumps({"example_id": f"x{i}", "output": i * 2, "cost_usd": 0.5}) + "\n"
+            for i in range(6)
+        )
+    )
+    code, run = _run_json(
+        capsys,
+        "--root",
+        root,
+        "import",
+        f"{module}:buggy",
+        str(outputs),
+        "--task-version",
+        "2026-11",
+        "--json",
+        "-q",
+    )
+    assert code == 0
+    assert run["kind"] == "import"
+    assert run["task"] == {"name": "vendor", "version": "2026-11"}
+    assert run["counts"]["trials_done"] == 4  # the sealed split is left out
+    assert run["metrics"]["pass_rate(correct)"]["value"] == pytest.approx(1.0)
+    assert run["cost_usd"] == pytest.approx(2.0)
+
+
+def test_runs_carry_links_and_notes(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = str(tmp_path / "evals")
+    _, base = _run_json(capsys, "--root", root, "run", f"{module}:buggy", "--json")
+    code, annotated = _run_json(
+        capsys,
+        "--root",
+        root,
+        "annotate",
+        base["id"],
+        "--link",
+        "preview=https://example.com/p",
+        "--note",
+        "first pass",
+    )
+    assert code == 0
+    assert annotated["links"] == {"preview": "https://example.com/p"}
+    _, shown = _run_json(capsys, "--root", root, "show", base["id"], "--json")
+    assert shown["links"] == {"preview": "https://example.com/p"}
+    assert shown["notes"] == ["first pass"]
+    assert main(["--root", root, "annotate", base["id"], "--link", "nope"]) == 2
+    assert main(["--root", root, "annotate", base["id"], "--remove-link", "x"]) == 2
+
+
+class _Collector(http.server.BaseHTTPRequestHandler):
+    received: ClassVar[list[str]] = []
+
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("content-length") or 0))
+        self.received.append(self.path)
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, format: str, *args: Any) -> None:
+        return
+
+
+def test_run_trace_gives_every_trial_a_trace_id(tmp_path: Path, module: Path) -> None:
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Collector)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    endpoint = f"http://127.0.0.1:{server.server_address[1]}/v1/traces"
+    root = tmp_path / "evals"
+    try:
+        result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+            [sys.executable, "-m", "grasp_agents.evals", "--root", str(root)]
+            + ["run", f"{module}:fixed", "--trace", "evals-test", "-q"],
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "TELEMETRY_COLLECTOR_HTTP_ENDPOINT": endpoint,
+                "NO_PROXY": "127.0.0.1",
+                "no_proxy": "127.0.0.1",
+            },
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+    finally:
+        server.shutdown()
+    assert result.returncode == 0, result.stderr.decode()
+    assert b"Phoenix project 'evals-test'" in result.stderr
+    store = LocalRunStore(root)
+    run = store.load(store.resolve("latest"))
+    assert run.trace_project == "evals-test"
+    assert all(t.trace_id for t in run.trials)
+    assert _Collector.received
+    assert all(path == "/v1/traces" for path in _Collector.received)
+
+
+def test_pushing_an_untraced_run_says_so(
+    tmp_path: Path,
+    module: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PHOENIX_BASE_URL", raising=False)
+    root = str(tmp_path / "evals")
+    _, run = _run_json(capsys, "--root", root, "run", f"{module}:fixed", "--json")
+    # Untraced whatever tracing other tests set up in this process.
+    store = LocalRunStore(root)
+    for trial in store.load(run["id"]).trials:
+        trial.trace_id = None
+        store.append_trial(run["id"], trial)
+    assert main(["--root", root, "push", run["id"]]) == 2
+    assert f"no trial of {run['id']} has a trace id" in capsys.readouterr().err
+
+
+def test_deleting_a_phoenix_dataset_needs_confirmation(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code, payload = _run_json(capsys, "datasets", "delete", "staging/x", "--json")
+    assert code == 2
+    assert "--yes" in payload["error"]["message"]
+
+
+def test_compare_filters_and_groups_by_metadata(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = str(tmp_path / "evals")
+    _, base = _run_json(capsys, "--root", root, "run", f"{module}:buggy", "--json")
+    _, cand = _run_json(capsys, "--root", root, "run", f"{module}:fixed", "--json")
+    code, grouped = _run_json(
+        capsys,
+        "--root",
+        root,
+        "compare",
+        base["id"],
+        cand["id"],
+        "--group-by",
+        "k",
+        "--json",
+    )
+    assert code == 0
+    assert list(grouped["groups"]) == ["k=None"]
+    assert grouped["groups"]["k=None"]["n_paired_examples"] == 4
+    _, none = _run_json(
+        capsys,
+        "--root",
+        root,
+        "compare",
+        base["id"],
+        cand["id"],
+        "--where",
+        "k=1",
+        "--json",
+    )
+    assert none["n_paired_examples"] == 0
+    assert none["where"] == {"k": "1"}

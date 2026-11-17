@@ -9,7 +9,10 @@ handle: it cannot exist without an entered :class:`E2BEnvironment`.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
+import re
 import shlex
+import stat as stat_module
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -35,9 +38,127 @@ from ._handle import (
 )
 
 if TYPE_CHECKING:
+    from e2b import EntryInfo
+
     from grasp_agents.file_backend.base import GrepOutputMode
     from grasp_agents.file_backend.paths import AccessMode
     from grasp_agents.sandbox.policy import SandboxPolicy
+
+
+# The globs behind grep's ``type`` filter: these types as ``rg --type-list``
+# (ripgrep 14) defines them, so a type selects the same files here as on the
+# local ripgrep backend.
+# cspell:ignore jspx sarif jpynb mdwn mkdn pht tcsh tcshrc cshrc kshrc zlogin
+# cspell:ignore zlogout zprofile zshenv dtx rng sch xjb irbrc
+_FILE_TYPE_GLOBS: dict[str, tuple[str, ...]] = {
+    "c": ("*.[chH]", "*.[chH].in", "*.cats"),
+    "config": ("*.cfg", "*.conf", "*.config", "*.ini"),
+    "cpp": (
+        "*.[ChH]",
+        "*.[ChH].in",
+        "*.[ch]pp",
+        "*.[ch]pp.in",
+        "*.[ch]xx",
+        "*.[ch]xx.in",
+        "*.cc",
+        "*.cc.in",
+        "*.hh",
+        "*.hh.in",
+        "*.inl",
+    ),
+    "css": ("*.css", "*.scss"),
+    "csv": ("*.csv",),
+    "go": ("*.go",),
+    "html": ("*.ejs", "*.htm", "*.html"),
+    "java": ("*.java", "*.jsp", "*.jspx", "*.properties"),
+    "js": ("*.cjs", "*.js", "*.jsx", "*.mjs", "*.vue"),
+    "json": ("*.json", "*.sarif", "composer.lock"),
+    "jsonl": ("*.jsonl",),
+    "jupyter": ("*.ipynb", "*.jpynb"),
+    "kotlin": ("*.kt", "*.kts"),
+    "lua": ("*.lua",),
+    "markdown": ("*.markdown", "*.md", "*.mdown", "*.mdwn", "*.mdx", "*.mkd", "*.mkdn"),
+    "md": ("*.markdown", "*.md", "*.mdown", "*.mdwn", "*.mdx", "*.mkd", "*.mkdn"),
+    "php": (
+        "*.php",
+        "*.php3",
+        "*.php4",
+        "*.php5",
+        "*.php7",
+        "*.php8",
+        "*.pht",
+        "*.phtml",
+    ),
+    "py": ("*.py", "*.pyi"),
+    "r": ("*.R", "*.Rmd", "*.Rnw", "*.r"),
+    "rst": ("*.rst",),
+    "ruby": (
+        "*.gemspec",
+        "*.rb",
+        "*.rbw",
+        ".irbrc",
+        "Gemfile",
+        "Rakefile",
+        "config.ru",
+    ),
+    "rust": ("*.rs",),
+    "scala": ("*.sbt", "*.scala"),
+    "sh": (
+        "*.bash",
+        "*.bashrc",
+        "*.csh",
+        "*.cshrc",
+        "*.ksh",
+        "*.kshrc",
+        "*.sh",
+        "*.tcsh",
+        "*.zsh",
+        ".bash_login",
+        ".bash_logout",
+        ".bash_profile",
+        ".bashrc",
+        ".cshrc",
+        ".kshrc",
+        ".login",
+        ".logout",
+        ".profile",
+        ".tcshrc",
+        ".zlogin",
+        ".zlogout",
+        ".zprofile",
+        ".zshenv",
+        ".zshrc",
+        "bash_login",
+        "bash_logout",
+        "bash_profile",
+        "bashrc",
+        "profile",
+        "zlogin",
+        "zlogout",
+        "zprofile",
+        "zshenv",
+        "zshrc",
+    ),
+    "sql": ("*.psql", "*.sql"),
+    "swift": ("*.swift",),
+    "tex": ("*.bib", "*.cls", "*.dtx", "*.ins", "*.ltx", "*.sty", "*.tex"),
+    "toml": ("*.toml", "Cargo.lock"),
+    "ts": ("*.cts", "*.mts", "*.ts", "*.tsx"),
+    "txt": ("*.txt",),
+    "xml": (
+        "*.dtd",
+        "*.rng",
+        "*.sch",
+        "*.xhtml",
+        "*.xjb",
+        "*.xml",
+        "*.xml.dist",
+        "*.xsd",
+        "*.xsl",
+        "*.xslt",
+    ),
+    "yaml": ("*.yaml", "*.yml"),
+}
 
 
 class E2BFileBackend(FileBackend):
@@ -115,32 +236,39 @@ class E2BFileBackend(FileBackend):
         return resolved
 
     async def stat(self, path: Path) -> FileStat:
-        info = await self._holder.require().files.get_info(wire(path))
+        async with self._holder.use() as sb:
+            info = await sb.files.get_info(wire(path))
         return FileStat(
             mtime=mtime(info),
-            mode=int(getattr(info, "mode", 0o644) or 0o644),
+            mode=_file_mode(info),
             size=int(getattr(info, "size", 0) or 0),
         )
 
     async def exists(self, path: Path) -> bool:
-        return bool(await self._holder.require().files.exists(wire(path)))
+        async with self._holder.use() as sb:
+            return bool(await sb.files.exists(wire(path)))
 
     async def parent_exists(self, path: Path) -> bool:
         parent = PurePosixPath(path).parent
         if str(parent) == wire(path):
             return True
-        return bool(await self._holder.require().files.exists(str(parent)))
+        async with self._holder.use() as sb:
+            return bool(await sb.files.exists(str(parent)))
+
+    # Both reads take the mtime before the content: a write landing in between
+    # then makes the next conditional write refuse, instead of letting an
+    # mtime newer than the content pass over that write.
 
     async def read_text(self, path: Path) -> tuple[str, float]:
-        sb = self._holder.require()
-        content = await sb.files.read(wire(path), "text")
-        info = await sb.files.get_info(wire(path))
+        async with self._holder.use() as sb:
+            info = await sb.files.get_info(wire(path))
+            content = await sb.files.read(wire(path), "text")
         return str(content), mtime(info)
 
     async def read_bytes(self, path: Path) -> tuple[bytes, float]:
-        sb = self._holder.require()
-        content = await sb.files.read(wire(path), "bytes")
-        info = await sb.files.get_info(wire(path))
+        async with self._holder.use() as sb:
+            info = await sb.files.get_info(wire(path))
+            content = await sb.files.read(wire(path), "bytes")
         return bytes(content), mtime(info)
 
     async def write_bytes(
@@ -153,26 +281,28 @@ class E2BFileBackend(FileBackend):
         expected_mtime: float | None = None,
     ) -> float:
         del mode, overwrite  # E2B writes always overwrite; no mode on the API
-        sb = self._holder.require()
-        if expected_mtime is not None:
-            await _check_expected_mtime(sb, path, expected_mtime)
-        # e2b types write()'s data param as a bare ``IO`` (-> ``IO[Unknown]``).
-        await sb.files.write(wire(path), data)  # pyright: ignore[reportUnknownMemberType]
-        info = await sb.files.get_info(wire(path))
+        async with self._holder.use() as sb:
+            if expected_mtime is not None:
+                await _check_expected_mtime(sb, path, expected_mtime)
+            # e2b types write()'s data param as a bare ``IO`` (-> ``IO[Unknown]``).
+            await sb.files.write(wire(path), data)  # pyright: ignore[reportUnknownMemberType]
+            info = await sb.files.get_info(wire(path))
         return mtime(info)
 
     async def delete(self, path: Path, *, expected_mtime: float | None = None) -> None:
-        sb = self._holder.require()
-        if expected_mtime is not None:
-            await _check_expected_mtime(sb, path, expected_mtime)
-        await sb.files.remove(wire(path))
+        async with self._holder.use() as sb:
+            if expected_mtime is not None:
+                await _check_expected_mtime(sb, path, expected_mtime)
+            await sb.files.remove(wire(path))
 
     async def mkdir(self, path: Path) -> None:
-        await self._holder.require().files.make_dir(wire(path))
+        async with self._holder.use() as sb:
+            await sb.files.make_dir(wire(path))
 
     async def list_dir(self, path: Path, *, recursive: bool = False) -> list[FileEntry]:
         depth = RECURSIVE_DEPTH if recursive else 1
-        entries = await self._holder.require().files.list(wire(path), depth)
+        async with self._holder.use() as sb:
+            entries = await sb.files.list(wire(path), depth)
         out: list[FileEntry] = []
         for e in entries:
             p = type(path)(str(e.path))
@@ -225,24 +355,51 @@ class E2BFileBackend(FileBackend):
                 "grep -Pz is fragile). Use single-line patterns, or Read the "
                 "file and search in-process."
             )
+        type_globs: tuple[str, ...] | None = None
+        if file_type is not None:
+            type_globs = _FILE_TYPE_GLOBS.get(file_type)
+            if type_globs is None:
+                raise ValueError(
+                    f"file type {file_type!r} is not supported on E2B; filter "
+                    "with glob instead"
+                )
+        # grep ORs its --include filters, so with a glob the type is applied
+        # to the results instead.
         cmd = _build_grep_cmd(
             root,
             pattern,
-            glob=glob,
-            file_type=file_type,
+            includes=(glob,) if glob is not None else type_globs or (),
             case_insensitive=case_insensitive,
             output_mode=output_mode,
-            show_line_numbers=show_line_numbers,
             before_context=before_context,
             after_context=after_context,
             context=context,
         )
-        stdout, code = await _run_capture(
-            self._holder.require(), cmd, cwd=wire(self._allowed_roots[0])
-        )
+        async with self._holder.use() as sb:
+            stdout, code = await _run_capture(sb, cmd, cwd=wire(self._allowed_roots[0]))
         if code >= 2:
             raise OSError(f"remote grep failed (exit {code}) for pattern {pattern!r}")
-        return _parse_grep(stdout, output_mode)
+        return _parse_grep(
+            stdout,
+            output_mode,
+            show_line_numbers=show_line_numbers,
+            type_globs=type_globs,
+        )
+
+
+def _file_mode(info: EntryInfo) -> int:
+    """
+    Return the entry's mode with its file-type bits.
+
+    The sandbox reports permission bits only, so without the type bits from
+    the entry type every directory would look like a regular file.
+    """
+    mode = int(getattr(info, "mode", 0) or 0)
+    if stat_module.S_IFMT(mode):
+        return mode
+    if is_dir(info):
+        return stat_module.S_IFDIR | (mode or 0o755)
+    return stat_module.S_IFREG | (mode or 0o644)
 
 
 async def _run_capture(
@@ -267,25 +424,26 @@ def _build_grep_cmd(
     root: Path,
     pattern: str,
     *,
-    glob: str | None,
-    file_type: str | None,
+    includes: tuple[str, ...],
     case_insensitive: bool,
     output_mode: GrepOutputMode,
-    show_line_numbers: bool,
     before_context: int | None,
     after_context: int | None,
     context: int | None,
 ) -> str:
-    args = ["grep", "-r", "-E"]
+    # -H names the file even when ``root`` is one, and -Z ends each name with
+    # a NUL, so names holding ':' or '-' still parse.
+    args = ["grep", "-r", "-E", "-H", "-Z"]
     if case_insensitive:
         args.append("-i")
     if output_mode == "files_with_matches":
         args.append("-l")
     elif output_mode == "count":
         args.append("-c")
-    elif show_line_numbers:
+    else:
+        # Numbered even when the caller hides line numbers: the separator
+        # after the number tells a match (':') from a context line ('-').
         args.append("-n")
-    if output_mode == "content":
         if context is not None:
             args.append(f"-C{context}")
         else:
@@ -293,33 +451,71 @@ def _build_grep_cmd(
                 args.append(f"-B{before_context}")
             if after_context is not None:
                 args.append(f"-A{after_context}")
-    if glob is not None:
-        args.append(f"--include={glob}")
-    if file_type is not None:
-        args.append(f"--include=*.{file_type}")
+    args.extend(f"--include={glob}" for glob in includes)
     args.extend(["-e", pattern, wire(root)])
     return " ".join(shlex.quote(a) for a in args)
 
 
-def _parse_grep(stdout: str, output_mode: GrepOutputMode) -> GrepRawResult:
-    lines = [ln for ln in stdout.splitlines() if ln]
-    if output_mode == "files_with_matches":
-        files = [Path(ln) for ln in lines]
-        return GrepRawResult(files=files, num_files_matched=len(files))
-    if output_mode == "count":
-        counts: list[tuple[Path, int]] = []
-        total = 0
-        for ln in lines:
-            path_str, _, num = ln.rpartition(":")
-            if path_str and num.isdigit():
-                n = int(num)
-                counts.append((Path(path_str), n))
-                total += n
-        return GrepRawResult(
-            counts=counts, num_matches=total, num_files_matched=len(counts)
+# ``line_no`` then ':' (a match) or '-' (a context line), then the line text.
+_CONTENT_RECORD = re.compile(r"(\d+)([:-])(.*)", re.DOTALL)
+
+
+def _parse_grep(
+    stdout: str,
+    output_mode: GrepOutputMode,
+    *,
+    show_line_numbers: bool,
+    type_globs: tuple[str, ...] | None,
+) -> GrepRawResult:
+    """
+    Parse ``grep -H -Z`` output into the shape the ripgrep backend returns.
+
+    ``-l`` output is NUL-separated names; ``-c`` and ``-n`` output is one
+    line per record, ``name NUL rest``. Lines without a NUL (the ``--``
+    between context groups) are skipped, as are files of another type.
+    """
+
+    def wanted(name: str) -> bool:
+        base = PurePosixPath(name).name
+        return type_globs is None or any(
+            fnmatch.fnmatchcase(base, type_glob) for type_glob in type_globs
         )
-    matched = [ln for ln in lines if ln != "--"]
-    return GrepRawResult(lines=matched, num_matches=len(matched))
+
+    if output_mode == "files_with_matches":
+        files = [Path(name) for name in stdout.split("\0") if name and wanted(name)]
+        return GrepRawResult(
+            files=files, num_matches=len(files), num_files_matched=len(files)
+        )
+
+    records = [line.partition("\0") for line in stdout.split("\n")]
+    if output_mode == "count":
+        counts = [
+            (Path(name), int(num))
+            for name, sep, num in records
+            if sep and num.isdigit() and int(num) > 0 and wanted(name)
+        ]
+        return GrepRawResult(
+            counts=counts,
+            num_matches=sum(n for _, n in counts),
+            num_files_matched=len(counts),
+        )
+
+    lines: list[str] = []
+    num_matches = 0
+    matched_files: set[str] = set()
+    for name, sep, rest in records:
+        record = _CONTENT_RECORD.fullmatch(rest) if sep else None
+        if record is None or not wanted(name):
+            continue
+        line_no, kind, text = record.groups()
+        number = f"{line_no}{kind}" if show_line_numbers else ""
+        lines.append(f"{name}{kind}{number}{text}")
+        if kind == ":":
+            num_matches += 1
+            matched_files.add(name)
+    return GrepRawResult(
+        lines=lines, num_matches=num_matches, num_files_matched=len(matched_files)
+    )
 
 
 async def _check_expected_mtime(

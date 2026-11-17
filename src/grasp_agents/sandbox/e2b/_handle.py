@@ -8,18 +8,24 @@ translate paths, detect command timeouts, and read entry metadata.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
+import logging
 import shlex
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from e2b import TimeoutException
+from e2b import SandboxException, SandboxNotFoundException, TimeoutException
 
 from grasp_agents.file_backend.paths import normalize_posix
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Awaitable, Callable
     from pathlib import Path
 
     from e2b import AsyncSandbox, EntryInfo
+
+logger = logging.getLogger(__name__)
 
 
 RECURSIVE_DEPTH = 64
@@ -91,6 +97,52 @@ def wrap_stdin(command: str, stdin: bytes | None) -> str:
     return f"printf %s {shlex.quote(b64)} | base64 -d | ({command})"
 
 
+class E2BSandboxExpiredError(RuntimeError):
+    """
+    E2B no longer has the environment's sandbox: it reached its keep-alive
+    timeout or lifetime cap, or was killed from elsewhere. Its files, shell
+    sessions and kernels are gone. The call that found out fails with this
+    error; the next call starts a new sandbox when the environment can
+    create one.
+    """
+
+    def __init__(self, sandbox_id: str, *, replaceable: bool) -> None:
+        self.sandbox_id = sandbox_id
+        self.replaceable = replaceable
+        lost = (
+            f"The E2B sandbox {sandbox_id} expired: E2B no longer has it, so its "
+            "files, shell sessions and kernels are gone."
+        )
+        super().__init__(
+            f"{lost} The next call runs in a new sandbox."
+            if replaceable
+            else f"{lost} This environment wraps that sandbox and cannot start "
+            "another one."
+        )
+
+
+async def kill_quietly(sandbox: AsyncSandbox) -> None:
+    """Kill ``sandbox`` on a cleanup path: a failure is logged, not raised."""
+    try:
+        await sandbox.kill()
+    except Exception:
+        logger.warning(
+            "Failed to kill E2B sandbox %s; it may keep running (and billing) "
+            "until its timeout.",
+            sandbox.sandbox_id,
+            exc_info=True,
+        )
+
+
+def consume_outcome(task: asyncio.Task[Any]) -> None:
+    """
+    Retrieve the failure of a task its cancelled callers no longer await, so
+    asyncio does not report it as never retrieved.
+    """
+    if not task.cancelled():
+        task.exception()
+
+
 class SandboxHandle:
     """
     Shared, mutable holder for the live e2b ``AsyncSandbox``.
@@ -98,17 +150,201 @@ class SandboxHandle:
     Both backends and the environment reference the *same* holder, so a
     ``restore()`` (reconnect/resume) swaps the live sandbox under the file and
     exec surfaces at once.
+
+    A lazily started environment *arms* the handle with a factory instead of
+    creating the sandbox on entry; :meth:`ensure` then creates it on the first
+    file or exec call, once, even when several calls race. The start holds
+    :attr:`lock`, which the environment's exit, restore, pause and resume also
+    take, so those wait for a start in flight.
     """
 
-    __slots__ = ("sandbox",)
+    __slots__ = (
+        "_expired",
+        "_factory",
+        "_failure",
+        "_lock",
+        "_replacement",
+        "_start_task",
+        "sandbox",
+        "stream_epoch",
+    )
 
     def __init__(self, sandbox: AsyncSandbox | None = None) -> None:
         self.sandbox: AsyncSandbox | None = sandbox
+        # Bumped whenever the sandbox drops its open connections; a shell
+        # that sees a newer value reattaches to its output.
+        self.stream_epoch = 0
+        self._factory: Callable[[], Awaitable[AsyncSandbox]] | None = None
+        self._failure: Exception | None = None
+        self._lock = asyncio.Lock()
+        self._start_task: asyncio.Task[AsyncSandbox] | None = None
+        self._replacement: Callable[[], Awaitable[AsyncSandbox]] | None = None
+        self._expired: str | None = None
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        """Held while a sandbox starts; hold it to swap or shut down the sandbox."""
+        return self._lock
+
+    @property
+    def armed(self) -> bool:
+        """True while a factory is waiting to start the sandbox on first use."""
+        return self._factory is not None
+
+    def arm(self, factory: Callable[[], Awaitable[AsyncSandbox]]) -> None:
+        """
+        Start the sandbox with ``factory`` on the first :meth:`ensure`, trying
+        again even if an earlier start failed.
+        """
+        self._factory = factory
+        self._failure = None
+
+    def disarm(self) -> None:
+        """
+        Stop starting sandboxes on demand (the environment was exited). A start
+        already in flight kills its sandbox when it finishes.
+        """
+        self._factory = None
+        self._replacement = None
+
+    def replace_expired_with(
+        self, factory: Callable[[], Awaitable[AsyncSandbox]] | None
+    ) -> None:
+        """
+        Start a sandbox with ``factory`` on the next call after E2B removed
+        the live one; with ``None``, calls keep failing instead.
+        """
+        self._replacement = factory
+        self._expired = None
+
+    @contextlib.asynccontextmanager
+    async def use(self) -> AsyncGenerator[AsyncSandbox]:
+        """
+        The live sandbox (see :meth:`ensure`) for one call. A failure that
+        comes from E2B no longer having it raises
+        :class:`E2BSandboxExpiredError` (see :meth:`raise_if_expired`).
+        """
+        sandbox = await self.ensure()
+        try:
+            yield sandbox
+        except Exception as exc:
+            await self.raise_if_expired(sandbox, exc)
+            raise
+
+    async def raise_if_expired(self, sandbox: AsyncSandbox, exc: Exception) -> None:
+        """
+        Raise :class:`E2BSandboxExpiredError` from ``exc`` if ``sandbox`` no
+        longer exists on E2B, after dropping it from the handle while it is
+        still the live one: the next call then starts a new sandbox, if the
+        environment can create one. Return if it exists or E2B cannot tell.
+
+        E2B reports a call to a removed sandbox the way it reports some
+        timeouts, so a failure that could mean either is checked with the
+        sandbox's info.
+        """
+        if isinstance(exc, E2BSandboxExpiredError) or (
+            isinstance(exc, SandboxException)
+            and not isinstance(exc, (TimeoutException, SandboxNotFoundException))
+        ):
+            return
+        try:
+            await sandbox.get_info()
+        except SandboxNotFoundException:
+            pass
+        except Exception:
+            return
+        else:
+            return
+        sandbox_id = str(sandbox.sandbox_id)
+        if self.live(sandbox_id) is not None:
+            self.sandbox = None
+            if self._factory is None and self._replacement is not None:
+                self.arm(self._replacement)
+            elif self._factory is None:
+                self._expired = sandbox_id
+        logger.warning("E2B sandbox %s no longer exists", sandbox_id)
+        raise E2BSandboxExpiredError(
+            sandbox_id, replaceable=self._factory is not None
+        ) from exc
+
+    async def ensure(self) -> AsyncSandbox:
+        """
+        Return the live sandbox, starting it first when the handle is armed.
+
+        Concurrent first calls share one start, which runs in a task of its
+        own, so cancelling a caller does not cancel it. The start keeps its
+        sandbox whenever the handle is still armed with the same factory and
+        holds no other sandbox, even if every caller was cancelled: the next
+        call uses it, and the environment's exit kills it. Otherwise (the
+        environment exited, or another sandbox was installed) it kills the
+        sandbox and raises, so a sandbox it created is never left running
+        unowned.
+
+        A failed start is not retried until the handle is re-armed: later calls
+        raise at once instead of creating, and billing, a sandbox each.
+        """
+        if self.sandbox is not None:
+            return self.sandbox
+        if self._factory is None:
+            return self.require()
+        if self._failure is not None:
+            raise RuntimeError(
+                "The E2B sandbox failed to start; re-enter the environment to "
+                "try again."
+            ) from self._failure
+        start = self._start_task
+        if start is None or start.done():
+            start = self._start_task = asyncio.create_task(self._start())
+            start.add_done_callback(consume_outcome)
+        return await asyncio.shield(start)
+
+    async def _start(self) -> AsyncSandbox:
+        async with self._lock:
+            if self.sandbox is not None:
+                return self.sandbox
+            factory = self._factory
+            if factory is None:
+                return self.require()
+            try:
+                sandbox = await factory()
+            except Exception as exc:
+                self._failure = exc
+                raise
+            if self._factory is factory and self.sandbox is None:
+                self.sandbox = sandbox
+                return sandbox
+            await kill_quietly(sandbox)
+            raise RuntimeError(
+                "Killed a new E2B sandbox: the environment exited or changed its "
+                "sandbox while it was starting."
+            )
+
+    def drop_streams(self) -> None:
+        """
+        Record that the sandbox dropped every open connection, command
+        streams included: E2B does so when it pauses the sandbox, also for
+        the duration of a snapshot, and a resume reconnects through a new
+        client.
+        """
+        self.stream_epoch += 1
 
     def require(self) -> AsyncSandbox:
+        if self.sandbox is None and self._expired is not None:
+            raise E2BSandboxExpiredError(self._expired, replaceable=False)
         if self.sandbox is None:
             raise RuntimeError(
                 "E2B environment is not entered. Use `async with env:` (the "
                 "context manager creates the sandbox) before any file/exec call."
             )
         return self.sandbox
+
+    def live(self, sandbox_id: str) -> AsyncSandbox | None:
+        """
+        The live sandbox while it is still the one with ``sandbox_id``, else
+        ``None``. A resume reconnects to the same sandbox through a new client,
+        so this compares ids, not client objects.
+        """
+        sandbox = self.sandbox
+        if sandbox is None or sandbox.sandbox_id != sandbox_id:
+            return None
+        return sandbox

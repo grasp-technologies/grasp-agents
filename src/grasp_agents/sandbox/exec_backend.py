@@ -155,6 +155,15 @@ class ExecSession(ABC):
         """
         ...
 
+    def take_reset(self) -> bool:
+        """
+        Return and clear the 'shell was replaced, its state was lost' flag.
+        Implementations that replace a shell they can no longer reach, while
+        staying open, set it so callers can tell the model that its working
+        directory and variables are gone; the default never reports a reset.
+        """
+        return False
+
     @abstractmethod
     async def close(self) -> None:
         """Terminate the shell and release it."""

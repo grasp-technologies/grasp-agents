@@ -2,9 +2,9 @@
 Consistent ``<system-reminder>`` wrapping for framework-injected notes.
 
 The model treats a ``<system-reminder>`` as out-of-band guidance from the runtime
-(not the user). Used for injected memory, prompt sections, and the conversation
-summaries produced by context compaction — so special messages are identified by
-one consistent tag rather than ad-hoc phrasing.
+(not the user). Used for injected memory, prompt sections and input attachments —
+so special messages are identified by one consistent tag rather than ad-hoc
+phrasing.
 """
 
 import re
@@ -26,6 +26,11 @@ def wrap_in_system_reminder(text: str, *, subject: str | None = None) -> str:
     """
     attr = f' subject="{subject}"' if subject else ""
     return f"<{SYSTEM_REMINDER_TAG}{attr}>\n{text}\n</{SYSTEM_REMINDER_TAG}>"
+
+
+def is_system_reminder(text: str) -> bool:
+    """True if ``text`` is a ``<system-reminder>`` note, with or without a subject."""
+    return text.lstrip().startswith(f"<{SYSTEM_REMINDER_TAG}")
 
 
 def match_system_reminder_subject(text: str) -> str | None:

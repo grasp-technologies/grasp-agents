@@ -11,7 +11,11 @@ from pydantic import BaseModel
 from grasp_agents.tools.base import BaseTool, ToolChoice
 from grasp_agents.types.errors import LLMResponseValidationError
 from grasp_agents.types.items import InputItem
-from grasp_agents.types.llm_errors import LlmErrorTuple, LlmRateLimitError
+from grasp_agents.types.llm_errors import (
+    LlmContextWindowError,
+    LlmErrorTuple,
+    LlmRateLimitError,
+)
 from grasp_agents.types.llm_events import LlmEvent, ResponseFallback
 from grasp_agents.types.recovery import classify_error, is_retryable
 from grasp_agents.types.response import Response
@@ -60,8 +64,9 @@ class FallbackLLM(LLM):
     blip on the primary is retried on the primary, and a malformed response
     is re-sampled from the member that produced it; once that member's
     validation retries run out, the cascade advances. Deterministic member
-    errors (auth, bad request, context window) skip that member's retries
-    and advance the cascade immediately.
+    errors (auth, bad request) skip that member's retries and advance the
+    cascade immediately. A context-window overflow is raised at once, without
+    trying the other members: the input has to shrink.
 
     ``retry_policy`` must be ``None`` here: all retry behavior (API and
     validation) is member-level, and a composite policy would silently
@@ -174,6 +179,11 @@ class FallbackLLM(LLM):
                     **extra_llm_settings,
                 )
 
+            except LlmContextWindowError:
+                # The input must shrink (the agent compacts); another model
+                # is not a fix for it.
+                raise
+
             except _FALLBACK_ERRORS as e:
                 errors.append(e)
                 logger.warning(
@@ -214,6 +224,9 @@ class FallbackLLM(LLM):
                     seq = event.sequence_number
                     yield event
                 return
+
+            except LlmContextWindowError:
+                raise
 
             except _FALLBACK_ERRORS as e:
                 errors.append(e)

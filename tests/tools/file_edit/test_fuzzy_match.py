@@ -2,7 +2,7 @@
 Unit tests for :mod:`grasp_agents.tools.file_edit.fuzzy_match`.
 
 Covers each of the 9 strategies end-to-end, fallthrough ordering,
-extended Unicode coverage (OpenClaw merge), quote preservation, and
+extended Unicode coverage, quote preservation, and
 the ``replace_all`` / uniqueness / refusal semantics.
 """
 
@@ -179,7 +179,7 @@ def test_unicode_smart_quotes_matched() -> None:
 
 
 def test_unicode_em_dash_expansion() -> None:
-    # Hermes behavior: em-dash normalizes to '--'.
+    # Em-dash normalizes to '--'.
     content = "flag \u2014 value\n"  # file has real em-dash
     pattern = "flag -- value"  # model sent plain ASCII
     _, count, strategy, err = fuzzy_find_and_replace(content, pattern, "flag -- v2")
@@ -198,8 +198,8 @@ def test_unicode_non_breaking_space_matched() -> None:
     assert "x = 2" in out
 
 
-def test_unicode_openclaw_exotic_space() -> None:
-    # U+3000 (ideographic space) — in OpenClaw's list, not in Hermes's.
+def test_unicode_exotic_space() -> None:
+    # U+3000 (ideographic space).
     content = "a\u3000b\n"
     pattern = "a b"
     _, _, strategy, err = fuzzy_find_and_replace(content, pattern, "a c")
@@ -207,8 +207,8 @@ def test_unicode_openclaw_exotic_space() -> None:
     assert strategy == "unicode_normalized"
 
 
-def test_unicode_openclaw_figure_dash() -> None:
-    # U+2012 figure dash — in OpenClaw's list, not originally in Hermes's.
+def test_unicode_figure_dash() -> None:
+    # U+2012 figure dash.
     content = "phone: 555\u20121234\n"
     pattern = "phone: 555-1234"
     _, _, strategy, err = fuzzy_find_and_replace(content, pattern, "phone: 555-5678")

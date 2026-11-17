@@ -44,7 +44,7 @@ class TestFilteringExporter(unittest.TestCase):
             "http": {
                 "url": (
                     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/"
-                    "core-service-account@grasp-core-prod.iam.gserviceaccount.com/?recursive=true"
+                    "service-account@example-project.iam.gserviceaccount.com/?recursive=true"
                 ),
                 "method": "GET",
                 "status_code": 200,
@@ -66,7 +66,7 @@ class TestFilteringExporter(unittest.TestCase):
             "http": {
                 "url": (
                     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/"
-                    "core-service-account@grasp-core-prod.iam.gserviceaccount.com/?recursive=true"
+                    "service-account@example-project.iam.gserviceaccount.com/?recursive=true"
                 ),
                 "method": "GET",
                 "status_code": 200,

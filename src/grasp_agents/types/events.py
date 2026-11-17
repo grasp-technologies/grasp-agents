@@ -209,23 +209,69 @@ class GenerationEndEvent(Event[Response], frozen=True):
 # ── Context compaction ──
 
 
+class CompactionStartInfo(BaseModel):
+    # the model-facing view's estimated token size when summarizing starts
+    context_tokens: int
+    # the model's context window in tokens, when known
+    context_window: int | None = None
+    # compacting to recover from a context-window error, not at the threshold
+    forced: bool = False
+
+
+class CompactionStartEvent(Event[CompactionStartInfo], frozen=True):
+    """
+    Emitted when compaction starts summarizing the conversation, before the
+    summary request is sent — at most once per compaction. A
+    :class:`CompactionDoneEvent` follows when the fold is recorded, a
+    :class:`CompactionFailedEvent` when no summary comes back.
+    """
+
+    type: Literal["agent.compaction_start"] = "agent.compaction_start"
+
+
 class CompactionInfo(BaseModel):
-    # whole turns folded into a summary by this compaction
-    folded_turns: int
-    # recent turns kept verbatim after the fold
-    preserved_turns: int
-    # the model-facing view's token size right after the fold (the new context size)
+    # rounds folded into the summary by this compaction
+    folded_rounds: int
+    # recent rounds kept verbatim after the summary
+    kept_rounds: int
+    # messages kept verbatim in front of the summary: user messages and the
+    # launch notes of background tasks still running
+    pinned_messages: int = 0
+    # the model-facing view's estimated token size right after the fold
     context_tokens: int
     # the model's context window in tokens, when known
     context_window: int | None = None
     # the summary the folded span was replaced with in the model-facing view
     summary: str = ""
+    # compacted to recover from a context-window error, not at the threshold
+    forced: bool = False
 
 
-class CompactionEvent(Event[CompactionInfo], frozen=True):
-    """Emitted when context-window pressure folds older messages into a summary."""
+class CompactionDoneEvent(Event[CompactionInfo], frozen=True):
+    """
+    Emitted when compaction records a fold: older messages were replaced by a
+    summary in the model-facing view. Follows a :class:`CompactionStartEvent`.
+    """
 
-    type: Literal["agent.compaction"] = "agent.compaction"
+    type: Literal["agent.compaction_done"] = "agent.compaction_done"
+
+
+class CompactionFailureInfo(BaseModel):
+    # why no summary came back
+    reason: str
+    # compacting to recover from a context-window error, not at the threshold
+    forced: bool = False
+
+
+class CompactionFailedEvent(Event[CompactionFailureInfo], frozen=True):
+    """
+    Emitted when a compaction that started records no fold: the summary request
+    failed or brought back no summary. Follows a :class:`CompactionStartEvent`.
+    The turn proceeds without a fold; on the context-window-error path the
+    original error is raised.
+    """
+
+    type: Literal["agent.compaction_failed"] = "agent.compaction_failed"
 
 
 # ── Messages ──

@@ -10,11 +10,13 @@ through the same ``FileBackend`` as :mod:`.file_edit.notebook` (sharing its
 read-before-write + mtime invariants), and run through the same environment as
 ``Bash`` (so the kernel inherits the co-located filesystem + confinement).
 
-Each :class:`AgentLoop` owns one :class:`KernelHolder` (mirroring
-``BashSessionHolder``): a single persistent kernel per loop, opened lazily,
-fresh on deep-copy (sub-agent / replica isolation), closed at run end. State
+Each agent's :class:`AgentContext` holds one :class:`KernelHolder` (mirroring
+``BashSessionHolder``): a single persistent kernel per agent, opened lazily,
+fresh on deep-copy (sub-agent / replica isolation), and session-scoped — it
+survives run boundaries and is released only by ``agent.aclose()``. State
 carries across ``RunCell`` calls (imports, variables) like cells in a live
-notebook. Used outside a loop, each call opens a throwaway kernel.
+notebook. Used outside an agent (no ``AgentContext``), each call opens a
+throwaway kernel.
 """
 
 from __future__ import annotations
@@ -52,12 +54,12 @@ DEFAULT_CELL_TIMEOUT = 120.0
 
 class KernelHolder:
     """
-    Lazily opens and caches one persistent :class:`KernelSession` per agent loop.
+    Lazily opens and caches one persistent :class:`KernelSession` per agent.
 
-    Mirrors :class:`~grasp_agents.tools.bash_session.BashSessionHolder`: owned by
-    the loop, deep-copied fresh so sub-agents / parallel replicas each get their
-    own kernel. Reopened if a previous kernel was closed (e.g. a timeout that
-    killed it).
+    Mirrors :class:`~grasp_agents.tools.bash_session.BashSessionHolder`: held on
+    the agent's :class:`AgentContext`, deep-copied fresh so sub-agents / parallel
+    replicas each get their own kernel. Reopened if a previous kernel was closed
+    (e.g. a timeout that killed it).
 
     Seed ``context_id`` to **re-attach** to an existing kernel on resume: read
     :attr:`context_id` before pausing/snapshotting the sandbox, persist it in
@@ -83,11 +85,14 @@ class KernelHolder:
             if current is None:
                 current = await backend.open_kernel(context_id=self._context_id)
             elif current.closed:
-                # Kernel died (e.g. a cell timeout killed it) — a fresh kernel
-                # loses the REPL namespace (variables / imports / definitions),
-                # so flag it for the tool to surface to the model.
+                # Kernel died (e.g. a cell timeout killed it, or a restore
+                # replaced its sandbox). A fresh kernel loses the REPL namespace
+                # (variables / imports / definitions), so flag it for the tool
+                # to surface to the model; re-attaching to the seeded context
+                # keeps it.
                 current = await backend.open_kernel(context_id=self._context_id)
-                self._was_reset = True
+                if self._context_id is None or current.context_id != self._context_id:
+                    self._was_reset = True
             self._kernel = current
             return current
 
@@ -105,21 +110,26 @@ class KernelHolder:
     @property
     def context_id(self) -> str | None:
         """
-        The live kernel's durable context id (persist it for resume), or the
-        seeded id if no kernel is open yet (``None`` for non-persistable kernels).
+        The open kernel's durable context id (persist it for resume), or the
+        seeded id while no kernel is open, including after the kernel closed
+        (``None`` for non-persistable kernels).
         """
         kernel = self._kernel
-        if kernel is not None and kernel.context_id is not None:
+        if kernel is not None and not kernel.closed and kernel.context_id is not None:
             return kernel.context_id
         return self._context_id
 
     def rebind(self, context_id: str | None) -> None:
         """
         Seed the context id to re-attach to on the next (re)open — used by resume
-        to point a freshly-built loop's kernel at its persisted context. Takes
-        effect when the kernel is next opened; does not disturb an open kernel.
+        and rollback to point the kernel at the context a restored snapshot
+        kept, or at none. Does not disturb an open kernel. A kernel that already
+        closed (its sandbox was replaced by the restore) is dropped, so the next
+        open is not reported as a reset: the restored state never had it.
         """
         self._context_id = context_id
+        if self._kernel is not None and self._kernel.closed:
+            self._kernel = None
 
     async def close(self) -> None:
         kernel = self._kernel

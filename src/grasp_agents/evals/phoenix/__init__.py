@@ -10,12 +10,16 @@ from .client import (
     PhoenixClient,
     PhoenixCompatibilityError,
     PhoenixError,
+    PhoenixUnavailableError,
     normalize_base_url,
 )
 from .sync import (
+    NUL_REPLACEMENT,
     DatasetPushError,
     DatasetPushResult,
     StaleDatasetError,
+    delete_dataset,
+    delete_experiment,
     experiment_url,
     from_phoenix_record,
     phoenix_source,
@@ -26,12 +30,16 @@ from .sync import (
 )
 
 __all__ = [
+    "NUL_REPLACEMENT",
     "DatasetPushError",
     "DatasetPushResult",
     "PhoenixClient",
     "PhoenixCompatibilityError",
     "PhoenixError",
+    "PhoenixUnavailableError",
     "StaleDatasetError",
+    "delete_dataset",
+    "delete_experiment",
     "experiment_url",
     "from_phoenix_record",
     "normalize_base_url",

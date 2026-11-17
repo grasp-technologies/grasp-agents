@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 _GRASP_EXTENSION_FIELDS = {
     "redacted",
     "native_provider_name",
+    "platform",
     "provider_specific_fields",
     "is_error",
     "cache_control",

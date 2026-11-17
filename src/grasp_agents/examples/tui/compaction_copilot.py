@@ -4,8 +4,9 @@ Interactive compaction + rollback demo for the TUI.
 A single research assistant with one verbose tool (``recall_notes``) and an
 *artificially small* context window, so the running token meter (above the input
 box) climbs fast and context-window compaction visibly kicks in within a couple
-of turns: older turns are folded into a summary, shown as a ``⊙ context
-compacted`` panel (with the summary text), after which the meter drops.
+of questions: older rounds are folded into a summary the model writes itself,
+shown as a ``⊙ context compacted`` panel (with the summary text), after which
+the meter drops.
 
 It also wires rollback: type ``/rollback`` (or press ``ctrl+r``) to pick an
 earlier message and rewind to it — that message and everything after it are
@@ -32,7 +33,7 @@ from pathlib import Path
 from typing import cast
 
 from grasp_agents import LLMAgent, SessionContext
-from grasp_agents.context import ContextBudget, LLMSummarizer, SummarizingCompactor
+from grasp_agents.context import Compactor, ContextBudget
 from grasp_agents.durability import FileCheckpointStore
 from grasp_agents.llm_providers.openai_responses import (
     OpenAIResponsesLLM,
@@ -42,13 +43,13 @@ from grasp_agents.tools.function_tool import function_tool
 
 DEFAULT_MODEL = "gpt-6-luna"
 
-# An artificially small window so summarization fires within a couple of turns.
-# The meter is shown against ARTIFICIAL_WINDOW; compaction triggers at the soft
-# limit (window - buffer), folding older turns into a summary while keeping the
-# last KEEP_RECENT_TURNS turns verbatim.
+# An artificially small window so summarization fires within a couple of
+# questions. The meter is shown against ARTIFICIAL_WINDOW; compaction triggers at
+# the soft limit (window - buffer), folding older rounds into a summary while
+# keeping the last KEEP_RECENT_ROUNDS rounds verbatim.
 ARTIFICIAL_WINDOW = 6000
 BUFFER_TOKENS = 500
-KEEP_RECENT_TURNS = 2
+KEEP_RECENT_ROUNDS = 2
 
 # Persist the session so you can watch the transcript evolve on disk: the
 # append-only message log + the head (with its summary folds) are written here.
@@ -90,6 +91,12 @@ def build_copilot(
         checkpoint_store=FileCheckpointStore(_CHECKPOINTS),
         session_key="compaction-demo",
     )
+    # Normally compaction is one flag — ``enable_compaction=True`` — with the
+    # budget derived from the model. This demo passes a compactor with a tiny
+    # artificial window so summarization fires within a couple of questions.
+    budget = ContextBudget(
+        model=model, max_input_tokens=ARTIFICIAL_WINDOW, buffer_tokens=BUFFER_TOKENS
+    )
     agent = LLMAgent[str, str, None](
         name="researcher",
         ctx=ctx,
@@ -98,29 +105,16 @@ def build_copilot(
         sys_prompt=_SYS,
         max_turns=12,
         stream_llm=True,
-    )
-    # Normally compaction is one line — ``agent.add_compaction()`` — with the
-    # budget auto-derived from the model (``ContextBudget.for_model``). This demo
-    # *overrides* it with a tiny artificial window so summarization fires within a
-    # couple of turns, and registers the summarizing compactor directly (rather
-    # than the full Compaction bundle, which would also collapse tool outputs
-    # first) so the lossy summary is the visible effect — a ⊙ context-compacted
-    # panel. The summarizer's own input cap is still inferred from its model.
-    budget = ContextBudget(
-        model=model, max_input_tokens=ARTIFICIAL_WINDOW, buffer_tokens=BUFFER_TOKENS
-    )
-    agent.add_compactor(
-        SummarizingCompactor(
-            summarizer=LLMSummarizer(llm),
-            budget=budget,
-            keep_recent_turns=KEEP_RECENT_TURNS,
-        )
+        enable_compaction=True,
+        compactor=Compactor(budget=budget, keep_recent_rounds=KEEP_RECENT_ROUNDS),
     )
     return agent, ctx
 
 
 def main() -> None:
-    from grasp_agents.ui import run_tui_interactive  # noqa: PLC0415
+    from grasp_agents.ui import (  # ruff: ignore[import-outside-top-level]
+        run_tui_interactive,
+    )
 
     agent, _ = build_copilot()
     # Passing the agent auto-wires stepped delivery (so /rollback can rewind), the

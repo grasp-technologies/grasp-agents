@@ -23,9 +23,9 @@ if TYPE_CHECKING:
         AnthropicCloudPlatform,
         AnthropicLLM,
         AnthropicLLMSettings,
-        BedrockClientConfig,
         VertexClientConfig,
     )
+    from .bedrock import BedrockClientConfig
     from .gemini import (
         GeminiCloudPlatform,
         GeminiLLM,
@@ -45,7 +45,7 @@ _SUBMODULE_BY_NAME: dict[str, str] = {
     "AnthropicLLM": "anthropic",
     "AnthropicLLMSettings": "anthropic",
     "AnthropicCloudPlatform": "anthropic",
-    "BedrockClientConfig": "anthropic",
+    "BedrockClientConfig": "bedrock",
     "VertexClientConfig": "anthropic",
     "GeminiLLM": "gemini",
     "GeminiLLMSettings": "gemini",

@@ -1,11 +1,10 @@
 """
-Top-level skill tools ``load_skill`` and ``list_skills``.
+Skill tools ``load_skill`` and ``list_skills``.
 
-Both are global :class:`FunctionTool` instances that read ``ctx.skills`` at
-call time. Add them to an agent the same way you add any other tool — pass
-them in the ``tools=[...]`` ctor kwarg. The ``skills`` system-prompt
-section auto-attaches on every ``LLMAgent`` and consults ``ctx.skills``;
-no separate ``attach_*`` step is needed.
+Both are shared :class:`FunctionTool` instances that read ``ctx.skills`` at
+call time. ``LLMAgent(enable_skills=True)`` attaches the ``skills``
+system-prompt section (the catalog, rendered when ``ctx.skills`` is set) and
+the ``load_skill`` tool; ``list_skills`` is opt-in — pass it in ``tools=[...]``.
 """
 
 from __future__ import annotations

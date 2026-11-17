@@ -42,7 +42,7 @@ class TuiApprovalStore(LocalApprovalStore):
     pop a dialog the moment a gated tool call needs a decision (rather than
     polling :meth:`list_pending`).
 
-    Wire it onto the run context and register the gate hook; the TUI drains the
+    Wire it onto the session context and register the gate hook; the TUI drains the
     queue and resolves each request from the dialog::
 
         store = TuiApprovalStore()

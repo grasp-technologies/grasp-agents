@@ -122,7 +122,7 @@ async def test_rollback_from_cold_instance() -> None:
     await agent1.run("q1", step=1)
 
     # A fresh instance (new process / cache eviction) rolls back from the
-    # persisted boundaries — grasp-core's between-steps fork-from-step path.
+    # persisted boundaries (the host's between-steps fork-from-step path).
     agent2, _ = _make_agent([], session_key="s1", store=store)
     assert await agent2.load_checkpoint() is not None
     assert len(agent2._step_watermarks) == 2

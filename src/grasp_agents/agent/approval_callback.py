@@ -47,7 +47,7 @@ class ApprovalCallback[CtxT](Protocol):
     ``False`` to deny and surface :class:`RejectToolContent` to the LLM.
 
     The approver is awaited sequentially, once per gated call in a
-    batch, with the call, run context, and exec id — enough to render
+    batch, with the call, session context, and exec id — enough to render
     a prompt, consult ``ctx.state``, or log a decision.
     """
 

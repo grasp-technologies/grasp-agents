@@ -98,11 +98,12 @@ class OutputMessageItem(ResponseOutputMessage):
     Assistant message produced by the model.
 
     ``native_provider_name`` names the vendor of the client/provider family that
-    produced the item ("openai", "anthropic", "gemini"), and is set only when
-    ``provider_specific_fields`` carries a payload signed by that vendor's
-    backend — such a payload is replayable only through that vendor's API.
-    ``None`` means the producing vendor is not known (a LiteLLM-served or
-    pre-existing item); such items are never dropped.
+    produced the item ("openai", "anthropic", "gemini"), and ``platform`` the
+    cloud platform that served it (``None`` for the vendor's own API). Both are
+    set only when ``provider_specific_fields`` carries a payload signed by that
+    backend — such a payload is replayable only through the same vendor on the
+    same platform. ``None`` means the producing vendor is not known (a
+    LiteLLM-served or pre-existing item); such items are never dropped.
     """
 
     # OpenResponses fields (Message):
@@ -120,6 +121,7 @@ class OutputMessageItem(ResponseOutputMessage):
     # (e.g. Gemini thought_signature on regular text parts)
     provider_specific_fields: dict[str, Any] | None = None
     native_provider_name: str | None = None
+    platform: str | None = None
 
     @property
     def text(self) -> str:
@@ -172,6 +174,7 @@ class FunctionToolCallItem(ResponseFunctionToolCall):
     provider_specific_fields: dict[str, Any] | None = None
     cache_control: CacheControl | None = None
     native_provider_name: str | None = None
+    platform: str | None = None
 
 
 class FunctionToolOutputItem(ResponseFunctionToolCallOutputItem):
@@ -261,6 +264,7 @@ class ReasoningItem(ResponseReasoningItem):
 
     redacted: bool = False
     native_provider_name: str | None = None
+    platform: str | None = None
 
     @property
     def content_text(self) -> str | None:

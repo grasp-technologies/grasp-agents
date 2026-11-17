@@ -1,7 +1,6 @@
 """Human- and agent-readable views of runs and comparisons."""
 
 from collections.abc import Iterable
-from operator import itemgetter
 from typing import Any, cast
 
 from .compare import Comparison, TargetComparison
@@ -49,6 +48,17 @@ def _confidence_label(metrics: Iterable[MetricResult]) -> str:
     return "CI"
 
 
+def sealed_left_out(run: EvaluationRun) -> list[str]:
+    """The sealed splits the run's selection left out."""
+    sealed = set(run.config.sealed_splits)
+    left: list[str] = []
+    for step in run.dataset.selection:
+        if step.startswith("exclude_splits="):
+            names = step.removeprefix("exclude_splits=").split(",")
+            left.extend(n for n in names if n in sealed and n not in left)
+    return left
+
+
 def sealed_groups(run: EvaluationRun) -> set[str]:
     """Group labels not to report: some, but too few, held-out examples."""
     by_id = {e.id: e for e in run.examples}
@@ -91,10 +101,14 @@ def _metric_rows(
     return rows
 
 
-def _lowest(
-    trials: Iterable[Trial], name: str, limit: int
+def _weakest(
+    trials: Iterable[Trial], name: str, limit: int, *, higher_is_better: bool = True
 ) -> list[tuple[str, float, int, Score]]:
-    """Weakest examples: ``(example_id, mean value, repetitions, worst score)``."""
+    """
+    Weakest examples — lowest values, or highest when lower is better:
+    ``(example_id, mean value, repetitions, worst score)``.
+    """
+    sign = 1.0 if higher_is_better else -1.0
     by_example: dict[str, list[Score]] = {}
     for trial in trials:
         if trial.sealed:
@@ -105,9 +119,9 @@ def _lowest(
     rows: list[tuple[str, float, int, Score]] = []
     for example_id, scores in by_example.items():
         values = [s.as_float() or 0.0 for s in scores]
-        worst = min(scores, key=lambda s: s.as_float() or 0.0)
+        worst = min(scores, key=lambda s: sign * (s.as_float() or 0.0))
         rows.append((example_id, sum(values) / len(values), len(values), worst))
-    rows.sort(key=itemgetter(1))
+    rows.sort(key=lambda row: sign * row[1])
     return rows[:limit]
 
 
@@ -150,6 +164,9 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
         lines.append(f"- **Parent run:** `{run.parent_run_id}`")
     if run.description:
         lines.append(f"- **Question:** {run.description}")
+    for name, url in run.links.items():
+        lines.append(f"- **{_cell(name)}:** {url}")
+    lines.extend(f"- **Note:** {note}" for note in run.notes)
     task_version = f"@{run.task.version}" if run.task.version else ""
     lines.append(f"- **Task:** {run.task.name}{task_version} (`{run.task.kind}`)")
     if run.provenance.observed_models:
@@ -205,6 +222,12 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
             f"- **Sealed:** {sealed} trials in held-out splits are reported in "
             "aggregate only"
         )
+    left_out = sealed_left_out(run)
+    if left_out:
+        lines.append(
+            f"- **Left out:** sealed splits {', '.join(left_out)} (name one with "
+            "--split, or --include-sealed, to run it)"
+        )
 
     if run.metrics:
         hidden = sealed_groups(run)
@@ -253,12 +276,18 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
             )
 
     for name in run.score_names():
-        lowest = _lowest(run.trials, name, 5)
-        if not lowest or all(mean >= 1.0 for _, mean, _, _ in lowest):
+        higher = run.directions.get(name, "higher") == "higher"
+        lowest = _weakest(run.trials, name, 5, higher_is_better=higher)
+        perfect = (
+            all(mean >= 1.0 for _, mean, _, _ in lowest)
+            if higher
+            else all(mean <= 0.0 for _, mean, _, _ in lowest)
+        )
+        if not lowest or perfect:
             continue
         lines += [
             "",
-            f"## Lowest `{name}`",
+            f"## {'Lowest' if higher else 'Highest'} `{name}`",
             "",
             "| example | mean | reps | explanation (worst repetition) |",
             "|---|---|---|---|",
@@ -270,11 +299,12 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _target_row(t: TargetComparison) -> str:
+def _target_row(t: TargetComparison, label: str | None = None) -> str:
     arrow = "↑" if t.higher_is_better else "↓"
     flag = " ✱" if t.significant else ""
+    pooled = " (pooled)" if t.pooled else ""
     cells = [
-        f"{arrow} {_cell(t.target)}",
+        f"{arrow} {_cell(label or t.target)}{pooled}",
         _num(t.base_mean),
         _num(t.candidate_mean),
         f"{_num(t.diff)}{flag}",
@@ -301,6 +331,9 @@ def render_comparison_markdown(comparison: Comparison, *, max_rows: int = 5) -> 
     ]
     if c.cluster_by:
         lines.append(f"- **Clustered by:** `{c.cluster_by}`")
+    if c.where:
+        shown = ", ".join(f"{k}={v}" for k, v in c.where.items())
+        lines.append(f"- **Examples where:** {_cell(shown)}")
     lines.extend(f"- ⚠ {warning}" for warning in c.warnings)
     lines += [
         "",
@@ -315,6 +348,22 @@ def render_comparison_markdown(comparison: Comparison, *, max_rows: int = 5) -> 
         "|---|---|---|---|---|---|---|---|---|",
     ]
     lines.extend(_target_row(t) for t in c.targets)
+    if c.groups:
+        lines += [
+            "",
+            f"## By `{c.group_by}`",
+            "",
+            ("Sealed examples are left out; ✱ is Holm-corrected across all groups."),
+            "",
+            "| group · target | base | candidate | Δ | CI | p | MDE | n | +/- |",
+            "|---|---|---|---|---|---|---|---|---|",
+        ]
+        for label, group in c.groups.items():
+            lines.extend(
+                _target_row(t, f"{label} · {t.target}")
+                for t in group.targets
+                if t.kind == "score"
+            )
     for target in c.targets:
         if not target.top_regressions or target.kind != "score":
             continue
@@ -369,15 +418,21 @@ def run_summary(run: EvaluationRun) -> dict[str, Any]:
             "selected": run.dataset.selected_size,
             "size": run.dataset.size,
             "selection": run.dataset.selection,
+            "sealed_left_out": sealed_left_out(run),
         },
         "task": {"name": run.task.name, "version": run.task.version},
         "scorers": {e.name: e.version for e in run.scorers},
+        "lower_is_better": sorted(
+            name for name, d in run.directions.items() if d == "lower"
+        ),
         "counts": run.counts.model_dump(),
         "cost_usd": run.usage.cost_usd,
         "metrics": {m.name: _metric_summary(m, hidden) for m in run.metrics},
         "config_hash": run.config_hash,
         "git_commit": run.provenance.git_commit,
         "git_dirty": run.provenance.git_dirty,
+        "links": dict(run.links),
+        "notes": list(run.notes),
     }
 
 

@@ -379,3 +379,41 @@ def test_field_name_is_known_when_validating_by_name(tmp_path: Path) -> None:
     )
     loaded = Dataset.load(path, input_type=AliasOrName)
     assert [e.input.text for e in loaded] == ["why?", "how?"]
+
+
+class TestDescriptiveMetadata:
+    @staticmethod
+    def _data(note: str, topic: str = "math", **kwargs: Any) -> Dataset[int, int]:
+        return Dataset(
+            [
+                Example(
+                    id="q",
+                    input=1,
+                    reference=2,
+                    metadata={"note": note, "topic": topic},
+                )
+            ],
+            **kwargs,
+        )
+
+    def test_descriptive_keys_are_left_out_of_identity(self) -> None:
+        first = self._data("sampled by hand", descriptive_metadata=["note"])
+        reworded = self._data("hand-picked", descriptive_metadata=["note"])
+        other_topic = self._data("hand-picked", "logic", descriptive_metadata=["note"])
+        assert first["q"].content_hash == reworded["q"].content_hash
+        assert first.fingerprint == reworded.fingerprint
+        assert first["q"].content_hash != other_topic["q"].content_hash
+        assert self._data("a")["q"].content_hash != self._data("b")["q"].content_hash
+        assert first.ref().descriptive_metadata == ["note"]
+        # The content as stored keeps every key.
+        assert first["q"].record.metadata["note"] == "sampled by hand"
+
+    def test_declared_on_the_whole_dataset_and_kept_by_selections(self) -> None:
+        declared = self._data("x").with_descriptive_metadata(["note"])
+        assert (
+            declared["q"].content_hash
+            == self._data("y", descriptive_metadata=["note"])["q"].content_hash
+        )
+        assert declared.head(1).descriptive_metadata == ["note"]
+        with pytest.raises(DatasetError, match="whole dataset"):
+            self._data("x").head(1).with_descriptive_metadata(["note"])

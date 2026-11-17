@@ -1,10 +1,10 @@
 """
 Persistent-shell-session reset detection.
 
-When the holder reopens a session that closed or reached its lifetime cap
-(E2B's per-session timeout), it loses cwd / env / shell variables. The holder
-flags that so ``BashSession`` can tell the model its shell state was reset,
-instead of silently continuing in a fresh shell.
+When the holder reopens a session that closed (e.g. killed by a timeout), it
+loses cwd / env / shell variables. The holder flags that so ``BashSession`` can
+tell the model its shell state was reset, instead of silently continuing in a
+fresh shell.
 """
 
 from __future__ import annotations
@@ -17,10 +17,17 @@ from grasp_agents.tools.bash_session import BashSessionHolder
 class _FakeSession:
     def __init__(self) -> None:
         self.closed = False
-        self.expired = False
+        self.close_calls = 0
+        self.was_reset = False
+
+    def take_reset(self) -> bool:
+        was = self.was_reset
+        self.was_reset = False
+        return was
 
     async def close(self) -> None:
         self.closed = True
+        self.close_calls += 1
 
 
 class _FakeBackend:
@@ -57,23 +64,46 @@ async def test_reopen_after_close_flags_reset() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reopen_after_expiry_flags_reset_and_closes_old() -> None:
-    holder = BashSessionHolder()
-    backend = _FakeBackend()
-    s1 = await holder.get(backend)
-    s1.expired = True  # at lifetime cap but not yet closed
-    s2 = await holder.get(backend)
-    assert s2 is not s1
-    assert s1.closed  # the expired-but-open session is closed on replace
-    assert holder.take_reset() is True
-
-
-@pytest.mark.asyncio
 async def test_live_session_reused_without_reset() -> None:
     holder = BashSessionHolder()
     backend = _FakeBackend()
     s1 = await holder.get(backend)
     s2 = await holder.get(backend)  # still alive → same session, no reset
     assert s2 is s1
+    assert holder.take_reset() is False
+    assert len(backend.opened) == 1
+
+
+@pytest.mark.asyncio
+async def test_reopen_closes_the_session_it_replaces() -> None:
+    # A session can count as closed without close() having run (its E2B
+    # sandbox was replaced), which still holds its output stream open.
+    holder = BashSessionHolder()
+    backend = _FakeBackend()
+    s1 = await holder.get(backend)
+    s1.closed = True
+    await holder.get(backend)
+    assert s1.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_holder_close_closes_a_session_that_already_counts_as_closed() -> None:
+    holder = BashSessionHolder()
+    backend = _FakeBackend()
+    s1 = await holder.get(backend)
+    s1.closed = True
+    await holder.close()
+    assert s1.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_in_place_shell_replacement_surfaces_through_holder() -> None:
+    # A session that replaced its shell itself stays open, so the holder
+    # must pick up the session's own reset flag.
+    holder = BashSessionHolder()
+    backend = _FakeBackend()
+    s1 = await holder.get(backend)
+    s1.was_reset = True
+    assert holder.take_reset() is True
     assert holder.take_reset() is False
     assert len(backend.opened) == 1

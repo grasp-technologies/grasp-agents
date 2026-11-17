@@ -11,6 +11,7 @@ from anthropic._types import (
     omit,  # type: ignore[import]  # ruff: ignore[import-private-name]
 )
 from anthropic.types import (
+    CacheControlEphemeralParam,
     MetadataParam,
     OutputConfigParam,
     ThinkingConfigParam,
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
     )
     from pydantic import BaseModel
 
+    from grasp_agents.llm_providers.bedrock import BedrockClientConfig
     from grasp_agents.tools.base import BaseTool, ToolChoice
     from grasp_agents.types.items import InputItem
     from grasp_agents.types.llm_errors import LlmError
@@ -63,6 +65,8 @@ logger = logging.getLogger(__name__)
 # use their own cap from the pricing/capability registry — sending a value
 # above the cap is a hard 400 on the Messages API.
 DEFAULT_MAX_TOKENS = 32768
+
+_DEFAULT_CACHE_CONTROL: CacheControlEphemeralParam = {"type": "ephemeral"}
 
 WebSearchToolParam = WebSearchTool20260209Param | WebSearchTool20250305Param
 WebFetchToolParam = WebFetchTool20260209Param
@@ -95,28 +99,18 @@ class AnthropicLLMSettings(CloudLLMSettings, total=False):
     # separate ``output_schema`` channel (``messages.parse``) instead.
     output_config: OutputConfigParam | None
 
+    # Caches the whole prompt up to its last block on every request, so each
+    # turn of an agent loop (and a compaction summary request) reads the
+    # conversation the previous request wrote. Defaults to
+    # ``{"type": "ephemeral"}`` (5 minutes) on every platform; ``None`` turns it
+    # off. Bedrock rejects it for Claude Opus 4.6 and older models: set ``None``
+    # there.
+    cache_control: CacheControlEphemeralParam | None
+
     metadata: MetadataParam | None
     service_tier: Literal["auto", "standard_only"] | None
     container: str | None
     inference_geo: str | None
-
-
-class BedrockClientConfig(TypedDict, total=False):
-    """
-    Client args for ``platform="bedrock"`` / ``platform="bedrock_mantle"``.
-
-    Unset values fall back to the standard AWS credential/region chain (env
-    vars, shared config/credentials files, SSO, IMDS). ``api_key`` is a Bedrock
-    bearer token, mutually exclusive with the ``aws_*`` credential fields.
-    """
-
-    aws_region: str
-    aws_profile: str
-    aws_access_key: str
-    aws_secret_key: str
-    aws_session_token: str
-    api_key: str
-    base_url: str
 
 
 class VertexClientConfig(TypedDict, total=False):
@@ -143,10 +137,7 @@ class AnthropicLLM(CloudLLM):
     _cloud_platforms: ClassVar[frozenset[str]] = frozenset(
         {"bedrock", "bedrock_mantle", "vertex"}
     )
-    _litellm_provider_aliases: ClassVar[Mapping[str, str]] = {
-        "bedrock_mantle": "bedrock",
-        "vertex": "vertex_ai",
-    }
+    _litellm_provider_aliases: ClassVar[Mapping[str, str]] = {"vertex": "vertex_ai"}
 
     llm_settings: AnthropicLLMSettings | None = None
 
@@ -284,6 +275,10 @@ class AnthropicLLM(CloudLLM):
 
         merged: dict[str, Any] = dict(self.llm_settings or {})
         merged.update(extra_llm_settings)
+        if "cache_control" not in merged:
+            merged["cache_control"] = _DEFAULT_CACHE_CONTROL
+        if merged.get("cache_control", ...) is None:
+            del merged["cache_control"]
 
         # Server-side tools: go into the tools list
         web_search_tool_param: WebSearchToolParam | None = merged.pop(
@@ -338,6 +333,13 @@ class AnthropicLLM(CloudLLM):
         )
 
         if self.apply_output_schema_via_provider:
+            # ``parse`` takes no ``cache_control`` argument; send it in the body.
+            cache_control = api_llm_settings.pop("cache_control", None)
+            if cache_control is not None:
+                api_llm_settings["extra_body"] = {
+                    **(api_llm_settings.get("extra_body") or {}),
+                    "cache_control": cache_control,
+                }
             return await self.client.messages.parse(
                 max_tokens=max_tokens,
                 messages=api_input,

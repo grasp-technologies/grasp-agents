@@ -4,14 +4,22 @@ import inspect
 import math
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Coroutine,
+    Iterable,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, cast, overload
 
 from grasp_agents.session_context import SessionContext
 from grasp_agents.types.events import Event
 
-from ._util import code_hash, qualified_name
+from ._util import identity_hash, qualified_name, source_identity
 from .types import ComponentInfo, Example, Score, ScoreReason, Trial, Usage
 
 type ScalarScore = bool | int | float | str
@@ -69,6 +77,21 @@ class ScoreContext[InT, OutT, RefT]:
         return self.example.metadata
 
 
+type IdentityPart = Any
+"""
+Something a scorer's judgments depend on beyond its own code: a ``str`` (a
+prompt, a model id), a :class:`~pathlib.Path` (a prompt or rubric file, or a
+directory of them), a function or class (hashed with the code it calls), or
+any JSON-serializable value.
+"""
+
+type LowerIsBetter = bool | Collection[str]
+"""
+Which scores are better when lower: ``True`` for the score named after the
+scorer, or a collection of score names.
+"""
+
+
 class Scorer[InT, OutT, RefT](ABC):
     """
     A task-specific measurement instrument producing per-example scores.
@@ -79,7 +102,16 @@ class Scorer[InT, OutT, RefT](ABC):
     configuration that affects judgments from :meth:`config` so it is
     recorded too.
 
-    ``evaluate`` may be sync or async. Sync scorers run in a worker
+    The scorer's code — its function or class, and the user-code helpers and
+    module-level constants they refer to — is part of its identity. List
+    anything else its judgments depend on in ``identity`` (prompt files, a
+    prompt or model kept elsewhere): a change to any of them counts as a
+    change of the scorer, so rescoring runs it again and earlier judge
+    validations no longer apply. Scores whose lower values are better (a
+    defect share, an error count) are named in ``lower_is_better``, so
+    comparisons and regression gates read them the right way round.
+
+    :meth:`score` may be sync or async. Sync scorers run in a worker
     thread, so a slow one (a blocking HTTP judge, a subprocess) does not
     stall concurrent trials; keep them thread-safe.
     """
@@ -88,17 +120,30 @@ class Scorer[InT, OutT, RefT](ABC):
     version: str = "1"
     # Who produces the judgments; recorded with the run and sent to Phoenix.
     annotator: Literal["CODE", "LLM", "HUMAN"] = "CODE"
-    # Also evaluate trials whose task raised (e.g. transcript checks of
+    # Also score trials whose task raised (e.g. transcript checks of
     # failed runs). Off by default: scores of failed trials are missing.
     scores_errors: bool = False
+    identity: Sequence[IdentityPart] = ()
+    lower_is_better: frozenset[str] = frozenset()
 
-    def __init__(self, name: str | None = None, version: str | None = None) -> None:
+    def __init__(
+        self,
+        name: str | None = None,
+        version: str | None = None,
+        *,
+        identity: Sequence[IdentityPart] | None = None,
+        lower_is_better: LowerIsBetter | None = None,
+    ) -> None:
         if name is not None:
             self.name = name
         if version is not None:
             self.version = version
         if not self.name:
             self.name = snake_case(type(self).__name__)
+        if identity is not None:
+            self.identity = tuple(identity)
+        if lower_is_better is not None:
+            self.lower_is_better = lower_is_better_names(self.name, lower_is_better)
 
     def config(self) -> dict[str, Any]:
         return {}
@@ -110,7 +155,8 @@ class Scorer[InT, OutT, RefT](ABC):
             version=self.version,
             config=self.config(),
             annotator=self.annotator,
-            source=code_hash(type(self)),
+            fingerprint=identity_hash(self.identity),
+            source=source_identity(type(self)),
         )
 
     @abstractmethod
@@ -124,6 +170,15 @@ type ScorerFn[InT, OutT, RefT] = Callable[
 ]
 
 
+def lower_is_better_names(name: str, lower_is_better: LowerIsBetter) -> frozenset[str]:
+    """The score names a ``lower_is_better`` declaration covers."""
+    if isinstance(lower_is_better, bool):
+        return frozenset({name}) if lower_is_better else frozenset()
+    if isinstance(lower_is_better, str):
+        return frozenset({lower_is_better})
+    return frozenset(lower_is_better)
+
+
 class FunctionScorer[InT, OutT, RefT](Scorer[InT, OutT, RefT]):
     def __init__(
         self,
@@ -134,8 +189,15 @@ class FunctionScorer[InT, OutT, RefT](Scorer[InT, OutT, RefT]):
         config: Mapping[str, Any] | None = None,
         scores_errors: bool = False,
         annotator: Literal["CODE", "LLM", "HUMAN"] = "CODE",
+        identity: Sequence[IdentityPart] = (),
+        lower_is_better: LowerIsBetter = (),
     ) -> None:
-        super().__init__(name=name or fn.__name__, version=version)
+        super().__init__(
+            name=name or fn.__name__,
+            version=version,
+            identity=identity,
+            lower_is_better=lower_is_better,
+        )
         self._fn = fn
         self._config = dict(config or {})
         self.scores_errors = scores_errors
@@ -147,7 +209,7 @@ class FunctionScorer[InT, OutT, RefT](Scorer[InT, OutT, RefT]):
     def describe(self) -> ComponentInfo:
         info = super().describe()
         info.kind = qualified_name(self._fn)
-        info.source = code_hash(self._fn)
+        info.source = source_identity(self._fn)
         return info
 
     @property
@@ -180,6 +242,8 @@ def scorer(
     config: Mapping[str, Any] | None = None,
     scores_errors: bool = False,
     annotator: Literal["CODE", "LLM", "HUMAN"] = "CODE",
+    identity: Sequence[IdentityPart] = (),
+    lower_is_better: LowerIsBetter = (),
 ) -> ScorerDecorator: ...
 
 
@@ -192,6 +256,8 @@ def scorer(
     config: Mapping[str, Any] | None = None,
     scores_errors: bool = False,
     annotator: Literal["CODE", "LLM", "HUMAN"] = "CODE",
+    identity: Sequence[IdentityPart] = (),
+    lower_is_better: LowerIsBetter = (),
 ) -> FunctionScorer[Any, Any, Any] | ScorerDecorator:
     """
     Turn a function of :class:`ScoreContext` into a scorer::
@@ -199,6 +265,8 @@ def scorer(
         @scorer(version="2")
         def exact_match(ctx: ScoreContext[str, str, str]) -> bool:
             return ctx.output == ctx.reference
+
+    ``identity`` and ``lower_is_better`` are described on :class:`Scorer`.
     """
 
     def wrap(f: ScorerFn[Any, Any, Any]) -> FunctionScorer[Any, Any, Any]:
@@ -209,6 +277,8 @@ def scorer(
             config=config,
             scores_errors=scores_errors,
             annotator=annotator,
+            identity=identity,
+            lower_is_better=lower_is_better,
         )
 
     if fn is not None:

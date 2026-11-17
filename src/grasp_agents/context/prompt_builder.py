@@ -90,8 +90,9 @@ class InputAttachmentCompute(Protocol):
     """
     Lazy compute for a :class:`InputAttachment`.
 
-    Receives the just-built user message, the run context, and the
-    pre-existing transcript (``messages``). Returns either rendered text
+    Receives the just-built user message, the session context, and the
+    conversation the input joins as the model sees it, folds applied
+    (``messages``). Returns either rendered text
     (wrapped in ``<system-reminder>`` by default), a sequence of
     :class:`InputPart` to append verbatim, or ``None`` to skip.
 

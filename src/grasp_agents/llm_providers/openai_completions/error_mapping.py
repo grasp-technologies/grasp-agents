@@ -8,6 +8,7 @@ import openai
 from grasp_agents.llm_providers._http_helpers import (
     content_filter_code,
     is_content_filter_message,
+    is_context_window_error,
     is_quota_error,
     parse_retry_after,
 )
@@ -20,6 +21,7 @@ from grasp_agents.types.llm_errors import (
     LlmAuthenticationError,
     LlmBadRequestError,
     LlmContentFilterError,
+    LlmContextWindowError,
     LlmError,
     LlmInternalServerError,
     LlmNotFoundError,
@@ -97,6 +99,8 @@ def map_api_error(err: Exception) -> LlmError | None:
             return LlmInternalServerError(msg, response=resp, body=body)
 
         if code in {400, 422}:
+            if is_context_window_error(err):
+                return LlmContextWindowError(msg, response=resp, body=body)
             return LlmBadRequestError(msg, response=resp, body=body)
 
         return LlmApiStatusError(msg, response=resp, body=body)
@@ -114,6 +118,10 @@ def map_api_error(err: Exception) -> LlmError | None:
         cf_code = content_filter_code(err)
         if cf_code or is_content_filter_message(msg):
             return LlmContentFilterError(msg, code=cf_code)
+        if is_context_window_error(err):
+            return LlmContextWindowError(
+                msg, response=_synthetic_response(400), body=err.body
+            )
         return LlmApiError(msg, err.request, body=err.body)
 
     return None

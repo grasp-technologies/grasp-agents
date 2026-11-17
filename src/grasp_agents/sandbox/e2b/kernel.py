@@ -19,7 +19,7 @@ from grasp_agents.sandbox.kernel import CellOutput, CellResult, KernelSession
 from ._handle import DEFAULT_EXEC_TIMEOUT
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from e2b import AsyncSandbox
     from e2b_code_interpreter import AsyncSandbox as CodeInterpreterSandbox
@@ -98,19 +98,32 @@ class E2BKernel(KernelSession):
     from a checkpoint keep its in-memory variables instead of starting fresh.
     The notebook artifact lives on the same sandbox FS via the paired
     :class:`E2BFileBackend`.
+
+    The kernel is bound to the sandbox it was opened on. Once a restore or an
+    exit replaces that sandbox, it counts as closed, and its holder reopens it
+    on the live sandbox: re-attached to a seeded context id (a rollback seeds
+    the one its snapshot kept), else fresh. A seeded id the live sandbox has
+    no context for gets a fresh context, reported through :meth:`take_reset`.
     """
 
     def __init__(
         self,
-        require_sandbox: Callable[[], AsyncSandbox],
+        get_sandbox: Callable[[], AsyncSandbox | None],
         *,
         cwd: str,
         env: dict[str, str] | None,
         backend: str = "e2b",
         default_timeout: float = DEFAULT_EXEC_TIMEOUT,
         context_id: str | None = None,
+        raise_if_expired: Callable[[AsyncSandbox, Exception], Awaitable[None]]
+        | None = None,
     ) -> None:
-        self._require = require_sandbox
+        # Returns the sandbox the kernel was opened on while it is still the
+        # live one, else None.
+        self._get_sandbox = get_sandbox
+        # Raises E2BSandboxExpiredError when a failure means E2B no longer
+        # has the sandbox.
+        self._raise_if_expired = raise_if_expired
         self._cwd = cwd
         self._env = env
         self._backend = backend
@@ -118,6 +131,7 @@ class E2BKernel(KernelSession):
         self._context_id = context_id
         self._context: Context | None = None
         self._closed = False
+        self._was_reset = False
         self._lock = asyncio.Lock()
 
     @property
@@ -126,7 +140,7 @@ class E2BKernel(KernelSession):
 
     @property
     def closed(self) -> bool:
-        return self._closed
+        return self._closed or self._get_sandbox() is None
 
     @property
     def context_id(self) -> str | None:
@@ -142,7 +156,9 @@ class E2BKernel(KernelSession):
 
     def _sandbox(self) -> CodeInterpreterSandbox:
         """The live sandbox, narrowed to the code-interpreter type (has run_code)."""
-        sandbox = self._require()
+        sandbox = self._get_sandbox()
+        if sandbox is None:
+            raise RuntimeError("kernel session is closed; open a new one")
         if not hasattr(sandbox, "run_code"):
             raise RuntimeError(
                 "E2B sandbox is not a code-interpreter sandbox (no run_code); "
@@ -151,21 +167,22 @@ class E2BKernel(KernelSession):
         return cast("CodeInterpreterSandbox", sandbox)
 
     async def _bind_context(self, sandbox: CodeInterpreterSandbox) -> Context:
-        """Re-attach to a persisted context id (resume), else create a fresh one."""
+        """
+        Re-attach to the seeded context id if the sandbox has it, else create
+        a fresh context. A seed the sandbox lacks (it was replaced by one
+        that never had the context) is reported as a reset.
+        """
         if self._context_id is not None:
-            from e2b_code_interpreter.models import (
-                Context,
-            )
-
-            return Context(
-                context_id=self._context_id, language="python", cwd=self._cwd
-            )
+            for context in await sandbox.list_code_contexts():
+                if context.id == self._context_id:
+                    return context
+            self._was_reset = True
         return await sandbox.create_code_context(cwd=self._cwd)
 
     async def execute(
         self, code: str, *, timeout: float | None = None
     ) -> AsyncIterator[CellOutput | CellResult]:
-        if self._closed:
+        if self.closed:
             raise RuntimeError("kernel session is closed; open a new one")
         eff_timeout = timeout if timeout is not None else self._default_timeout
         start = time.monotonic()
@@ -173,17 +190,24 @@ class E2BKernel(KernelSession):
         execution: Execution | None = None
         async with self._lock:
             sandbox = self._sandbox()
-            if self._context is None:
-                self._context = await self._bind_context(sandbox)
             try:
+                if self._context is None:
+                    self._context = await self._bind_context(sandbox)
                 execution = await sandbox.run_code(
                     code,
                     context=self._context,
                     envs=self._env or None,
                     timeout=eff_timeout,
                 )
-            except TimeoutException:
+            except TimeoutException as exc:
+                # E2B reports a removed sandbox as a timeout too.
+                await self._check_expired(sandbox, exc)
+                if self._context is None:
+                    raise
                 timed_out = True
+            except Exception as exc:
+                await self._check_expired(sandbox, exc)
+                raise
 
         if execution is None:
             yield CellResult(
@@ -199,6 +223,15 @@ class E2BKernel(KernelSession):
             execution_count=execution.execution_count,
             runtime_ms=(time.monotonic() - start) * 1000.0,
         )
+
+    async def _check_expired(self, sandbox: AsyncSandbox, exc: Exception) -> None:
+        if self._raise_if_expired is not None:
+            await self._raise_if_expired(sandbox, exc)
+
+    def take_reset(self) -> bool:
+        was = self._was_reset
+        self._was_reset = False
+        return was
 
     async def interrupt(self) -> None:
         # E2B interrupts via run_code's own timeout (handled in execute); there

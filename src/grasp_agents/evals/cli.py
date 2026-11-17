@@ -13,17 +13,21 @@ exit code says what happened:
   threshold is missed, ``--fail-on-regression`` found a significant regression
   against ``--baseline``, a judge is not validated, or a dataset is invalid;
 - 2: usage error (bad arguments, spec, dataset file or run reference);
-- 3: an unexpected error, or Phoenix failed.
+- 3: an unexpected error, or Phoenix failed;
+- 130 / 128 + signal number: interrupted (Ctrl-C) or stopped (SIGTERM,
+  SIGHUP); the run is finalized as ``cancelled`` and can be resumed.
 """
 
 import argparse
 import asyncio
 import json
+import os
+import signal
 import sys
 import traceback
-from collections.abc import Sequence
+from collections.abc import Coroutine, Sequence
 from pathlib import Path
-from typing import Any, NoReturn, cast, override
+from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
 from pydantic import ValidationError
 from rich.console import Console
@@ -33,6 +37,7 @@ from ._execution import ProgressCallback, TrialProgress
 from .compare import Comparison, compare, regressions
 from .dataset import Dataset, DatasetError, example_json_schema
 from .evaluation import (
+    PHOENIX_PREFIX,
     Evaluation,
     SpecError,
     list_evaluations,
@@ -47,9 +52,13 @@ from .report import (
     run_summary,
     trial_summary,
 )
-from .runner import ResumeError, SealedSelectionError
+from .runner import ResumeError, SealedSelectionError, annotate_run, close_run
 from .store import LocalRunStore, RunNotFoundError, store_for_ref
+from .tracing import TRACE_PROJECT_ENV, flush_traces, start_tracing
 from .types import EvaluationRun, RunStatus, Trial
+
+if TYPE_CHECKING:
+    from .labeling import LabelImport
 from .validation import UnvalidatedJudgeError
 
 EXIT_OK = 0
@@ -71,6 +80,59 @@ class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         # Reported by ``main`` (as a JSON document under ``--json``).
         raise CLIError(message, usage=self.format_usage())
+
+
+class Stopped(Exception):
+    """The process was asked to stop (SIGTERM, SIGHUP)."""
+
+    def __init__(self, signal_number: int) -> None:
+        super().__init__(f"stopped by {signal.Signals(signal_number).name}")
+        self.signal_number = signal_number
+
+
+_STOP_SIGNALS = tuple(
+    s for s in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)) if s
+)
+
+
+def _run_async(command: Coroutine[Any, Any, int]) -> int:
+    """
+    Run a command on an event loop where SIGTERM and SIGHUP cancel it as
+    Ctrl-C does, so a stopped process still finalizes its run. A second
+    signal ends the process at once (e.g. when blocked in synchronous code).
+    """
+
+    async def main() -> int:
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        received: list[int] = []
+        handled: list[int] = []
+
+        def stop(signal_number: int) -> None:
+            received.append(signal_number)
+            for number in handled:
+                loop.remove_signal_handler(number)
+            handled.clear()
+            if task is not None:
+                task.cancel()
+
+        for signal_number in _STOP_SIGNALS:
+            try:
+                loop.add_signal_handler(signal_number, stop, signal_number)
+            except (NotImplementedError, RuntimeError, ValueError):
+                continue  # no loop signal handlers here (Windows, a thread)
+            handled.append(signal_number)
+        try:
+            return await command
+        except asyncio.CancelledError:
+            if received:
+                raise Stopped(received[0]) from None
+            raise
+        finally:
+            for signal_number in handled:
+                loop.remove_signal_handler(signal_number)
+
+    return asyncio.run(main())
 
 
 def _print_json(data: Any) -> None:
@@ -162,6 +224,17 @@ def _check_threshold_names(
         raise CLIError(f"--fail-under names unknown metrics {unknown}; known: {known}")
 
 
+def _parse_where(values: Sequence[str]) -> dict[str, str]:
+    # Values stay text: ``compare`` matches metadata by its JSON text form.
+    where: dict[str, str] = {}
+    for item in values:
+        key, sep, raw = item.partition("=")
+        if not sep or not key:
+            raise CLIError(f"--where expects KEY=VALUE, got {item!r}")
+        where[key] = raw
+    return where
+
+
 def _gate_messages(
     run: EvaluationRun,
     thresholds: dict[str, float],
@@ -212,6 +285,10 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     resume: EvaluationRun | None = None
     if args.resume:
         store, resume = _resolve_run(args.resume, args.root)
+    traced = args.trace or os.environ.get(TRACE_PROJECT_ENV)
+    if traced:
+        project = start_tracing(traced)
+        sys.stderr.write(f"tracing trials into Phoenix project {project!r}\n")
     ids = [i for i in (args.ids or "").split(",") if i]
     run = await evaluation.run(
         dataset=args.dataset,
@@ -220,6 +297,7 @@ async def _cmd_run(args: argparse.Namespace) -> int:
         sample=args.sample,
         seed=args.seed,
         limit=args.limit,
+        include_sealed=args.include_sealed,
         repetitions=args.repetitions,
         concurrency=args.concurrency,
         timeout_s=args.timeout,
@@ -234,13 +312,18 @@ async def _cmd_run(args: argparse.Namespace) -> int:
         phoenix_url=args.base_url,
         allow_unvalidated=args.allow_unvalidated,
     )
+    if traced:
+        flush_traces()
     comparison = compare(baseline, run) if baseline is not None else None
     pushed: str | None = None
     push_error: str | None = None
     push_exit = EXIT_OK
     if args.push:
+        _warn_untraced(run)
         try:
-            pushed = await _push(run, store, args.base_url)
+            pushed = await _push(
+                run, store, args.base_url, create_dataset=args.create_dataset
+            )
         except Exception as exc:
             push_error = f"{type(exc).__name__}: {exc}"
             push_exit = _exit_code(exc)
@@ -276,7 +359,14 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     return EXIT_GATE if failures else EXIT_OK
 
 
-async def _push(run: EvaluationRun, store: LocalRunStore, base_url: str | None) -> str:
+async def _push(
+    run: EvaluationRun,
+    store: LocalRunStore,
+    base_url: str | None,
+    *,
+    dataset: str | None = None,
+    create_dataset: bool = False,
+) -> str:
     from .phoenix import (  # ruff: ignore[import-outside-top-level]
         PhoenixClient,
         experiment_url,
@@ -284,13 +374,36 @@ async def _push(run: EvaluationRun, store: LocalRunStore, base_url: str | None) 
     )
 
     async with PhoenixClient(base_url) as client:
-        link = await push_run(client, run, store=store)
+        link = await push_run(
+            client, run, store=store, dataset=dataset, create_dataset=create_dataset
+        )
+    if link.trace_retention is not None:
+        sys.stderr.write(
+            f"traces in Phoenix project {link.trace_project!r}: "
+            f"{link.trace_retention}\n"
+        )
     return experiment_url(link) or link.base_url
+
+
+def _warn_untraced(run: EvaluationRun) -> None:
+    shared = [t for t in run.trials if not t.sealed]
+    if shared and not any(t.trace_id for t in shared):
+        sys.stderr.write(
+            f"note: no trial of {run.id} has a trace id, so its experiment links no "
+            "traces (run with --trace PROJECT)\n"
+        )
 
 
 async def _cmd_push(args: argparse.Namespace) -> int:
     store, run = _resolve_run(args.run, args.root)
-    url = await _push(run, store, args.base_url)
+    _warn_untraced(run)
+    url = await _push(
+        run,
+        store,
+        args.base_url,
+        dataset=args.dataset,
+        create_dataset=args.create_dataset,
+    )
     if args.json:
         _print_json({"id": run.id, "phoenix_url": url})
     else:
@@ -307,17 +420,112 @@ async def _cmd_rescore(args: argparse.Namespace) -> int:
             "pass --spec MODULE:ATTR"
         )
     evaluation = load_evaluation(spec)
+    ids = [i for i in (args.ids or "").split(",") if i]
     child = await evaluation.rescore(
         parent,
+        split=args.split,
+        ids=ids or None,
+        dataset=args.dataset,
         rerun=args.rerun,
         store=store,
         progress=_progress_printer(args.progress),
         allow_unvalidated=args.allow_unvalidated,
+        phoenix_url=args.base_url,
     )
+    unpaired = child.metadata.get("unpaired") if args.dataset else None
+    if unpaired and (unpaired["missing"] or unpaired["input_changed"]):
+        sys.stderr.write(
+            f"not rescored: {len(unpaired['missing'])} examples missing from the "
+            f"dataset, {len(unpaired['input_changed'])} with a changed input "
+            "(see metadata.unpaired)\n"
+        )
     if args.json:
         _print_json({**run_summary(child), "path": str(store.run_dir(child.id))})
     else:
         _print_markdown(render_run_markdown(child))
+    return EXIT_OK
+
+
+async def _cmd_import(args: argparse.Namespace) -> int:
+    evaluation = load_evaluation(args.spec)
+    store = LocalRunStore(args.root)
+    ids = [i for i in (args.ids or "").split(",") if i]
+    run = await evaluation.import_outputs(
+        args.outputs,
+        task=args.task,
+        task_version=args.task_version,
+        dataset=args.dataset,
+        split=args.split,
+        ids=ids or None,
+        sample=args.sample,
+        seed=args.seed,
+        limit=args.limit,
+        include_sealed=args.include_sealed,
+        repetitions=args.repetitions,
+        name=args.name,
+        store=store,
+        tags=args.tag,
+        progress=_progress_printer(args.progress),
+        phoenix_url=args.base_url,
+        allow_unvalidated=args.allow_unvalidated,
+    )
+    if args.json:
+        _print_json({**run_summary(run), "path": str(store.run_dir(run.id))})
+    else:
+        _print_markdown(render_run_markdown(run))
+        sys.stderr.write(f"run stored in {store.run_dir(run.id)}\n")
+    return EXIT_OK
+
+
+async def _cmd_experiments(args: argparse.Namespace) -> int:
+    from .phoenix import (  # ruff: ignore[import-outside-top-level]
+        PhoenixClient,
+        delete_experiment,
+    )
+
+    store, run = _resolve_run(args.run, args.root)
+    experiment_id = run.phoenix.experiment_id if run.phoenix else None
+    # The server comes from the user, never from the run record.
+    async with PhoenixClient(args.base_url) as client:
+        deleted = await delete_experiment(client, run, store=store)
+    _print_json({"id": run.id, "experiment_id": experiment_id, "deleted": deleted})
+    return EXIT_OK
+
+
+def _cmd_annotate(args: argparse.Namespace) -> int:
+    store, run = _resolve_run(args.run, args.root)
+    links: dict[str, str] = {}
+    for item in args.link:
+        name, sep, url = item.partition("=")
+        if not sep or not name or not url:
+            raise CLIError(f"--link expects NAME=URL, got {item!r}")
+        links[name] = url
+    annotated = annotate_run(
+        run, links=links, notes=args.note, remove_links=args.remove_link, store=store
+    )
+    payload = {"id": annotated.id, "links": annotated.links, "notes": annotated.notes}
+    _print_json(payload)
+    if annotated.phoenix is not None and (links or args.note or args.remove_link):
+        sys.stderr.write("push the run again to show them on its experiment\n")
+    return EXIT_OK
+
+
+def _cmd_close(args: argparse.Namespace) -> int:
+    store, run = _resolve_run(args.run, args.root)
+    spec = args.spec or run.evaluation
+    scorers: Sequence[Any] = ()
+    metrics: Any = None
+    if spec:
+        evaluation = load_evaluation(spec)
+        scorers = evaluation.scorers
+        metrics, _ = evaluation.check_judges(store, allow_unvalidated=True)
+    closed = close_run(
+        run, scorers=scorers, metrics=metrics, store=store, force=args.force
+    )
+    if args.json:
+        _print_json({**run_summary(closed), "path": str(store.run_dir(closed.id))})
+    else:
+        _print_markdown(render_run_markdown(closed))
     return EXIT_OK
 
 
@@ -412,7 +620,13 @@ def _cmd_compare(args: argparse.Namespace) -> int:
         raise CLIError("--gate and --min-effect need --fail-on-regression")
     _, base = _resolve_run(args.base, args.root)
     _, candidate = _resolve_run(args.candidate, args.root)
-    comparison = compare(base, candidate, top=args.top)
+    comparison = compare(
+        base,
+        candidate,
+        top=args.top,
+        where=_parse_where(args.where),
+        group_by=args.group_by,
+    )
     failures = (
         regressions(comparison, targets=args.gate or None, min_effect=args.min_effect)
         if args.fail_on_regression
@@ -503,12 +717,14 @@ async def _cmd_datasets(args: argparse.Namespace) -> int:
             dataset = await evaluation.load_dataset(
                 args.dataset,
                 phoenix_url=args.base_url,
-                cache_dir=(args.root / "datasets") if args.root else None,
             )
         except DatasetError as exc:
             _print_json({"valid": False, "errors": [str(exc)]})
             return EXIT_GATE
-        problems = evaluation.check_dataset(dataset)
+        problems = await evaluation.dataset_problems(
+            dataset,
+            phoenix_url=args.base_url,
+        )
         _print_json(
             {
                 "valid": not problems,
@@ -520,7 +736,7 @@ async def _cmd_datasets(args: argparse.Namespace) -> int:
             }
         )
         return EXIT_GATE if problems else EXIT_OK
-    if args.datasets_command in {"pull", "push"}:
+    if args.datasets_command in {"pull", "push", "delete"}:
         return await _cmd_phoenix_datasets(args)
     dataset = Dataset.load(args.path)
     _print_json(
@@ -542,14 +758,16 @@ async def _cmd_phoenix_datasets(args: argparse.Namespace) -> int:
         push_dataset,
     )
 
-    async with PhoenixClient(args.base_url) as client:
-        if args.datasets_command == "pull":
-            name, version = parse_phoenix_ref(args.name)
+    ref = parse_phoenix_ref(args.name) if args.datasets_command == "pull" else None
+    server = ref.server(args.base_url) if ref is not None else args.base_url
+    if args.datasets_command == "delete":
+        return await _delete_dataset(args)
+    async with PhoenixClient(server) as client:
+        if ref is not None:
             dataset = await pull_dataset(
                 client,
-                name,
-                version=version,
-                cache_dir=(args.root / "datasets") if args.root else None,
+                ref.name,
+                version=ref.version,
             )
             if args.output:
                 dataset.save(args.output)
@@ -577,11 +795,75 @@ async def _cmd_phoenix_datasets(args: argparse.Namespace) -> int:
         return EXIT_OK
 
 
+async def _delete_dataset(args: argparse.Namespace) -> int:
+    from .phoenix import (  # ruff: ignore[import-outside-top-level]
+        PhoenixClient,
+        delete_dataset,
+    )
+
+    if not args.yes:
+        raise CLIError(
+            f"Deleting Phoenix dataset {args.name!r} deletes its experiments too; "
+            "pass --yes"
+        )
+    async with PhoenixClient(args.base_url) as client:
+        result = await delete_dataset(client, args.name)
+    _print_json(result.model_dump())
+    return EXIT_OK
+
+
+async def _merge_labels(
+    args: argparse.Namespace, records: Sequence[Any]
+) -> "LabelImport":
+    from .labeling import (  # ruff: ignore[import-outside-top-level]
+        merge_labels,
+        merge_labels_into_phoenix,
+    )
+
+    if args.into.startswith(PHOENIX_PREFIX):
+        return await merge_labels_into_phoenix(
+            records,
+            args.into,
+            labeler=getattr(args, "labeler", None),
+            replace=args.replace,
+            create=args.create_dataset,
+            phoenix_url=args.base_url,
+        )
+    return merge_labels(
+        records, args.into, labeler=getattr(args, "labeler", None), replace=args.replace
+    )
+
+
+def _report_merge(result: "LabelImport") -> None:
+    _print_json(result.model_dump())
+    for conflict in result.conflicts:
+        sys.stderr.write(f"conflict: {json.dumps(conflict, default=str)}\n")
+    if result.unlabeled and not (result.added or result.updated):
+        sys.stderr.write(
+            f"{result.unlabeled} records had no label yet: fill in "
+            "their reference first\n"
+        )
+    if result.ref and (result.added or result.updated):
+        sys.stderr.write(f"pin the new labels version: {result.ref}\n")
+
+
+async def _excluded_records(
+    sources: Sequence[str], base_url: str | None
+) -> list[dict[str, Any]]:
+    from .labeling import label_records  # ruff: ignore[import-outside-top-level]
+
+    return [
+        r
+        for source in sources
+        for r in await label_records(source, phoenix_url=base_url)
+    ]
+
+
 def _cmd_labels(args: argparse.Namespace) -> int:
     from .labeling import (  # ruff: ignore[import-outside-top-level]
-        import_labels,
         known_splits,
         label_requests,
+        merge_labels,
         sample_for_labeling,
         write_records,
     )
@@ -595,7 +877,15 @@ def _cmd_labels(args: argparse.Namespace) -> int:
         if output.exists() and not args.force:
             raise CLIError(f"{output} exists; pass --force to replace it")
         _, run = _resolve_run(args.run, args.root)
-        earlier = [r for path in args.exclude for r in label_requests(path)]
+        on_phoenix = [s for s in args.exclude if s.startswith(PHOENIX_PREFIX)]
+        earlier = [
+            r
+            for path in args.exclude
+            if not path.startswith(PHOENIX_PREFIX)
+            for r in label_requests(path)
+        ]
+        if on_phoenix:
+            earlier += asyncio.run(_excluded_records(on_phoenix, args.base_url))
         records = sample_for_labeling(
             run,
             args.n,
@@ -630,20 +920,18 @@ def _cmd_labels(args: argparse.Namespace) -> int:
             )
         return EXIT_OK
     if args.labels_command == "import":
-        result = import_labels(
-            args.paths, args.into, labeler=args.labeler, replace=args.replace
-        )
-        _print_json(result.model_dump())
-        for conflict in result.conflicts:
-            sys.stderr.write(f"conflict: {json.dumps(conflict, default=str)}\n")
-        if result.unlabeled and not (result.added or result.updated):
-            sys.stderr.write(
-                f"{result.unlabeled} records had no label yet: fill in "
-                "their reference first\n"
+        records = [r for path in args.paths for r in label_requests(path)]
+        result = (
+            asyncio.run(_merge_labels(args, records))
+            if args.into.startswith(PHOENIX_PREFIX)
+            else merge_labels(
+                records, args.into, labeler=args.labeler, replace=args.replace
             )
+        )
+        _report_merge(result)
         return EXIT_OK
     if args.labels_command == "pull":
-        return asyncio.run(_pull_labels(args))
+        return _run_async(_pull_labels(args))
     return _show_labels(Path(args.path))
 
 
@@ -651,7 +939,6 @@ async def _pull_labels(args: argparse.Namespace) -> int:
     from .labeling import (  # ruff: ignore[import-outside-top-level]
         annotation_value,
         label_requests,
-        merge_labels,
     )
     from .phoenix import PhoenixClient  # ruff: ignore[import-outside-top-level]
     from .phoenix.annotations import (  # ruff: ignore[import-outside-top-level]
@@ -707,7 +994,7 @@ async def _pull_labels(args: argparse.Namespace) -> int:
         if annotation.explanation:
             metadata["label_note"] = annotation.explanation
         labeled.append({**record, "reference": value, "metadata": metadata})
-    result = merge_labels(labeled, args.into, replace=args.replace)
+    result = await _merge_labels(args, labeled)
     _print_json(
         {
             **result.model_dump(),
@@ -719,6 +1006,8 @@ async def _pull_labels(args: argparse.Namespace) -> int:
     )
     for conflict in result.conflicts:
         sys.stderr.write(f"conflict: {json.dumps(conflict, default=str)}\n")
+    if result.ref and (result.added or result.updated):
+        sys.stderr.write(f"pin the new labels version: {result.ref}\n")
     return EXIT_OK
 
 
@@ -817,7 +1106,8 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="run an Evaluation (module:attr or file.py:attr)")
     run.add_argument("spec")
     run.add_argument(
-        "--dataset", help="override the evaluation's dataset (file or phoenix:NAME)"
+        "--dataset",
+        help="override the evaluation's dataset (file or phoenix:[URL/]NAME[@VER])",
     )
     run.add_argument("--split")
     run.add_argument("--ids", help="comma-separated example ids")
@@ -827,6 +1117,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--seed", type=int, default=0)
     run.add_argument(
         "--limit", type=_non_negative_int, help="first N examples (after other filters)"
+    )
+    run.add_argument(
+        "--include-sealed",
+        action="store_true",
+        help="also run sealed splits (left out unless --split names one)",
     )
     run.add_argument("-r", "--repetitions", type=_positive_int)
     run.add_argument("-c", "--concurrency", type=_positive_int)
@@ -856,7 +1151,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="exit 1 if a metric's value is below VALUE",
     )
     _add_gate(run, needs="with --baseline: ")
+    run.add_argument(
+        "--trace",
+        metavar="PROJECT",
+        help=(
+            "trace trials into this Phoenix project (default: "
+            f"${TRACE_PROJECT_ENV}); needs TELEMETRY_COLLECTOR_HTTP_ENDPOINT "
+            "or PHOENIX_BASE_URL"
+        ),
+    )
     run.add_argument("--push", action="store_true", help="mirror the run to Phoenix")
+    run.add_argument(
+        "--create-dataset",
+        action="store_true",
+        help="with --push: create the Phoenix dataset when it is missing",
+    )
     run.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     run.add_argument("--name")
     run.add_argument("--tag", action="append", default=[])
@@ -865,12 +1174,91 @@ def build_parser() -> argparse.ArgumentParser:
 
     push = sub.add_parser("push", help="mirror a finished run to Phoenix")
     push.add_argument("run")
+    push.add_argument(
+        "--dataset",
+        help="attach to this Phoenix dataset (it must hold the run's examples)",
+    )
+    push.add_argument(
+        "--create-dataset",
+        action="store_true",
+        help="create the Phoenix dataset when it is missing",
+    )
     push.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     _add_json(push)
+
+    imp_run = sub.add_parser(
+        "import", help="score outputs produced elsewhere as a run (JSONL file)"
+    )
+    imp_run.add_argument("spec")
+    imp_run.add_argument(
+        "outputs", help="JSONL: example_id, repetition, output, error, cost_usd, ..."
+    )
+    imp_run.add_argument(
+        "--task", help="what produced the outputs (default: the file's stem)"
+    )
+    imp_run.add_argument("--task-version")
+    imp_run.add_argument("--dataset", help="override the evaluation's dataset")
+    imp_run.add_argument("--split")
+    imp_run.add_argument("--ids", help="comma-separated example ids")
+    imp_run.add_argument("--sample", type=_non_negative_int)
+    imp_run.add_argument("--seed", type=int, default=0)
+    imp_run.add_argument("--limit", type=_non_negative_int)
+    imp_run.add_argument("--include-sealed", action="store_true")
+    imp_run.add_argument(
+        "-r", "--repetitions", type=_positive_int, help="default: the most in the file"
+    )
+    imp_run.add_argument(
+        "--allow-unvalidated",
+        action="store_true",
+        help="score with judges whose validation gate does not pass",
+    )
+    imp_run.add_argument("--base-url", help="Phoenix URL for phoenix: datasets")
+    imp_run.add_argument("--name")
+    imp_run.add_argument("--tag", action="append", default=[])
+    _add_json(imp_run)
+    _add_progress(imp_run)
+
+    annotate = sub.add_parser(
+        "annotate", help="add links and notes to a run (pushed with it; JSON output)"
+    )
+    annotate.add_argument("run")
+    annotate.add_argument(
+        "--link",
+        action="append",
+        default=[],
+        metavar="NAME=URL",
+        help="add or replace a link (repeatable)",
+    )
+    annotate.add_argument(
+        "--note", action="append", default=[], help="add a note (repeatable)"
+    )
+    annotate.add_argument("--remove-link", action="append", default=[], metavar="NAME")
+    _add_json(annotate)
+
+    close = sub.add_parser(
+        "close", help="finalize a run whose process is gone (partial or completed)"
+    )
+    close.add_argument("run")
+    close.add_argument(
+        "--spec", help="Evaluation to take metrics from (default: the run's)"
+    )
+    close.add_argument(
+        "--force",
+        action="store_true",
+        help="close even if its process may still be running",
+    )
+    _add_json(close)
 
     rescore = sub.add_parser("rescore", help="score a run's outputs again (child run)")
     rescore.add_argument("run")
     rescore.add_argument("--spec", help="Evaluation to take scorers from")
+    rescore.add_argument("--split", help="only this split's trials")
+    rescore.add_argument("--ids", help="only these examples' trials (comma-separated)")
+    rescore.add_argument(
+        "--dataset",
+        help="score against this dataset version instead (file or phoenix:...)",
+    )
+    rescore.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     rescore.add_argument(
         "--rerun", action="store_true", help="re-run unchanged scorers too"
     )
@@ -898,6 +1286,19 @@ def build_parser() -> argparse.ArgumentParser:
     cmp.add_argument("base")
     cmp.add_argument("candidate")
     cmp.add_argument("--top", type=_positive_int, default=5)
+    cmp.add_argument(
+        "--where",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help=(
+            "only examples whose metadata has this value, compared as JSON text "
+            "(repeatable; sealed examples are left out)"
+        ),
+    )
+    cmp.add_argument(
+        "--group-by", metavar="KEY", help="also compare per value of a metadata key"
+    )
     _add_gate(cmp, needs="")
     _add_json(cmp)
 
@@ -938,7 +1339,9 @@ def build_parser() -> argparse.ArgumentParser:
     info.add_argument("--limit", type=_positive_int, default=20)
     _add_json(info)
     pull = dsub.add_parser("pull", help="fetch a Phoenix dataset version")
-    pull.add_argument("name", help="NAME or NAME@VERSION_ID")
+    pull.add_argument(
+        "name", help="[https://HOST/]NAME[@VERSION_ID] (a server named here wins)"
+    )
     pull.add_argument("-o", "--output", help="also save it to this file")
     pull.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     _add_json(pull)
@@ -959,6 +1362,29 @@ def build_parser() -> argparse.ArgumentParser:
     push_ds.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     _add_json(push_ds)
 
+    delete_ds = dsub.add_parser(
+        "delete", help="delete a Phoenix dataset with its experiments and projects"
+    )
+    delete_ds.add_argument("name")
+    delete_ds.add_argument("--yes", action="store_true", help="confirm the deletion")
+    delete_ds.add_argument(
+        "--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)"
+    )
+    _add_json(delete_ds)
+
+    experiments = sub.add_parser("experiments", help="Phoenix experiments of runs")
+    experiments_sub = experiments.add_subparsers(
+        dest="experiments_command", required=True
+    )
+    delete_run_experiment = experiments_sub.add_parser(
+        "delete", help="delete a run's experiment and its project (JSON output)"
+    )
+    delete_run_experiment.add_argument("run")
+    delete_run_experiment.add_argument(
+        "--base-url", help="Phoenix URL (default: the run's)"
+    )
+    _add_json(delete_run_experiment)
+
     labels = sub.add_parser(
         "labels", help="collect labels for judge validation (JSON output)"
     )
@@ -978,9 +1404,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--exclude",
         action="append",
         default=[],
-        metavar="FILE",
-        help="skip outputs already in this labels or to-label file",
+        metavar="FILE|phoenix:REF",
+        help="skip outputs already in this labels or to-label file, or Phoenix dataset",
     )
+    sample.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     sample.add_argument(
         "--test-share",
         type=float,
@@ -994,7 +1421,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(sample)
     imp = lsub.add_parser("import", help="merge filled-in to-label files")
     imp.add_argument("paths", nargs="+")
-    imp.add_argument("--into", required=True, help="labels dataset file")
+    imp.add_argument(
+        "--into",
+        required=True,
+        help="labels dataset file, or phoenix:[URL/]NAME[@VER] (pushes a new version)",
+    )
+    imp.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
+    imp.add_argument(
+        "--create-dataset",
+        action="store_true",
+        help="create the phoenix: labels dataset when it does not exist",
+    )
     imp.add_argument("--labeler", help="who labeled them (unless a record says)")
     imp.add_argument(
         "--replace", action="store_true", help="replace conflicting labels"
@@ -1020,11 +1457,20 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="LABEL",
         help="an annotation label that means fail (false/no/fail already do)",
     )
-    lpull.add_argument("--into", required=True, help="labels dataset file")
+    lpull.add_argument(
+        "--into",
+        required=True,
+        help="labels dataset file, or phoenix:[URL/]NAME[@VER] (pushes a new version)",
+    )
     lpull.add_argument(
         "--replace", action="store_true", help="replace conflicting labels"
     )
     lpull.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
+    lpull.add_argument(
+        "--create-dataset",
+        action="store_true",
+        help="create the phoenix: labels dataset when it does not exist",
+    )
     _add_json(lpull)
     lshow = lsub.add_parser("show", help="count labels by split and value")
     lshow.add_argument("path")
@@ -1035,23 +1481,31 @@ def build_parser() -> argparse.ArgumentParser:
 def _dispatch(args: argparse.Namespace) -> int:
     match args.command:
         case "run":
-            return asyncio.run(_cmd_run(args))
+            return _run_async(_cmd_run(args))
         case "rescore":
-            return asyncio.run(_cmd_rescore(args))
+            return _run_async(_cmd_rescore(args))
+        case "close":
+            return _cmd_close(args)
+        case "annotate":
+            return _cmd_annotate(args)
+        case "experiments":
+            return _run_async(_cmd_experiments(args))
+        case "import":
+            return _run_async(_cmd_import(args))
         case "push":
-            return asyncio.run(_cmd_push(args))
+            return _run_async(_cmd_push(args))
         case "show":
             return _cmd_show(args)
         case "compare":
             return _cmd_compare(args)
         case "pairwise":
-            return asyncio.run(_cmd_pairwise(args))
+            return _run_async(_cmd_pairwise(args))
         case "runs":
             return _cmd_runs(args)
         case "list":
             return _cmd_list(args)
         case "datasets":
-            return asyncio.run(_cmd_datasets(args))
+            return _run_async(_cmd_datasets(args))
         case "labels":
             return _cmd_labels(args)
         case _:
@@ -1115,6 +1569,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         sys.stderr.write("grasp-evals: interrupted\n")
         return 130
+    except Stopped as exc:
+        sys.stderr.write(f"grasp-evals: {exc}\n")
+        return 128 + exc.signal_number
     except Exception as exc:
         code = _exit_code(exc)
         _report_error(exc, code, as_json=getattr(args, "json", False))

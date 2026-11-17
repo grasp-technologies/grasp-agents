@@ -46,15 +46,17 @@ if TYPE_CHECKING:
 
 class BashSessionHolder:
     """
-    Lazily opens and caches one persistent :class:`ExecSession` per agent loop.
+    Lazily opens and caches one persistent :class:`ExecSession` per agent.
 
-    Owned by the agent loop and wired onto its ``BashSession`` tool; because the
-    agent owns its tools (deep-copied at construction), sub-agents and parallel
+    Held on the agent's :class:`AgentContext`, from which the stateless
+    ``BashSession`` tool resolves it per call, so sub-agents and parallel
     replicas each get their own stateful shell. The session is opened on first
-    use and reopened if a command closed it (e.g. one that ignored the interrupt
-    and forced a session-level kill) or if it reached its lifetime cap (E2B's
-    per-session timeout). A reopen loses shell state, so it is flagged for the
-    ``BashSession`` tool to surface to the model (see :meth:`take_reset`).
+    use and reopened if it was closed: a command that ignored the interrupt
+    and forced a session-level kill, a timeout on E2B, or a swap of the E2B
+    sandbox it ran in. An E2B session that lost its output stream and could
+    not reattach replaces its shell itself. Either way the shell state is
+    lost, so it is flagged for the ``BashSession`` tool to surface to the
+    model (see :meth:`take_reset`).
     """
 
     def __init__(self) -> None:
@@ -75,13 +77,13 @@ class BashSessionHolder:
             current = self._session
             if current is None:
                 current = await backend.open_session()
-            elif current.closed or getattr(current, "expired", False):
-                # Prior shell died or hit its lifetime cap — a fresh shell loses
-                # cwd / env / shell variables, so flag it for BashSession to
-                # report. Close a still-open-but-expired one first.
-                if not current.closed:
-                    with contextlib.suppress(Exception):
-                        await current.close()
+            elif current.closed:
+                # Prior shell died (e.g. killed by a timeout) — a fresh shell
+                # loses cwd / env / shell variables, so flag it for BashSession
+                # to report. Closing it releases what a dead shell still holds
+                # (an E2B output stream).
+                with contextlib.suppress(Exception):
+                    await current.close()
                 current = await backend.open_session()
                 self._was_reset = True
             self._session = current
@@ -91,12 +93,17 @@ class BashSessionHolder:
         """Return and clear the 'session was reset since last command' flag."""
         was = self._was_reset
         self._was_reset = False
+        session = self._session
+        if session is not None:
+            # A session that replaced its shell in place (the holder never
+            # saw it closed) reports through its own flag.
+            was = session.take_reset() or was
         return was
 
     async def close(self) -> None:
         session = self._session
         self._session = None
-        if session is not None and not session.closed:
+        if session is not None:
             await session.close()
 
 
@@ -222,14 +229,14 @@ class BashSession(BaseTool[BashInput, BashResult, Any]):
             )
             if holder is not None and holder.take_reset():
                 notice = (
-                    "[shell session expired and was reset: working directory, "
+                    "[shell session was reset: working directory, "
                     "exported environment, and shell variables set in earlier "
                     "calls were lost]\n"
                 )
                 result = result.model_copy(update={"stderr": notice + result.stderr})
             return result
         finally:
-            if own_session and not session.closed:
+            if own_session:
                 with contextlib.suppress(Exception):
                     await session.close()
 

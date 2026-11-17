@@ -1,17 +1,19 @@
 """
-Per-:class:`AgentLoop` agent-scope state, passed explicitly to tools.
+Per-agent, session-scoped state, passed explicitly to tools.
 
-Where :class:`~grasp_agents.session_context.SessionContext` is the *run*-scoped DI
-container shared by every processor in a run, :class:`AgentContext` is the
-*agent*-scoped counterpart: one per :class:`AgentLoop`, carrying the mutable
-state a single agent's tools operate against — the file-edit ledger, the
-persistent shell session, the background-task manager, the context-window
-manager (which owns the agent's transcript log), and the agent's sibling tools
-(the transcript and tools are read by sub-agent tools as their *parent's*).
+Where :class:`~grasp_agents.session_context.SessionContext` is the session-scoped
+DI container shared by every processor in a session, :class:`AgentContext` is the
+*agent*-scoped counterpart: one per agent, living until ``agent.aclose()`` and
+carrying the mutable state a single agent's tools operate against — the
+file-edit ledger, the persistent shell session, the background-task manager, the
+context-window manager (which owns the agent's transcript log), and the agent's
+sibling tools (the transcript and tools are read by sub-agent tools as their
+*parent's*).
 
-The loop owns one and passes it (as ``agent_ctx``) to every tool call, so tools
-stay stateless: a single tool instance can be shared across agents without the
-state of one clobbering another.
+Each tool call receives it (as ``agent_ctx``) as a per-call copy
+(:meth:`AgentContext.for_tool_call`) sharing the same state, so tools stay
+stateless: a single tool instance can be shared across agents without the state
+of one clobbering another.
 
 ``bg_tasks`` and ``inbox`` are the agent's two *side channels* — separate queues
 whose messages are written into the transcript between turns (task notes through
@@ -143,15 +145,16 @@ class AgentContext:
         persists the tool result, inside the store's
         :meth:`~grasp_agents.durability.CheckpointStore.transaction`. When the
         store is transactional and the effect writes through that same
-        transaction, the two commit atomically, so a crash on either side
-        re-runs nothing twice; otherwise the effect is at-least-once (a crash
-        before the checkpoint lands replays its round). A failed run prunes its
-        in-flight tool round and drops that round's pending effects with it; a
-        rollback drops those of the tasks it cancels. An effect deferred outside
-        a tool call is never dropped. The effect must be self-contained (a
-        closure over what it writes); a failure aborts the checkpoint, and the
-        effect stays pending until it succeeds or is discarded
-        (:meth:`DeferredEffects.discard`).
+        transaction, the two commit atomically; otherwise the effect is
+        at-least-once (a crash before the checkpoint lands replays its round).
+        Either way an interrupted commit leaves the effect pending to run again
+        at the next checkpoint, so effects must tolerate running twice. A failed
+        run prunes its in-flight tool round and drops that round's pending
+        effects with it; a rollback drops those of the tasks it cancels. An
+        effect deferred outside a tool call is never dropped. The effect must be
+        self-contained (a closure over what it writes); a failure aborts the
+        checkpoint, and the effect stays pending until it succeeds or is
+        discarded (:meth:`DeferredEffects.discard`).
         """
         self.effects.add(DeferredEffect(call_id=self._tool_call_id, run=effect))
 
@@ -200,16 +203,16 @@ class AgentContext:
         read them from the holders' ``context_id`` before the sandbox was
         paused/snapshotted. See :class:`KernelHolder`.
         """
-        from grasp_agents.tools.bash_common import (
+        from grasp_agents.tools.bash_common import (  # ruff: ignore[import-outside-top-level]
             ShellState,
         )
-        from grasp_agents.tools.bash_session import (
+        from grasp_agents.tools.bash_session import (  # ruff: ignore[import-outside-top-level]
             BashSessionHolder,
         )
         from grasp_agents.tools.file_edit.session_state import (  # ruff: ignore[import-outside-top-level]
             FileEditSessionState as _FileEditSessionState,
         )
-        from grasp_agents.tools.notebook_exec import (
+        from grasp_agents.tools.notebook_exec import (  # ruff: ignore[import-outside-top-level]
             KernelHolder,
         )
 
@@ -283,7 +286,9 @@ class AgentContext:
 
         ``rebind_kernels`` (step rollback paired with a restored filesystem
         snapshot) re-attaches the kernels' execution contexts inside the
-        restored sandbox; a failed-run settle leaves the live kernels alone.
+        restored sandbox, and forgets the ones ``state`` has none for, so the
+        next call opens a fresh kernel there; a failed-run settle leaves the
+        live kernels alone.
         """
         self.file_edit_state.import_state(
             state.read_file_state, state.dotfile_overrides
@@ -323,10 +328,9 @@ class AgentContext:
             self.inbox.seed_consumption_seq(state.mail_consumption_seq)
 
         if rebind_kernels:
-            if state.ipy_exec_context_id is not None and self.ipy_kernel_holder:
+            if self.ipy_kernel_holder is not None:
                 self.ipy_kernel_holder.rebind(state.ipy_exec_context_id)
-            if state.nb_exec_context_id is not None:
-                self.nb_kernel_holder.rebind(state.nb_exec_context_id)
+            self.nb_kernel_holder.rebind(state.nb_exec_context_id)
 
     def deliver_task_notes(self, notes: Sequence[TaskNote]) -> None:
         """
@@ -394,7 +398,7 @@ class AgentContext:
         mailbox_hw = state.mail_consumption_seq
         leased = self.inbox.drop_leases() if self.inbox is not None else []
         if committed_mail_seq > mailbox_hw or leased:
-            from grasp_agents.mailbox import (
+            from grasp_agents.mailbox import (  # ruff: ignore[import-outside-top-level]
                 void_mail_after,
             )
 
@@ -415,7 +419,7 @@ class AgentContext:
 
         Session teardown — reached via ``LLMAgent.aclose()``, never at run end
         (this state is session-scoped and survives run boundaries). ``ctx`` is
-        the run context; it lets :meth:`BackgroundTaskManager.cancel_all`
+        the session context; it lets :meth:`BackgroundTaskManager.cancel_all`
         persist CANCELLED task records (the tool cascade needs no ctx — each
         wrapped processor closes with its own). Steps run in order —
         background tasks first, since one may be mid-command holding a

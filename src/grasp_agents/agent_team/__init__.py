@@ -7,7 +7,7 @@ messages to each other over a shared mailbox
 :class:`~grasp_agents.runtime.Transport`
 (:class:`~grasp_agents.mailbox.InMemoryMailboxTransport` for a single process, or
 :class:`~grasp_agents.mailbox.CheckpointMailboxTransport` for durable delivery over
-the session checkpoint store). See ``docs/experimental/agent-team``.
+the session checkpoint store). See ``docs/orchestration.md``.
 """
 
 from __future__ import annotations
