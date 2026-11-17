@@ -48,7 +48,8 @@ Don't end replies with a recap. **Why:** ... **How to apply:** ...
   and `description` (required, at most 2048 characters).
 - The frontmatter is plain YAML of at most 4,096 characters
   (`MAX_FRONTMATTER_CHARS`). Anchors and aliases are refused, as is nesting too
-  deep to parse, so a hostile file cannot blow up when loaded.
+  deep to parse, so a hostile file can neither exhaust memory nor stop the
+  load.
 - A topic file whose frontmatter is missing, too long, refused or invalid is
   logged and skipped. The error names the field and the problem, never the
   offending value.
