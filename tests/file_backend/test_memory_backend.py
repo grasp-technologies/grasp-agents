@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from grasp_agents.file_backend import (
+    GrepLine,
     InMemoryFileBackend,
     PathAccessError,
     StaleFileError,
@@ -276,7 +277,7 @@ async def test_grep_uses_the_shared_text_grep() -> None:
 
     result = await backend.grep(ROOT, "TODO", output_mode="content")
 
-    assert result.lines == ["/mem/a.md:2:TODO two"]
+    assert result.content == [GrepLine(ROOT / "a.md", 2, "TODO two", is_match=True)]
     assert result.num_files_matched == 1
 
 

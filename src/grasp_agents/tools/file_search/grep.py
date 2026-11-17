@@ -19,7 +19,8 @@ Three output modes, chosen via ``output_mode``:
   which files are relevant.
 - ``count``: ``path:N`` per file showing match counts.
 - ``content``: ``path:line:<content>`` per matching line. Supports
-  ``-A`` / ``-B`` / ``-C`` context lines and ``-n`` line numbers.
+  ``-A`` / ``-B`` / ``-C`` context lines (``path-line-<content>``) and
+  ``-n`` line numbers.
 
 ``head_limit`` / ``offset`` slice the output after the backend returns.
 The tool reports ``truncated=True`` when ``head_limit`` cut results so
@@ -27,7 +28,8 @@ the model can narrow the query instead of paging blindly.
 
 Results the backend would refuse to ``Read`` (its ``deny_read`` carve-outs,
 credential files) are dropped before slicing, and the totals count only
-what is left.
+what is left. Backends return ``content`` as :class:`GrepLine` records, so
+each line is checked by the exact path of its file.
 """
 
 from __future__ import annotations
@@ -42,11 +44,11 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel, Field
 
-from grasp_agents.file_backend.base import GrepRawResult
+from grasp_agents.file_backend.base import GrepLine, GrepRawResult
 from grasp_agents.file_backend.paths import PathAccessError
 from grasp_agents.tools.base import BaseTool, ToolProgressCallback
 
-from ._read_access import filter_content_lines, readable_paths
+from ._read_access import readable_paths
 
 if TYPE_CHECKING:
     from grasp_agents.agent.agent_context import AgentContext
@@ -262,7 +264,7 @@ def _build_args(
         # rg leaves the file name off when searching a single file.
         args.extend(["--count", "--with-filename"])
     else:
-        args.append("--json")
+        args.extend(["--json", "--line-number"])
         if context is not None:
             args.extend(["--context", str(context)])
         else:
@@ -320,15 +322,9 @@ def _get_text(obj: dict[str, Any], key: str) -> str | None:
         return None
 
 
-def _parse_json_content(
-    stdout: bytes, *, show_line_numbers: bool
-) -> tuple[list[str], int, set[str]]:
-    r"""
-    Parse rg's ``--json`` stream into ``(lines, num_matches, paths)``.
-    """
-    lines: list[str] = []
-    num_matches = 0
-    paths: set[str] = set()
+def _parse_json_content(stdout: bytes) -> list[GrepLine]:
+    """Parse rg's ``--json`` stream into a :class:`GrepLine` per line."""
+    content: list[GrepLine] = []
     current_path: str | None = None
 
     for raw_line in stdout.splitlines():
@@ -349,26 +345,21 @@ def _parse_json_content(
 
         if msg_type == "begin":
             # Reset even when the path is unreadable, so this file's lines
-            # are never rendered under the previous file's path.
+            # are never attributed to the previous file.
             current_path = _get_text(data, "path")
-            if current_path is not None:
-                paths.add(current_path)
             continue
 
         if msg_type in {"match", "context"}:
-            path = _get_text(data, "path") or current_path or ""
+            path = _get_text(data, "path") or current_path
             line_no = data.get("line_number")
+            if path is None or not isinstance(line_no, int):
+                continue
             text = (_get_text(data, "lines") or "").rstrip("\n")
-            sep = ":" if msg_type == "match" else "-"
-            if show_line_numbers and isinstance(line_no, int):
-                rendered = f"{path}{sep}{line_no}{sep}{text}"
-            else:
-                rendered = f"{path}{sep}{text}"
-            lines.append(rendered)
-            if msg_type == "match":
-                num_matches += 1
+            content.append(
+                GrepLine(Path(path), line_no, text, is_match=msg_type == "match")
+            )
 
-    return lines, num_matches, paths
+    return content
 
 
 async def local_backend_grep(
@@ -402,6 +393,7 @@ async def local_backend_grep(
         after_context=after_context,
         context=context,
     )
+    del show_line_numbers  # records always carry their line numbers
     stdout, stderr, rc = await _run_rg(args)
     if rc not in {0, 1}:
         err = stderr.decode("utf-8", errors="replace").strip() or "unknown error"
@@ -424,14 +416,12 @@ async def local_backend_grep(
             num_files_matched=len(entries),
         )
 
-    # content mode
-    lines, num_matches, paths = _parse_json_content(
-        stdout, show_line_numbers=show_line_numbers
-    )
+    content = _parse_json_content(stdout)
+    matches = [line for line in content if line.is_match]
     return GrepRawResult(
-        lines=lines,
-        num_matches=num_matches,
-        num_files_matched=len(paths),
+        content=content,
+        num_matches=len(matches),
+        num_files_matched=len({line.path for line in matches}),
     )
 
 
@@ -458,6 +448,20 @@ def _slice[T](
         return entries[start:], False
     end = start + head_limit
     return entries[start:end], end < total
+
+
+def _render_content(lines: list[GrepLine], *, show_line_numbers: bool) -> str:
+    """
+    Render ``content`` records as rg prints them: ``path:N:text`` for a
+    match and ``path-N-text`` for a context line, without ``N`` when line
+    numbers are off.
+    """
+    out: list[str] = []
+    for line in lines:
+        sep = ":" if line.is_match else "-"
+        number = f"{line.line_number}{sep}" if show_line_numbers else ""
+        out.append(f"{line.path}{sep}{number}{line.text}")
+    return "\n".join(out)
 
 
 class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
@@ -592,35 +596,18 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
                 truncated=truncated,
             )
 
-        lines: list[str] = []
-        notes = raw.notes
-        num_matches = num_files_matched = 0
-        if raw.lines:
-            # Content lines carry their path only as text: list the files the
-            # same search matches to tell which file each line comes from.
-            listing = await backend.grep(
-                root=resolved,
-                pattern=inp.pattern,
-                glob=inp.glob,
-                file_type=inp.type,
-                case_insensitive=inp.case_insensitive,
-                multiline=inp.multiline,
-                output_mode="files_with_matches",
-            )
-            # A part the listing could not search loses its lines below.
-            notes = [*notes, *(n for n in listing.notes if n not in notes)]
-            readable = await readable_paths(
-                backend, listing.files, dotfile_overrides=overrides
-            )
-            lines, num_matches, num_files_matched = filter_content_lines(
-                raw.lines, files=listing.files, readable=readable
-            )
-        sliced, truncated = _slice(lines, offset=offset, head_limit=inp.head_limit)
+        readable = await readable_paths(
+            backend, (line.path for line in raw.content), dotfile_overrides=overrides
+        )
+        kept = [line for line in raw.content if line.path in readable]
+        matches = [line for line in kept if line.is_match]
+        page, truncated = _slice(kept, offset=offset, head_limit=inp.head_limit)
+        output = _render_content(page, show_line_numbers=inp.show_line_numbers)
         return GrepResult(
-            output=_with_notes(self._redactor("\n".join(sliced)), notes),
+            output=_with_notes(self._redactor(output), raw.notes),
             output_mode=inp.output_mode,
-            num_matches=num_matches,
-            num_files_matched=num_files_matched,
+            num_matches=len(matches),
+            num_files_matched=len({line.path for line in matches}),
             truncated=truncated,
         )
 

@@ -11,10 +11,10 @@ way:
 * ``files_with_matches``: ``files`` lists matching paths; ``num_matches``
   equals the number of files.
 * ``count``: ``counts`` holds ``(path, matching_lines)``.
-* ``content``: ``lines`` holds ``f"{path}:{line_no}:{text}"`` for matching
-  lines and ``f"{path}-{line_no}-{text}"`` for context lines (no line
-  number when ``show_line_numbers`` is False). Overlapping context windows
-  are merged; groups are not separated by ``--``.
+* ``content``: ``content`` holds a :class:`GrepLine` per matching line and
+  per context line, numbered whatever ``show_line_numbers`` says (the
+  ``Grep`` tool decides what to print). Overlapping context windows are
+  merged, and a multiline match is one record.
 
 Files are ordered by path components, like ``rg --sort path``. Paths whose
 components under ``root`` start with a dot are skipped unless
@@ -47,7 +47,7 @@ from typing import TYPE_CHECKING
 
 import regex
 
-from .base import GrepOutputMode, GrepRawResult
+from .base import GrepLine, GrepOutputMode, GrepRawResult
 from .glob_match import expand_braces, match_segments
 
 if TYPE_CHECKING:
@@ -134,6 +134,7 @@ def grep_texts(
             brace alternatives, or ``file_type`` is not a known type.
 
     """
+    del show_line_numbers  # records always carry their line numbers
     deadline = time.monotonic() + time_budget
     _check_length("Pattern", pattern)
     if glob is not None:
@@ -173,7 +174,7 @@ def grep_texts(
 
     found_files: list[Path] = []
     counts: list[tuple[Path, int]] = []
-    rendered: list[str] = []
+    content: list[GrepLine] = []
     notes: list[str] = []
     num_matches = 0
     num_files_matched = 0
@@ -207,21 +208,14 @@ def grep_texts(
             counts.append((path, hits))
             num_matches += hits
         else:
-            rendered.extend(
-                _render_content(
-                    path,
-                    lines,
-                    spans,
-                    before=before,
-                    after=after,
-                    show_line_numbers=show_line_numbers,
-                )
+            content.extend(
+                _content_records(path, lines, spans, before=before, after=after)
             )
             num_matches += hits
     return GrepRawResult(
         files=found_files,
         counts=counts,
-        lines=rendered,
+        content=content,
         num_matches=num_matches,
         num_files_matched=num_files_matched,
         notes=notes,
@@ -376,15 +370,14 @@ def _match_spans(
     return spans
 
 
-def _render_content(
+def _content_records(
     path: Path,
     lines: list[str],
     spans: list[tuple[int, int]],
     *,
     before: int,
     after: int,
-    show_line_numbers: bool,
-) -> list[str]:
+) -> list[GrepLine]:
     match_lines: set[int] = set()
     span_at: dict[int, tuple[int, int]] = {}
     for start, end in spans:
@@ -396,7 +389,7 @@ def _render_content(
         shown.update(range(max(0, start - before), start))
         shown.update(range(end + 1, min(len(lines), end + 1 + after)))
 
-    out: list[str] = []
+    out: list[GrepLine] = []
     i = 0
     ordered = sorted(shown)
     while i < len(ordered):
@@ -404,24 +397,16 @@ def _render_content(
         if n in span_at:
             start, end = span_at[n]
             text = "\n".join(lines[start : end + 1])
-            out.append(_render_line(path, start, text, ":", show_line_numbers))
+            out.append(GrepLine(path, start + 1, text, is_match=True))
             while i < len(ordered) and ordered[i] <= end:
                 i += 1
             continue
         if n in match_lines:
             i += 1
             continue
-        out.append(_render_line(path, n, lines[n], "-", show_line_numbers))
+        out.append(GrepLine(path, n + 1, lines[n], is_match=False))
         i += 1
     return out
-
-
-def _render_line(
-    path: Path, index: int, text: str, sep: str, show_line_numbers: bool
-) -> str:
-    if show_line_numbers:
-        return f"{path}{sep}{index + 1}{sep}{text}"
-    return f"{path}{sep}{text}"
 
 
 class _GlobFilter:

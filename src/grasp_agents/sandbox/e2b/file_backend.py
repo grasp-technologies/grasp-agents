@@ -22,6 +22,7 @@ from grasp_agents.file_backend.base import (
     FileBackend,
     FileEntry,
     FileStat,
+    GrepLine,
     GrepRawResult,
     StaleFileError,
 )
@@ -349,6 +350,7 @@ class E2BFileBackend(FileBackend):
         after_context: int | None = None,
         context: int | None = None,
     ) -> GrepRawResult:
+        del show_line_numbers  # records always carry their line numbers
         if multiline:
             raise NotImplementedError(
                 "E2BFileBackend.grep does not support multiline mode (remote "
@@ -379,12 +381,7 @@ class E2BFileBackend(FileBackend):
             stdout, code = await _run_capture(sb, cmd, cwd=wire(self._allowed_roots[0]))
         if code >= 2:
             raise OSError(f"remote grep failed (exit {code}) for pattern {pattern!r}")
-        return _parse_grep(
-            stdout,
-            output_mode,
-            show_line_numbers=show_line_numbers,
-            type_globs=type_globs,
-        )
+        return _parse_grep(stdout, output_mode, type_globs=type_globs)
 
 
 def _file_mode(info: EntryInfo) -> int:
@@ -464,7 +461,6 @@ def _parse_grep(
     stdout: str,
     output_mode: GrepOutputMode,
     *,
-    show_line_numbers: bool,
     type_globs: tuple[str, ...] | None,
 ) -> GrepRawResult:
     """
@@ -500,21 +496,18 @@ def _parse_grep(
             num_files_matched=len(counts),
         )
 
-    lines: list[str] = []
-    num_matches = 0
-    matched_files: set[str] = set()
+    content: list[GrepLine] = []
     for name, sep, rest in records:
         record = _CONTENT_RECORD.fullmatch(rest) if sep else None
         if record is None or not wanted(name):
             continue
         line_no, kind, text = record.groups()
-        number = f"{line_no}{kind}" if show_line_numbers else ""
-        lines.append(f"{name}{kind}{number}{text}")
-        if kind == ":":
-            num_matches += 1
-            matched_files.add(name)
+        content.append(GrepLine(Path(name), int(line_no), text, is_match=kind == ":"))
+    matches = [line for line in content if line.is_match]
     return GrepRawResult(
-        lines=lines, num_matches=num_matches, num_files_matched=len(matched_files)
+        content=content,
+        num_matches=len(matches),
+        num_files_matched=len({line.path for line in matches}),
     )
 
 
