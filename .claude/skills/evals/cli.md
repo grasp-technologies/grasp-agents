@@ -30,6 +30,7 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 | `show RUN` | Markdown summary; `--json`; `--trials`; `--failures`; `--outputs`; `--example ID` | `--failures` lists trials with a task error, a scorer failure, a `False` score or an unscored score. `--example` always prints JSON and refuses sealed examples |
 | `compare BASE CAND` | Paired comparison; `--top N`; gate flags | Exits 1 only with `--fail-on-regression` |
 | `rescore RUN` | Child run with re-scored stored outputs | `--spec` defaults to the run's recorded spec; `--rerun`; `--allow-unvalidated` |
+| `close RUN` | Finalizes a run left `running` by a killed process: `partial` (or `completed`) from its stored trials | Refused while its process runs on this host, or when that cannot be told (another host, a run recorded before processes were), unless `--force`. Metrics from `--spec`, else the run's spec |
 | `pairwise BASE CAND --judge MOD:ATTR` | Order-swapped A/B judging | `--one-order`; types come from `--spec` or the base run's spec; stored in the base run's store |
 | `runs` | Newest first; `--name`, `--limit` (default 20) | One line per run: id, kind, spec attribute@task version, status, first metric |
 | `list MODULE` | The `Evaluation`s defined in a module | |
@@ -97,6 +98,7 @@ These settings live only in the spec and have no CLI override: `max_error_rate`,
 | 2 | Usage errors: bad arguments, spec, run reference or dataset file; `dataset_checks` problems found by `run`; `ResumeError`; `SealedSelectionError`; any other `ValueError`; a missing `PHOENIX_BASE_URL`; a stale or mismatched Phoenix dataset |
 | 3 | An unexpected error (with a traceback), a Phoenix server error, or a pydantic `ValidationError` |
 | 130 | Interrupted. The run is finalized as `cancelled` and can be resumed in place |
+| 143, 129 | Stopped by SIGTERM or SIGHUP (a stopped shell, a container shutdown): finalized as `cancelled`, like Ctrl-C |
 
 With `run --push`, a push failure's code replaces the gate result. The run is still
 stored and reported, and `push_error` is set in the JSON.

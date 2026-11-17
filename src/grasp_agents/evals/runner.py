@@ -15,6 +15,7 @@ from ._execution import (
     execute_trial,
     load_run,
     output_adapter,
+    process_alive,
     rehydrate_output,
     resolve_store,
     retype_examples,
@@ -36,6 +37,7 @@ from .types import (
     RunConfig,
     RunStatus,
     Trial,
+    Usage,
 )
 
 if TYPE_CHECKING:
@@ -532,7 +534,8 @@ async def rescore(
     parent = load_run(run_store, run)
     if parent.status == RunStatus.RUNNING:
         raise ValueError(
-            f"Run {parent.id} has not finished; resume it (or let it finish) first"
+            f"Run {parent.id} has not finished: resume it, let it finish, or close "
+            "it if its process is gone"
         )
     events_by_key: dict[TrialKey, list[Event[Any]]] = (
         run_store.load_events(parent.id) if run_store is not None else {}
@@ -616,3 +619,66 @@ async def rescore(
     return await run_all(
         executor, [work(t) for t in parent.trials], metrics=metrics, order=order
     )
+
+
+def close_run(
+    run: "str | EvaluationRun",
+    *,
+    scorers: Sequence[Scorer[Any, Any, Any]] = (),
+    metrics: MetricsSpec = None,
+    store: RunStore | None = None,
+    force: bool = False,
+) -> EvaluationRun:
+    """
+    Finalize a run left ``running`` by a process that is gone (killed, or
+    on a machine that stopped) from the trials it stored: ``completed`` when
+    every trial is there, else ``partial``, which ``rescore`` and Phoenix
+    pushes accept and ``resume`` continues. ``scorers`` and ``metrics`` are
+    the run's (for score directions and metrics; defaults otherwise).
+
+    Refused while the run's process still runs on this host, or when that
+    cannot be told (another host, or a run recorded without its process),
+    unless ``force``. Usage counts the stored trials, or the run's recorded
+    total when larger (attempts later retried are not stored).
+    """
+    run_store = resolve_store(store, persist=True)
+    loaded = load_run(run_store, run)
+    if loaded.status != RunStatus.RUNNING:
+        raise ValueError(f"Run {loaded.id} is {loaded.status}: nothing to close")
+    alive = process_alive(loaded.process)
+    if alive is not False and not force:
+        process = loaded.process
+        owner = (
+            "the process running it is unknown"
+            if process is None
+            else f"process {process.pid} on {process.host} "
+            + ("is still running it" if alive else "may still be running it")
+        )
+        raise ValueError(
+            f"Cannot close run {loaded.id}: {owner}. Close it once that process "
+            "is gone, or force it."
+        )
+    order: list[TrialKey] = [
+        (e.id, r) for e in loaded.examples for r in range(loaded.config.repetitions)
+    ]
+    stored = sum((t.total_usage for t in loaded.trials), Usage())
+    recorded = loaded.usage
+    usage = (
+        recorded if (recorded.cost_usd or 0.0) > (stored.cost_usd or 0.0) else stored
+    )
+    loaded.metadata = {
+        **loaded.metadata,
+        "closed": {
+            "at": utc_now().isoformat(),
+            "process": None
+            if loaded.process is None
+            else loaded.process.model_dump(mode="json"),
+            "forced": alive is not False,
+        },
+    }
+    executor = Executor(
+        loaded, store=run_store, scorers=scorers, claim=False, base_usage=usage
+    )
+    done = sum(1 for key in order if executor.get(key) is not None)
+    status = RunStatus.COMPLETED if done >= len(order) else RunStatus.PARTIAL
+    return executor.finalize(status, metrics=metrics, order=order)

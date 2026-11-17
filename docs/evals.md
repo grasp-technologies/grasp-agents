@@ -158,9 +158,18 @@ resume must use the same task identity, scorers, selection and repetitions;
 that cannot be forced. It is also refused when the git commit or diff of the
 repository containing the current directory changed (any file, not only the
 task's) or when the task's or scorers' source files changed; `force=True`
-overrides those two checks. A model that the run never used stops the resume. `rescore(run, scorers)` scores stored outputs again in a child run;
-unchanged scorers keep their scores. Runs are addressed by id, unique id prefix,
-run directory, `latest` or `latest:<name>`.
+overrides those two checks. A model that the run never used stops the resume.
+`rescore(run, scorers)` scores stored outputs again in a child run; unchanged
+scorers keep their scores. Runs are addressed by id, unique id prefix, run
+directory, `latest` or `latest:<name>`.
+
+A run records the process executing it (`EvaluationRun.process`: host, pid).
+Ctrl-C, SIGTERM and SIGHUP end a CLI run `cancelled`. A run whose process was
+killed outright stays `running`; `close_run(run)` (`grasp-evals close RUN`)
+finalizes it from its stored trials as `partial` (or `completed`), which
+`rescore`, `push` and `resume` accept. It refuses while the process still runs
+on this host, or when that cannot be told (another host, an older run),
+unless forced.
 
 ## Comparing
 
@@ -222,6 +231,7 @@ A judge is validated like any other system:
 |---|---|
 | `run SPEC [--split --ids --sample --limit --include-sealed -r -c --timeout --max-cost --resume --baseline --fail-under M=V --fail-on-regression --push]` | run an `Evaluation` |
 | `rescore RUN [--spec SPEC --rerun --allow-unvalidated]` | score stored outputs again (`--spec` defaults to the run's recorded spec) |
+| `close RUN [--spec SPEC --force]` | finalize a run whose process is gone |
 | `show RUN [--failures --trials --outputs --example ID]` | inspect a run |
 | `compare BASE CANDIDATE [--fail-on-regression --gate T --min-effect X]` | paired comparison |
 | `pairwise BASE CANDIDATE --judge MODULE:ATTR [--one-order]` | A/B judging |
@@ -239,6 +249,7 @@ progress goes to stderr (`--progress json` for one object per trial).
 | 1 | a gate failed: invalid or incomplete run, missed `--fail-under`, significant regression, unvalidated judge; `datasets validate` found problems |
 | 2 | usage error: bad arguments, spec, dataset file or run reference; dataset problems found by `run`; resume refused |
 | 3 | unexpected error, or Phoenix failed |
+| 130, 143, 129 | interrupted (Ctrl-C), or stopped by SIGTERM or SIGHUP: the run is finalized `cancelled` |
 
 ## Phoenix
 

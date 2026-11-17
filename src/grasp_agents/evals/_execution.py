@@ -2,7 +2,9 @@ import asyncio
 import json
 import logging
 import operator
+import os
 import platform
+import socket
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -47,6 +49,7 @@ from .types import (
     Example,
     Provenance,
     RunCounts,
+    RunProcess,
     RunStatus,
     Score,
     ScorerFailure,
@@ -133,6 +136,28 @@ def score_directions(
             else:
                 directions[score.name] = inherited.get(score.name, "higher")
     return {**directions, **declared}
+
+
+def current_process() -> RunProcess:
+    return RunProcess(host=socket.gethostname(), pid=os.getpid(), started_at=utc_now())
+
+
+def process_alive(process: RunProcess | None) -> bool | None:
+    """
+    Whether ``process`` still runs: ``None`` when this host cannot tell (no
+    record, or another host). A reused process id reads as alive.
+    """
+    if process is None or process.host != socket.gethostname():
+        return None
+    if process.pid == os.getpid():
+        return True
+    try:
+        os.kill(process.pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def capture_provenance(
@@ -333,9 +358,17 @@ class Executor:
         scorer_timeout_s: float | None = None,
         progress: ProgressCallback | None = None,
         total: int = 0,
+        claim: bool = True,
+        base_usage: Usage | None = None,
     ) -> None:
         self.run = run
         self.store = store
+        if claim:
+            # Recorded before any trial, so a run left behind by a killed
+            # process can be told from one still running.
+            run.process = current_process()
+            if store is not None:
+                store.save(run)
         self.scorers = list(scorers)
         self.capture_events = capture_events
         self.max_cost_usd = max_cost_usd
@@ -349,7 +382,7 @@ class Executor:
         self._trials: dict[TrialKey, Trial] = {t.key: t for t in run.trials}
         # What this run has spent so far, including attempts later superseded
         # (a resumed run continues its own total).
-        self._base_usage = run.usage
+        self._base_usage = run.usage if base_usage is None else base_usage
         self._new_usage = Usage()
         self._trial_costs: list[float] = [
             t.total_usage.cost_usd or 0.0 for t in run.trials

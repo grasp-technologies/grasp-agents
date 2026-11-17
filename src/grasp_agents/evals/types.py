@@ -461,6 +461,14 @@ class PhoenixLink(BaseModel):
     logged_trials: dict[str, str] = Field(default_factory=dict[str, str])
 
 
+class RunProcess(BaseModel):
+    """The process executing a run: where to look before declaring it dead."""
+
+    host: str
+    pid: int
+    started_at: datetime
+
+
 type RunKind = Literal["evaluation", "rescore", "pairwise", "retry"]
 type Direction = Literal["higher", "lower"]
 
@@ -507,6 +515,9 @@ class EvaluationRun(BaseModel):
     tags: list[str] = Field(default_factory=list[str])
     metadata: dict[str, Any] = Field(default_factory=dict[str, Any])
     phoenix: PhoenixLink | None = None
+    # The process that last executed the run (``None`` for runs recorded
+    # before processes were).
+    process: RunProcess | None = None
 
     trials: list[Trial] = Field(default_factory=list[Trial], exclude=True)
     examples: list[Example[Any, Any]] = Field(

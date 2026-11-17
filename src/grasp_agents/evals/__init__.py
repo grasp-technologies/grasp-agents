@@ -75,7 +75,7 @@ from .pairwise import (
     pairwise,
 )
 from .report import render_comparison_markdown, render_run_markdown, run_summary
-from .runner import ResumeError, SealedSelectionError, evaluate, rescore
+from .runner import ResumeError, SealedSelectionError, close_run, evaluate, rescore
 from .scorer import (
     FunctionScorer,
     ScoreContext,
@@ -94,6 +94,7 @@ from .types import (
     JudgedOutput,
     MetricResult,
     Provenance,
+    RunProcess,
     RunStatus,
     Score,
     ScoreReason,
@@ -159,6 +160,7 @@ __all__ = [
     "Provenance",
     "ResumeError",
     "RunNotFoundError",
+    "RunProcess",
     "RunStatus",
     "RunStore",
     "Score",
@@ -179,6 +181,7 @@ __all__ = [
     "Usage",
     "ValidationGate",
     "WinRate",
+    "close_run",
     "compare",
     "compute_metrics",
     "default_metrics",

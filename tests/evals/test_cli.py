@@ -1,9 +1,21 @@
 import json
+import signal
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
 
+from grasp_agents.evals import (
+    Dataset,
+    Example,
+    LocalRunStore,
+    RunStatus,
+    close_run,
+    evaluate,
+)
 from grasp_agents.evals.cli import main
 
 _MODULE = """
@@ -415,3 +427,126 @@ def test_unvalidated_judges_fail_the_run_gate(
     )
     assert code == 0
     assert listed["gate_failures"] == []
+
+
+# --- Stopped and killed runs ---
+
+_SLOW_MODULE = """
+import asyncio
+
+from grasp_agents.evals import (
+    Dataset, Evaluation, Example, FunctionTask, ScoreContext, scorer,
+)
+
+
+@scorer
+def correct(ctx: ScoreContext[int, int, int]) -> bool:
+    return ctx.output == ctx.reference
+
+
+async def slow(x: int) -> int:
+    await asyncio.sleep(0.2 if x else 0.0)
+    return x * 2
+
+
+slow_eval = Evaluation(
+    name="slow",
+    task=FunctionTask(slow),
+    dataset=Dataset(
+        [Example(id=f"x{i}", input=i, reference=i * 2) for i in range(30)],
+        name="numbers",
+    ),
+    scorers=[correct],
+    concurrency=1,
+)
+"""
+
+
+def _start_slow_run(tmp_path: Path) -> tuple[subprocess.Popen[bytes], LocalRunStore]:
+    spec = tmp_path / "slow_evals.py"
+    spec.write_text(textwrap.dedent(_SLOW_MODULE))
+    root = tmp_path / "evals"
+    process = subprocess.Popen(  # ruff: ignore[subprocess-without-shell-equals-true]
+        [sys.executable, "-m", "grasp_agents.evals", "--root", str(root), "run"]
+        + [f"{spec}:slow_eval", "-q"],
+        cwd=tmp_path,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    store = LocalRunStore(root)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        trials = list(root.glob("runs/*/trials.jsonl"))
+        if trials and len(trials[0].read_text().splitlines()) >= 2:
+            return process, store
+        time.sleep(0.05)
+    process.kill()
+    raise AssertionError("the run did not start")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_sigterm_finalizes_the_run_as_cancelled(tmp_path: Path) -> None:
+    process, store = _start_slow_run(tmp_path)
+    process.send_signal(signal.SIGTERM)
+    assert process.wait(timeout=30) == 128 + signal.SIGTERM
+    assert process.stderr is not None
+    assert b"stopped by SIGTERM" in process.stderr.read()
+    run = store.load(store.resolve("latest"))
+    assert run.status == RunStatus.CANCELLED
+    assert 2 <= run.counts.trials_done < 30
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_a_killed_run_can_be_closed_then_rescored(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    process, store = _start_slow_run(tmp_path)
+    process.kill()
+    process.wait(timeout=30)
+    stuck = store.load(store.resolve("latest"))
+    assert stuck.status == RunStatus.RUNNING
+    assert stuck.process is not None
+    assert stuck.process.pid == process.pid
+    root = str(store.root)
+    code, closed = _run_json(capsys, "--root", root, "close", stuck.id, "--json")
+    assert code == 0
+    assert closed["status"] == "partial"
+    assert closed["counts"]["trials_done"] >= 2
+    assert closed["metrics"]["pass_rate(correct)"]["missing"] > 0
+    code, child = _run_json(
+        capsys, "--root", root, "rescore", stuck.id, "--rerun", "--json", "-q"
+    )
+    assert code == 0
+    assert child["parent_run_id"] == stuck.id
+
+
+@pytest.mark.asyncio
+async def test_a_live_or_unknown_process_keeps_its_run_open(tmp_path: Path) -> None:
+    store = LocalRunStore(tmp_path)
+
+    async def double(x: int) -> int:
+        return x * 2
+
+    run = await evaluate(
+        double,
+        Dataset([Example(id="a", input=1, reference=2)]),
+        store=store,
+    )
+    run.status = RunStatus.RUNNING
+    store.save(run)  # its process is this one
+    with pytest.raises(ValueError, match="is still running it"):
+        close_run(run.id, store=store)
+    assert run.process is not None
+    run.process = run.process.model_copy(update={"host": "elsewhere"})
+    store.save(run)
+    with pytest.raises(ValueError, match="may still be running it"):
+        close_run(run.id, store=store)
+    run.process = None
+    store.save(run)
+    with pytest.raises(ValueError, match="is unknown"):
+        close_run(run.id, store=store)
+    closed = close_run(run.id, store=store, force=True)
+    assert closed.status == RunStatus.COMPLETED
+    assert closed.metadata["closed"]["forced"] is True
+    with pytest.raises(ValueError, match="nothing to close"):
+        close_run(run.id, store=store)

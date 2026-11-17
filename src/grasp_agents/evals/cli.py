@@ -13,15 +13,18 @@ exit code says what happened:
   threshold is missed, ``--fail-on-regression`` found a significant regression
   against ``--baseline``, a judge is not validated, or a dataset is invalid;
 - 2: usage error (bad arguments, spec, dataset file or run reference);
-- 3: an unexpected error, or Phoenix failed.
+- 3: an unexpected error, or Phoenix failed;
+- 130 / 128 + signal number: interrupted (Ctrl-C) or stopped (SIGTERM,
+  SIGHUP); the run is finalized as ``cancelled`` and can be resumed.
 """
 
 import argparse
 import asyncio
 import json
+import signal
 import sys
 import traceback
-from collections.abc import Sequence
+from collections.abc import Coroutine, Sequence
 from pathlib import Path
 from typing import Any, NoReturn, cast, override
 
@@ -47,7 +50,7 @@ from .report import (
     run_summary,
     trial_summary,
 )
-from .runner import ResumeError, SealedSelectionError
+from .runner import ResumeError, SealedSelectionError, close_run
 from .store import LocalRunStore, RunNotFoundError, store_for_ref
 from .types import EvaluationRun, RunStatus, Trial
 from .validation import UnvalidatedJudgeError
@@ -71,6 +74,55 @@ class _Parser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         # Reported by ``main`` (as a JSON document under ``--json``).
         raise CLIError(message, usage=self.format_usage())
+
+
+class Stopped(Exception):
+    """The process was asked to stop (SIGTERM, SIGHUP)."""
+
+    def __init__(self, signum: int) -> None:
+        super().__init__(f"stopped by {signal.Signals(signum).name}")
+        self.signum = signum
+
+
+_STOP_SIGNALS = tuple(
+    s for s in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)) if s
+)
+
+
+def _run_async(command: Coroutine[Any, Any, int]) -> int:
+    """
+    Run a command on an event loop where SIGTERM and SIGHUP cancel it as
+    Ctrl-C does, so a stopped process still finalizes its run.
+    """
+
+    async def main() -> int:
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        received: list[int] = []
+
+        def stop(signum: int) -> None:
+            received.append(signum)
+            if task is not None:
+                task.cancel()
+
+        handled: list[int] = []
+        for signum in _STOP_SIGNALS:
+            try:
+                loop.add_signal_handler(signum, stop, signum)
+            except (NotImplementedError, RuntimeError, ValueError):
+                continue  # no loop signal handlers here (Windows, a thread)
+            handled.append(signum)
+        try:
+            return await command
+        except asyncio.CancelledError:
+            if received:
+                raise Stopped(received[0]) from None
+            raise
+        finally:
+            for signum in handled:
+                loop.remove_signal_handler(signum)
+
+    return asyncio.run(main())
 
 
 def _print_json(data: Any) -> None:
@@ -319,6 +371,25 @@ async def _cmd_rescore(args: argparse.Namespace) -> int:
         _print_json({**run_summary(child), "path": str(store.run_dir(child.id))})
     else:
         _print_markdown(render_run_markdown(child))
+    return EXIT_OK
+
+
+def _cmd_close(args: argparse.Namespace) -> int:
+    store, run = _resolve_run(args.run, args.root)
+    spec = args.spec or run.evaluation
+    scorers: Sequence[Any] = ()
+    metrics: Any = None
+    if spec:
+        evaluation = load_evaluation(spec)
+        scorers = evaluation.scorers
+        metrics, _ = evaluation.check_judges(store, allow_unvalidated=True)
+    closed = close_run(
+        run, scorers=scorers, metrics=metrics, store=store, force=args.force
+    )
+    if args.json:
+        _print_json({**run_summary(closed), "path": str(store.run_dir(closed.id))})
+    else:
+        _print_markdown(render_run_markdown(closed))
     return EXIT_OK
 
 
@@ -649,7 +720,7 @@ def _cmd_labels(args: argparse.Namespace) -> int:
             )
         return EXIT_OK
     if args.labels_command == "pull":
-        return asyncio.run(_pull_labels(args))
+        return _run_async(_pull_labels(args))
     return _show_labels(Path(args.path))
 
 
@@ -880,6 +951,20 @@ def build_parser() -> argparse.ArgumentParser:
     push.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     _add_json(push)
 
+    close = sub.add_parser(
+        "close", help="finalize a run whose process is gone (partial or completed)"
+    )
+    close.add_argument("run")
+    close.add_argument(
+        "--spec", help="Evaluation to take metrics from (default: the run's)"
+    )
+    close.add_argument(
+        "--force",
+        action="store_true",
+        help="close even if its process may still be running",
+    )
+    _add_json(close)
+
     rescore = sub.add_parser("rescore", help="score a run's outputs again (child run)")
     rescore.add_argument("run")
     rescore.add_argument("--spec", help="Evaluation to take scorers from")
@@ -1049,23 +1134,25 @@ def build_parser() -> argparse.ArgumentParser:
 def _dispatch(args: argparse.Namespace) -> int:
     match args.command:
         case "run":
-            return asyncio.run(_cmd_run(args))
+            return _run_async(_cmd_run(args))
         case "rescore":
-            return asyncio.run(_cmd_rescore(args))
+            return _run_async(_cmd_rescore(args))
+        case "close":
+            return _cmd_close(args)
         case "push":
-            return asyncio.run(_cmd_push(args))
+            return _run_async(_cmd_push(args))
         case "show":
             return _cmd_show(args)
         case "compare":
             return _cmd_compare(args)
         case "pairwise":
-            return asyncio.run(_cmd_pairwise(args))
+            return _run_async(_cmd_pairwise(args))
         case "runs":
             return _cmd_runs(args)
         case "list":
             return _cmd_list(args)
         case "datasets":
-            return asyncio.run(_cmd_datasets(args))
+            return _run_async(_cmd_datasets(args))
         case "labels":
             return _cmd_labels(args)
         case _:
@@ -1129,6 +1216,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         sys.stderr.write("grasp-evals: interrupted\n")
         return 130
+    except Stopped as exc:
+        sys.stderr.write(f"grasp-evals: {exc}\n")
+        return 128 + exc.signum
     except Exception as exc:
         code = _exit_code(exc)
         _report_error(exc, code, as_json=getattr(args, "json", False))

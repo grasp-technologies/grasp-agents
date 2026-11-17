@@ -45,6 +45,7 @@ What each action does to runs:
 | Resume an unfinished run (running, cancelled, partial, failed) | Continues in place | Updated |
 | Resume a completed run that has failed trials or missing scorer outputs | A `retry` child that copies the OK trials and redoes the rest | Unchanged |
 | Resume a completed run with nothing to redo | Returns that same run; nothing new is created | Unchanged |
+| `close` a run whose process was killed (`SIGKILL`, OOM, a lost machine) | No new run | Finalized in place as `partial` (or `completed`); then rescore, push or resume it |
 | `rescore` | A `rescore` child. The task is not re-run | Unchanged |
 | `pairwise` | A `pairwise` run whose trials hold both arms' outputs | Unchanged |
 | `push` (Phoenix) | No new run | Only the Phoenix link is written to `run.json` |
