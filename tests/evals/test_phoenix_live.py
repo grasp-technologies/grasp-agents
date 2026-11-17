@@ -706,6 +706,27 @@ def test_labels_go_into_and_come_out_of_phoenix(
     assert "is at version" in capsys.readouterr().err
 
 
+def test_datasets_pull_writes_nothing_under_the_working_directory(
+    base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name = _name("cached")
+
+    async def push() -> None:
+        async with PhoenixClient(base_url) as client:
+            await push_dataset(client, _dataset(name))
+
+    asyncio.run(push())
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    monkeypatch.delenv("GRASP_EVALS_DIR", raising=False)
+    monkeypatch.delenv("GRASP_EVALS_CACHE_DIR", raising=False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+    assert main(["datasets", "pull", f"{base_url}/{name}", "--json"]) == 0
+    assert list(work.iterdir()) == []
+    assert list((tmp_path / "xdg" / "grasp-evals").rglob("*.jsonl"))
+
+
 # --- Labels from human annotations ---
 
 

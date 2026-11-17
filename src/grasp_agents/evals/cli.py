@@ -696,7 +696,6 @@ async def _cmd_datasets(args: argparse.Namespace) -> int:
             dataset = await evaluation.load_dataset(
                 args.dataset,
                 phoenix_url=args.base_url,
-                cache_dir=(args.root / "datasets") if args.root else None,
             )
         except DatasetError as exc:
             _print_json({"valid": False, "errors": [str(exc)]})
@@ -704,7 +703,6 @@ async def _cmd_datasets(args: argparse.Namespace) -> int:
         problems = await evaluation.dataset_problems(
             dataset,
             phoenix_url=args.base_url,
-            cache_dir=(args.root / "datasets") if args.root else None,
         )
         _print_json(
             {
@@ -749,7 +747,6 @@ async def _cmd_phoenix_datasets(args: argparse.Namespace) -> int:
                 client,
                 ref.name,
                 version=ref.version,
-                cache_dir=(args.root / "datasets") if args.root else None,
             )
             if args.output:
                 dataset.save(args.output)

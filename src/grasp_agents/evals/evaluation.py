@@ -461,10 +461,6 @@ class Evaluation:
             include_sealed=include_sealed,
             check=check,
             phoenix_url=phoenix_url,
-            # Pulled datasets are cached next to the runs.
-            cache_dir=store.root / "datasets"
-            if isinstance(store, LocalRunStore)
-            else None,
         )
         return await evaluate_task(
             self.build_task(),

@@ -8,7 +8,9 @@
 grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 ```
 
-- **Store:** `--root`, else `$GRASP_EVALS_DIR`, else `./.evals` in the current directory.
+- **Store:** `--root`, else `$GRASP_EVALS_DIR`, else `./.evals` in the current directory
+  (a warning says so when that is inside a git repository that does not ignore it).
+  Pulled datasets go to the user cache, never under the working directory.
   `grasp-evals run SPEC --root DIR` fails with "unrecognized arguments".
 - **Spec forms:** `pkg.module:attr` (portable) or `path/to/file.py:attr` (recorded by
   absolute path).
@@ -137,7 +139,8 @@ See [metrics.md](metrics.md#regression-gate).
   trials.jsonl        append-only; a later line with the same (example, repetition) wins
   transcripts.jsonl   event streams (processor tasks with capture_events=True)
   report.md           the rendered summary
-<store>/datasets/phoenix/...   pulled Phoenix dataset versions (cached by version)
+~/.cache/grasp-evals/phoenix/...   pulled Phoenix dataset versions, per server and version
+                                   ($GRASP_EVALS_CACHE_DIR, else $XDG_CACHE_HOME/grasp-evals)
 ```
 
 - A run id looks like `20261103T120000-<name-slug>-<4 hex>`. A run directory must keep

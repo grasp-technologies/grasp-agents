@@ -156,6 +156,11 @@ runs/<run_id>/transcripts.jsonl  per-trial event streams
 runs/<run_id>/report.md
 ```
 
+The default `./.evals` is relative to the current directory; creating it
+inside a git repository that does not ignore it logs a warning. Pulled
+Phoenix datasets are cached outside it, per user: `$GRASP_EVALS_CACHE_DIR`,
+else `$XDG_CACHE_HOME/grasp-evals`, else `~/.cache/grasp-evals`.
+
 `EvaluationRun.kind` is `evaluation`, `rescore`, `pairwise`, `retry` or
 `import`. A run
 records provenance (git commit/branch/dirty state, source hashes, Python and

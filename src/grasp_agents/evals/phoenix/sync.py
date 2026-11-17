@@ -24,7 +24,7 @@ from pydantic import BaseModel, TypeAdapter
 
 from grasp_agents.evals._util import canonical_json, short_hash, slugify, to_jsonable
 from grasp_agents.evals.dataset import Dataset, DatasetError
-from grasp_agents.evals.store import RunStore, default_evals_dir
+from grasp_agents.evals.store import RunStore, default_cache_dir
 from grasp_agents.evals.types import (
     EvaluationRun,
     Example,
@@ -283,12 +283,11 @@ async def pull_dataset(
     """
     A Phoenix dataset version as a :class:`Dataset` (latest when ``version``
     is omitted). Versions are immutable, so each is cached under
-    ``cache_dir`` (default ``<evals dir>/datasets``), keyed by server and
+    ``cache_dir`` (default: the user cache, see ``default_cache_dir``), keyed
+    by server and
     version: later pulls of a pinned version need no network.
     """
-    root = (
-        Path(cache_dir) if cache_dir is not None else default_evals_dir() / "datasets"
-    )
+    root = Path(cache_dir) if cache_dir is not None else default_cache_dir()
     input_adapter: TypeAdapter[Any] = TypeAdapter(input_type)
     reference_adapter: TypeAdapter[Any] = TypeAdapter(reference_type)
     if version is not None:

@@ -408,8 +408,10 @@ Each item gives the wrong assumption, what actually happens, and what to do.
     **Do:** iterate without `--split` or with `--split dev`; run `--split test` once.
 20. **"Paths are relative to the spec file."** Relative dataset paths resolve against
     the current directory, and so does the store (`./.evals`, unless `$GRASP_EVALS_DIR`
-    or `--root` is set). `--root` must come *before* the subcommand. Validation-gate
-    lookups and `latest` only see runs in that one store.
+    or `--root` is set; inside a git repository that does not ignore it, a warning
+    says so). `--root` must come *before* the subcommand. Validation-gate lookups and
+    `latest` only see runs in that one store. Pulled Phoenix datasets are cached per
+    user (`~/.cache/grasp-evals`, or `$GRASP_EVALS_CACHE_DIR`).
 21. **"A run remembers its spec portably."**
     - A `file.py:attr` spec is recorded by absolute path. `rescore` and `pairwise`
       without `--spec` reload it from there, so moving the file breaks them (exit 2).
