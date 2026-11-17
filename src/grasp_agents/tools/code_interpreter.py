@@ -58,8 +58,8 @@ DEFAULT_CODE_TIMEOUT = 120.0
 # expansion + the per-file stats); the rest are noted as omitted.
 DEFAULT_MAX_ARTIFACT_FILES = 50
 
-# POSIX file-type mask (S_IFMT). Present in ``st_mode`` on the local backend;
-# absent on backends that report permission-only modes (e.g. E2B / MCP).
+# POSIX file-type mask (S_IFMT). The built-in backends report it in ``mode``;
+# a third-party backend may report permission bits only.
 _S_IFMT = 0o170000
 
 
@@ -76,8 +76,9 @@ async def _is_directory(backend: FileBackend, resolved: Path, st: FileStat) -> b
     """
     Whether ``resolved`` is a directory, robust across backends.
 
-    Prefers the POSIX type bits in ``st_mode`` (the local backend reports them);
-    a backend that returns permission-only modes is probed with a listing.
+    Prefers the POSIX type bits in ``mode`` (the built-in backends report
+    them); a backend that returns permission-only modes is probed with a
+    listing.
     """
     if st.mode & _S_IFMT:
         return stat_module.S_ISDIR(st.mode)
@@ -223,12 +224,14 @@ class RunPython(BaseTool[RunPythonInput, list[InputText | InputImage], Any]):
                 "SessionContext (e.g. via local_environment(...)) before running."
             )
         exec_backend = ctx.exec_backend
-        if not isinstance(exec_backend, KernelCapable):
+        kernel_backend = (
+            exec_backend if isinstance(exec_backend, KernelCapable) else None
+        )
+        if kernel_backend is None:
             raise ValueError(
                 f"RunPython requires a kernel-capable exec backend; "
                 f"{exec_backend.name!r} cannot host a Jupyter kernel."
             )
-        kernel_backend = exec_backend
 
         requested = inp.timeout if inp.timeout is not None else self._default_timeout
 

@@ -114,8 +114,13 @@ name.
 write_tool_name="write_file", delete_tool_name="delete_file")` routes the file
 tools and memory through a server:
 
-- Reads use `resources/read`; `stat`, `exists`, `list_dir`, glob and grep use
-  a cached index built from one `resources/list` per session.
+- Reads use `resources/read`; `stat`, `exists`, `list_dir` and glob use a
+  cached index built from one `resources/list` per session. Grep is not
+  supported (`NotImplementedError`).
+- `stat` reports POSIX file-type bits: a resource whose metadata sets
+  `is_dir`, or a path with resources under it but none of its own, is a
+  directory, and any other resource is a regular file. So `Delete` refuses a
+  directory and `Glob` refuses a file as its search path.
 - A read reports the file's mtime from the index, as `stat` does, and looks it
   up before reading the content, so the mtime never postdates the content. A
   file the index does not list yet takes the mtime the read returns.
