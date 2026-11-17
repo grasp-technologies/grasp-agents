@@ -17,7 +17,7 @@ or writes durable state.
   named `ctx`, `exec_id` and `agent_ctx` are injected by the framework and hidden
   from the schema. Don't add `**kwargs`.
 - **`BaseTool[InT, OutT, CtxT]` subclass** (`tools/base.py`) when you need state in
-  the constructor, streaming (`_run_stream`), conflict keys or custom behaviour.
+  the constructor, streaming (`_run_stream`), conflict keys or custom behavior.
   Implement `async def _run(self, inp, *, ctx=None, exec_id=None,
   progress_callback=None, path=None, agent_ctx=None)`.
   - The **class docstring is developer-facing**: third person, for people reading
@@ -77,7 +77,11 @@ or writes durable state.
 8. **Execution goes through the environment.** Shell, code and filesystem
    access must use `ctx.environment` and `ctx.file_backend`, never `subprocess` or
    `open()` directly. That keeps the sandbox policy in force (see
-   `docs/sandbox.md`).
+   `docs/sandbox.md`). A tool that changes a file it read does what the file
+   tools do: check the read record in `agent_ctx.file_edit_state`, pass its
+   mtime to `write_bytes` / `delete` as `expected_mtime`, and wrap the call in
+   `refuse_if_stale` (`tools/file_edit/session_state.py`), so the backend
+   refuses a write over someone else's change (see `docs/files.md`).
 9. **No thin wrapper dependencies.** For a REST integration, write it on `httpx`
    yourself rather than adding a small SDK-wrapper package.
 
@@ -94,4 +98,5 @@ or writes durable state.
 
 Unit-test `_run` directly, and drive one agent turn with `MockLLM` that calls the
 tool by name (see the `writing-tests` skill). For tools that touch the
-filesystem, use `tmp_path` and a `LocalFileBackend` scoped to it.
+filesystem, use `tmp_path` and a `LocalFileBackend` scoped to it, or an
+`InMemoryFileBackend` seeded with `files=`.
