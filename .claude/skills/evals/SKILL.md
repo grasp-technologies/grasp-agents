@@ -362,7 +362,10 @@ Each item gives the wrong assumption, what actually happens, and what to do.
     value, so a hand-written file that spells those defaults out gets a different id and
     content hash.
     - Runs pair only on the same id *and* an unchanged content hash. Other examples are
-      skipped (`n_changed_examples`).
+      skipped (`n_changed_examples`). Metadata is content: adding or rewording a
+      provenance key unpairs every example, unless the key is declared in
+      `Evaluation(descriptive_metadata=[...])`. Never declare a key a scorer,
+      `group_by` or `cluster_by` reads.
     - Two id-less examples with the same input are rejected as duplicates.
 
     **Do:** give explicit ids and write files with `Dataset.save`.

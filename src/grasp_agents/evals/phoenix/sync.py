@@ -511,8 +511,9 @@ async def _resolve_dataset(
     remote = await client.call(
         client.sdk.datasets.get_dataset(dataset=dataset_id, timeout=timeout)
     )
+    descriptive = run.dataset.descriptive_metadata
     remote_hashes = {
-        record_id(r): content_digest(*_unpack(r))
+        record_id(r): content_digest(*_unpack(r), descriptive=descriptive)
         for r in cast("list[Mapping[str, Any]]", remote.examples)
     }
     differing = [e.id for e in examples if remote_hashes.get(e.id) != e.content_hash]

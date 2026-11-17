@@ -58,6 +58,7 @@ from .types import (
     Score,
     Trial,
     Usage,
+    pairing_hashes,
 )
 
 type Winner = Literal["first", "second", "tie"]
@@ -384,13 +385,15 @@ async def pairwise(
     base_run = load_run(run_store, base)
     candidate_run = load_run(run_store, candidate)
     candidate_trials = {t.key: t for t in candidate_run.trials}
+    base_hashes, candidate_hashes = pairing_hashes(base_run, candidate_run)
     pairs: list[tuple[Trial, Trial]] = []
     for trial in base_run.trials:
         other = candidate_trials.get(trial.key)
         if (
             other is not None
             and (trial.ok or other.ok)
-            and trial.example_hash == other.example_hash
+            and base_hashes.get(trial.example_id)
+            == candidate_hashes.get(other.example_id)
         ):
             pairs.append((trial, other))
     if not pairs:

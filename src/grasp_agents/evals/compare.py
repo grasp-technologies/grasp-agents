@@ -1,4 +1,4 @@
-from collections.abc import Hashable, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from ._util import code_scheme
 from .metrics import Measure, Reducer, Target, as_target, mean, trial_value
 from .stats import holm_adjust, paired_difference
-from .types import EvaluationRun, RunStatus, Trial
+from .types import EvaluationRun, RunStatus, Trial, pairing_hashes
 
 _RESOURCES = frozenset(
     {
@@ -106,9 +106,9 @@ class Comparison(BaseModel):
 
 
 class _ExampleView:
-    def __init__(self, trials: Sequence[Trial]) -> None:
+    def __init__(self, trials: Sequence[Trial], content_hash: str) -> None:
         self.trials = list(trials)
-        self.hash = trials[0].example_hash
+        self.hash = content_hash
         self.sealed = any(t.sealed for t in trials)
         self.errored = any(not t.ok for t in trials)
 
@@ -141,11 +141,14 @@ class _ExampleView:
         return chosen[1]
 
 
-def _views(run: EvaluationRun) -> dict[str, _ExampleView]:
+def _views(run: EvaluationRun, hashes: Mapping[str, str]) -> dict[str, _ExampleView]:
     groups: dict[str, list[Trial]] = {}
     for trial in run.trials:
         groups.setdefault(trial.example_id, []).append(trial)
-    return {example_id: _ExampleView(trials) for example_id, trials in groups.items()}
+    return {
+        example_id: _ExampleView(trials, hashes.get(example_id, trials[0].example_hash))
+        for example_id, trials in groups.items()
+    }
 
 
 def _numeric_scores(run: EvaluationRun) -> list[str]:
@@ -308,21 +311,23 @@ def compare(
     Each score is read in the direction the runs recorded for it (higher is
     better unless its scorer declared ``lower_is_better``); a score the runs
     disagree on is left out with a warning. Examples are paired by id and
-    only when their content is unchanged;
-    repetitions are reduced per example first, and a task error counts as a
-    failure of pass/fail scores. Each target reports the mean paired
-    difference with a confidence interval, a p-value (exact McNemar for
-    pass/fail scores, a paired t-test otherwise — clustered when the base run
-    was clustered, or by ``cluster_by``), the minimum detectable effect, and
-    the examples that moved most. ``significant`` uses Holm-adjusted p-values
-    at ``1 - confidence``, adjusted among the outcome targets (scores, the
-    error rate) and separately among resource targets (duration, cost);
-    targets where no example changed are left out of the adjustment.
+    only when their content is unchanged (metadata keys either run declared
+    descriptive aside); repetitions are reduced per example first, and a
+    task error counts as a failure of pass/fail scores. Each target reports
+    the mean paired difference with a confidence interval, a p-value (exact
+    McNemar for pass/fail scores, a paired t-test otherwise — clustered when
+    the base run was clustered, or by ``cluster_by``), the minimum detectable
+    effect, and the examples that moved most. ``significant`` uses
+    Holm-adjusted p-values at ``1 - confidence``, adjusted among the outcome
+    targets (scores, the error rate) and separately among resource targets
+    (duration, cost); targets where no example changed are left out of the
+    adjustment.
     Examples in sealed splits contribute to the statistics but are never
     listed.
     """
-    base_views = _views(base)
-    candidate_views = _views(candidate)
+    base_hashes, candidate_hashes = pairing_hashes(base, candidate)
+    base_views = _views(base, base_hashes)
+    candidate_views = _views(candidate, candidate_hashes)
     shared = [i for i in base_views if i in candidate_views]
     paired = [i for i in shared if base_views[i].hash == candidate_views[i].hash]
     n_changed = len(shared) - len(paired)

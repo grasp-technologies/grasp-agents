@@ -1,6 +1,13 @@
 import hashlib
 import json
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import (
+    Callable,
+    Collection,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from functools import cached_property
 from pathlib import Path
 from typing import Any, cast, overload
@@ -123,6 +130,11 @@ class Dataset[InT, RefT]:
     Derived datasets (``split``, ``sample``, ``select``, …) remember the source
     they came from and the steps applied, so a run records exactly which subset
     of which dataset version it evaluated.
+
+    ``descriptive_metadata`` names metadata keys no scorer or grouping reads
+    (provenance notes, free-text descriptions): they are left out of each
+    example's ``content_hash``, so rewording them keeps examples pairing with
+    earlier runs. Declare them only when nothing depends on them.
     """
 
     def __init__(
@@ -133,8 +145,14 @@ class Dataset[InT, RefT]:
         version: str | None = None,
         source: str | None = None,
         description: str | None = None,
+        descriptive_metadata: Collection[str] = (),
     ) -> None:
-        self._examples: list[Example[InT, RefT]] = list(examples)
+        self.descriptive_metadata = sorted(set(descriptive_metadata))
+        self._examples: list[Example[InT, RefT]] = (
+            [_rehashed(e, self.descriptive_metadata) for e in examples]
+            if self.descriptive_metadata
+            else list(examples)
+        )
         self._by_id: dict[str, Example[InT, RefT]] = {}
         for example in self._examples:
             if example.id in self._by_id:
@@ -222,6 +240,24 @@ class Dataset[InT, RefT]:
             selection=self.selection,
             selected_fingerprint=self.fingerprint,
             selected_size=len(self),
+            descriptive_metadata=list(self.descriptive_metadata),
+        )
+
+    def with_descriptive_metadata(self, keys: Collection[str]) -> "Dataset[InT, RefT]":
+        """This dataset with ``keys`` declared descriptive (see the class)."""
+        if self._origin is not None:
+            raise DatasetError(
+                "Declare descriptive metadata on the whole dataset, before selecting"
+            )
+        if sorted(set(keys)) == self.descriptive_metadata:
+            return self
+        return Dataset(
+            self._examples,
+            name=self.name,
+            version=self.version,
+            source=self.source,
+            description=self.description,
+            descriptive_metadata=keys,
         )
 
     # --- Selection ---
@@ -236,6 +272,8 @@ class Dataset[InT, RefT]:
             source=self.source,
             description=self.description,
         )
+        # The examples are already hashed without the descriptive keys.
+        derived.descriptive_metadata = self.descriptive_metadata
         derived._origin = self.origin
         derived._selection = [*self._selection, step]
         return derived
@@ -634,6 +672,14 @@ def _parse_record(
     return with_record(
         example, ExampleRecord(record.input, record.reference, record.metadata)
     )
+
+
+def _rehashed[E: Example[Any, Any]](example: E, descriptive: Sequence[str]) -> E:
+    record = example.record
+    digest = content_digest(*record, descriptive=descriptive)
+    if digest == example.content_hash:
+        return example
+    return with_record(example.model_copy(update={"content_hash": digest}), record)
 
 
 def _to_record(example: Example[Any, Any]) -> dict[str, Any]:

@@ -42,7 +42,13 @@ A dataset file holds one example per line (JSONL) or a list (JSON/YAML):
 Give curated examples explicit, stable ids: runs pair and resume by id. A
 missing `id` defaults to a hash of the input. Each example also carries a
 `content_hash` of its stored record; two runs pair an example only when its
-content is unchanged. `Dataset.load(path, input_type=, reference_type=)`
+content is unchanged. Metadata keys that nothing reads (provenance notes,
+descriptions) can be declared descriptive — `Evaluation(descriptive_metadata=
+["source", "check"])`, `Dataset(..., descriptive_metadata=...)` or
+`dataset.with_descriptive_metadata(...)` — and are then left out of the
+content hash; runs record them, and `compare` and `pairwise` leave the keys
+either run declared out when pairing, also against runs made before the
+declaration. `Dataset.load(path, input_type=, reference_type=)`
 validates records against your types. `dataset_checks` on an `Evaluation` are
 integrity functions (`example -> problem message | None`) run before every run.
 
@@ -294,7 +300,8 @@ the spec module (`init_tracing` + `init_phoenix`; see
 1. A completed run's trials and results are never modified; retries and
    rescoring create child runs (`EvaluationRun.parent_run_id`). `push` only adds
    the Phoenix link and digests to `run.json`.
-2. Examples pair across runs only by id with an unchanged `content_hash`.
+2. Examples pair across runs only by id with unchanged content (declared
+   descriptive metadata keys aside).
 3. Unscored values are never counted as numbers in metrics.
 4. A run that includes a sealed split includes all of it.
 5. A gated score is never computed by a judge that did not pass its gate,

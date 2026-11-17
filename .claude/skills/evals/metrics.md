@@ -109,7 +109,7 @@ Always added: `error_rate`, `p50(duration_s)` and `p95(duration_s)`, plus
 cluster_by=None)`:
 
 1. **Pairing**: examples present in both runs with the same id *and* the same content
-   hash. `n_changed_examples`, `n_base_only` and `n_candidate_only` count the rest.
+   hash, computed without the metadata keys either run declared descriptive. `n_changed_examples`, `n_base_only` and `n_candidate_only` count the rest.
 2. **Default targets**: numeric scores (bool or number) found in *both* runs, then
    `error`, `duration_s`, and `cost_usd` when any trial has a cost. Label scores are
    never compared. From Python, pass `targets=[...]` to choose others. Numeric

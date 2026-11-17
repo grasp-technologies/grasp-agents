@@ -127,13 +127,35 @@ async def load_dataset_source(
     *,
     input_type: Any = Any,
     reference_type: Any = Any,
+    descriptive_metadata: Sequence[str] = (),
     phoenix_url: str | None = None,
     cache_dir: str | Path | None = None,
 ) -> Dataset[Any, Any]:
     """
-    The dataset ``source`` names: a :class:`Dataset`, a file, a
-    ``phoenix:`` reference or a (possibly async) loader.
+    The dataset ``source`` names — a :class:`Dataset`, a file, a
+    ``phoenix:`` reference or a (possibly async) loader — with
+    ``descriptive_metadata`` declared on it.
     """
+    loaded = await _load_source(
+        source,
+        input_type=input_type,
+        reference_type=reference_type,
+        phoenix_url=phoenix_url,
+        cache_dir=cache_dir,
+    )
+    if descriptive_metadata:
+        return loaded.with_descriptive_metadata(descriptive_metadata)
+    return loaded
+
+
+async def _load_source(
+    source: "DatasetSource",
+    *,
+    input_type: Any,
+    reference_type: Any,
+    phoenix_url: str | None,
+    cache_dir: str | Path | None,
+) -> Dataset[Any, Any]:
     if isinstance(source, Dataset):
         return cast("Dataset[Any, Any]", source)
     if isinstance(source, PhoenixRef) or (
@@ -213,6 +235,10 @@ class Evaluation:
     sealed_splits: Sequence[str] = ()
     # Integrity checks run on the dataset before every run.
     dataset_checks: Mapping[str, DatasetCheck] | Sequence[DatasetCheck] = ()
+    # Metadata keys nothing reads (provenance, descriptions): left out of
+    # example identity, so rewording them keeps runs pairing. Not for keys
+    # that scorers, group_by or cluster_by read.
+    descriptive_metadata: Sequence[str] = ()
     # Scores whose judge must have passed validation on held-out labels before
     # this evaluation scores anything: the newest validation run of the judge
     # exactly as it is now must meet the gate. Their pass rates are also
@@ -264,6 +290,7 @@ class Evaluation:
             path if path is not None else self.dataset,
             input_type=self.resolved_input_type,
             reference_type=self.reference_type,
+            descriptive_metadata=self.descriptive_metadata,
             phoenix_url=phoenix_url,
             cache_dir=cache_dir,
         )
@@ -360,6 +387,8 @@ class Evaluation:
                 dataset, phoenix_url=phoenix_url, cache_dir=cache_dir
             )
         )
+        if self.descriptive_metadata and data.origin is data:
+            data = data.with_descriptive_metadata(self.descriptive_metadata)
         if check:
             problems = await self.dataset_problems(
                 data, phoenix_url=phoenix_url, cache_dir=cache_dir
@@ -500,6 +529,7 @@ class Evaluation:
                 dataset,
                 input_type=self.resolved_input_type,
                 reference_type=self.reference_type,
+                descriptive_metadata=self.descriptive_metadata,
                 phoenix_url=phoenix_url,
             )
             problems = await self.dataset_problems(newer, phoenix_url=phoenix_url)

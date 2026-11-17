@@ -338,3 +338,25 @@ class TestSealedByDefault:
         assert run_summary(included)["dataset"]["sealed_left_out"] == []
         with pytest.raises(DatasetError, match="not in the selected subset"):
             await evaluation.run(ids=["s2"], persist=False)
+
+
+@pytest.mark.asyncio
+async def test_an_evaluation_declares_descriptive_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "data.jsonl"
+    path.write_text(
+        '{"id": "a", "input": 1, "reference": 1, "metadata": {"note": "x"}}\n'
+    )
+
+    async def echo(x: int) -> int:
+        return x
+
+    evaluation = Evaluation(
+        name="echo",
+        task=FunctionTask(echo),
+        dataset=path,
+        descriptive_metadata=["note"],
+    )
+    run = await evaluation.run(persist=False)
+    assert run.dataset.descriptive_metadata == ["note"]
+    reworded = Dataset.load(path).with_descriptive_metadata(["note"])
+    assert run.examples[0].content_hash == reworded["a"].content_hash

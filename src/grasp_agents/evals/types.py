@@ -83,8 +83,24 @@ def input_digest(raw_input: Any) -> str:
     return short_hash(canonical_json(raw_input))
 
 
-def content_digest(raw_input: Any, raw_reference: Any, metadata: Any) -> str:
-    """Hash of everything an evaluation can depend on (not split membership)."""
+def content_digest(
+    raw_input: Any,
+    raw_reference: Any,
+    metadata: Any,
+    *,
+    descriptive: Iterable[str] = (),
+) -> str:
+    """
+    Hash of everything an evaluation can depend on (not split membership,
+    nor the ``descriptive`` metadata keys, which no scorer reads).
+    """
+    left_out = set(descriptive)
+    if left_out and isinstance(metadata, Mapping):
+        metadata = {
+            k: v
+            for k, v in cast("Mapping[str, Any]", metadata).items()
+            if k not in left_out
+        }
     return short_hash(
         canonical_json(
             {"input": raw_input, "reference": raw_reference, "metadata": metadata}
@@ -373,6 +389,8 @@ class DatasetRef(BaseModel):
     size: int
     # Derivation steps applied to the source, e.g. ["split=dev", "sample=20 seed=0"].
     selection: list[str] = Field(default_factory=list[str])
+    # Metadata keys left out of example content hashes (descriptive only).
+    descriptive_metadata: list[str] = Field(default_factory=list[str])
     selected_fingerprint: str
     selected_size: int
 
@@ -556,3 +574,24 @@ class EvaluationRun(BaseModel):
             for score in trial.scores:
                 names.setdefault(score.name, None)
         return list(names)
+
+
+def pairing_hashes(*runs: "EvaluationRun") -> list[dict[str, str]]:
+    """
+    Per run, each example's content hash for pairing it across ``runs``:
+    without the metadata keys any of them declared descriptive, so runs made
+    before a descriptive key was added or changed still pair.
+    """
+    descriptive = {k for run in runs for k in run.dataset.descriptive_metadata}
+    found: list[dict[str, str]] = []
+    for run in runs:
+        recorded = {t.example_id: t.example_hash for t in run.trials}
+        if descriptive:
+            recorded.update(
+                {
+                    e.id: content_digest(*e.record, descriptive=descriptive)
+                    for e in run.examples
+                }
+            )
+        found.append(recorded)
+    return found

@@ -680,3 +680,41 @@ async def test_differences_of_shares_stay_in_range(store: LocalRunStore) -> None
     assert target is not None
     assert target.ci_high is not None
     assert target.ci_high <= 1.0
+
+
+class TestDescriptiveMetadata:
+    @staticmethod
+    def _data(**metadata: str) -> Dataset[int, int]:
+        return Dataset(
+            [
+                Example(id=f"x{i}", input=i, reference=i * 2, metadata=dict(metadata))
+                for i in range(4)
+            ],
+            name="numbers",
+        )
+
+    @pytest.mark.asyncio
+    async def test_reworded_descriptive_keys_keep_runs_pairing(
+        self, store: LocalRunStore
+    ) -> None:
+        # The base run predates the provenance note; the candidate declares it
+        # descriptive after rewording it.
+        base = await evaluate(good, self._data(), [correct], store=store)
+        candidate = await evaluate(
+            flawed,
+            self._data(note="checked twice").with_descriptive_metadata(["note"]),
+            [correct],
+            store=store,
+        )
+        assert candidate.dataset.descriptive_metadata == ["note"]
+        result = compare(base, candidate)
+        assert result.n_paired_examples == 4
+        assert result.n_changed_examples == 0
+        judged = await pairwise(
+            base, candidate, FunctionPairwiseJudge(_always_first), store=store
+        )
+        assert judged.counts.trials_done == 4
+        undeclared = await evaluate(
+            flawed, self._data(note="checked twice"), [correct], store=store
+        )
+        assert compare(base, undeclared).n_paired_examples == 0
