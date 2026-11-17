@@ -123,6 +123,18 @@ async def test_count_mode(
         assert line.endswith(":1")
 
 
+async def test_count_mode_on_a_single_file(
+    repo: Path, ctx: SessionContext[Any], grep_tool: GrepTool
+) -> None:
+    result = await grep_tool.run(
+        GrepInput(pattern=r"def \w+", path=str(repo / "a.py"), output_mode="count"),
+        ctx=ctx,
+    )
+    assert isinstance(result, GrepResult)
+    assert result.output == f"{repo / 'a.py'}:1"
+    assert (result.num_matches, result.num_files_matched) == (1, 1)
+
+
 # ---------------------------------------------------------------------------
 # content
 # ---------------------------------------------------------------------------
