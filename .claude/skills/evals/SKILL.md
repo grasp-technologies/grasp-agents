@@ -222,6 +222,13 @@ task = ProcessorTask(
     scores. It only fills trials where it failed or did not run.
   - A changed scorer runs again.
   - `--rerun` re-runs every scorer, which also measures a judge's self-consistency.
+  - `--ids a,b` or `--split dev` rescore only those trials (a cheap check of a scorer
+    change). The child covers that subset; `compare` pairs it with the parent on it.
+  - `--dataset <newer file or phoenix:...@VER>` scores the stored outputs against a
+    newer dataset version (a fixed reference, renamed splits) instead of rerunning
+    the task. Examples pair by id where the input is unchanged; trials whose
+    reference or metadata changed are scored from scratch. The child carries the
+    new version, so it pushes to it; `metadata.unpaired` lists what could not pair.
 - **Python.** Prefer `evaluation.rescore(run)`. The bare `rescore()` needs
   `output_type=` (plus `input_type=` and `reference_type=`) and `metrics=`. Without
   them it falls back to plain JSON outputs and default metrics.

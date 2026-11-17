@@ -29,7 +29,7 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 | `run SPEC` | Runs an `Evaluation` | Selection, overrides, gates and `--push` below |
 | `show RUN` | Markdown summary; `--json`; `--trials`; `--failures`; `--outputs`; `--example ID` | `--failures` lists trials with a task error, a scorer failure, a `False` score or an unscored score. `--example` always prints JSON and refuses sealed examples |
 | `compare BASE CAND` | Paired comparison; `--top N`; gate flags | Exits 1 only with `--fail-on-regression` |
-| `rescore RUN` | Child run with re-scored stored outputs | `--spec` defaults to the run's recorded spec; `--rerun`; `--allow-unvalidated` |
+| `rescore RUN` | Child run with re-scored stored outputs | `--spec` defaults to the run's recorded spec; `--rerun`; `--allow-unvalidated`; `--split S` / `--ids a,b` for a child of those trials only (sealed splits whole); `--dataset FILE\|phoenix:...` to score against a newer dataset version |
 | `close RUN` | Finalizes a run left `running` by a killed process: `partial` (or `completed`) from its stored trials | Refused while its process runs on this host, or when that cannot be told (another host, a run recorded before processes were), unless `--force`. Metrics from `--spec`, else the run's spec |
 | `pairwise BASE CAND --judge MOD:ATTR` | Order-swapped A/B judging | `--one-order`; types come from `--spec` or the base run's spec; stored in the base run's store |
 | `runs` | Newest first; `--name`, `--limit` (default 20) | One line per run: id, kind, spec attribute@task version, status, first metric |

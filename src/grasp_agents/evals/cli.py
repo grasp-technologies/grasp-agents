@@ -360,13 +360,25 @@ async def _cmd_rescore(args: argparse.Namespace) -> int:
             "pass --spec MODULE:ATTR"
         )
     evaluation = load_evaluation(spec)
+    ids = [i for i in (args.ids or "").split(",") if i]
     child = await evaluation.rescore(
         parent,
+        split=args.split,
+        ids=ids or None,
+        dataset=args.dataset,
         rerun=args.rerun,
         store=store,
         progress=_progress_printer(args.progress),
         allow_unvalidated=args.allow_unvalidated,
+        phoenix_url=args.base_url,
     )
+    unpaired = child.metadata.get("unpaired") if args.dataset else None
+    if unpaired and (unpaired["missing"] or unpaired["input_changed"]):
+        sys.stderr.write(
+            f"not rescored: {len(unpaired['missing'])} examples missing from the "
+            f"dataset, {len(unpaired['input_changed'])} with a changed input "
+            "(see metadata.unpaired)\n"
+        )
     if args.json:
         _print_json({**run_summary(child), "path": str(store.run_dir(child.id))})
     else:
@@ -968,6 +980,13 @@ def build_parser() -> argparse.ArgumentParser:
     rescore = sub.add_parser("rescore", help="score a run's outputs again (child run)")
     rescore.add_argument("run")
     rescore.add_argument("--spec", help="Evaluation to take scorers from")
+    rescore.add_argument("--split", help="only this split's trials")
+    rescore.add_argument("--ids", help="only these examples' trials (comma-separated)")
+    rescore.add_argument(
+        "--dataset",
+        help="score against this dataset version instead (file or phoenix:...)",
+    )
+    rescore.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     rescore.add_argument(
         "--rerun", action="store_true", help="re-run unchanged scorers too"
     )

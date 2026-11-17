@@ -472,20 +472,43 @@ class Evaluation:
         self,
         run: "str | EvaluationRun",
         *,
+        split: str | None = None,
+        ids: Sequence[str] | None = None,
+        dataset: DatasetSource | None = None,
         rerun: bool = False,
         store: RunStore | None = None,
         persist: bool = True,
         concurrency: int | None = None,
         progress: ProgressCallback | None = None,
         allow_unvalidated: bool = False,
+        phoenix_url: str | None = None,
     ) -> EvaluationRun:
         """
         Re-score a stored run of this evaluation with its current scorers:
         changed ones run again, unchanged ones only where they failed or did
-        not run (all of them with ``rerun=True``). Gated judges must be
-        validated, as for :meth:`run`.
+        not run (all of them with ``rerun=True``). ``split`` and ``ids``
+        narrow it to those examples; ``dataset`` (a file, a ``phoenix:``
+        reference, ...) scores against that version of the dataset, after
+        this evaluation's dataset checks (see :func:`rescore`). Gated judges
+        must be validated, as for :meth:`run`.
         """
         metrics, judges = self.check_judges(store, allow_unvalidated=allow_unvalidated)
+        newer: Dataset[Any, Any] | None = None
+        if dataset is not None:
+            newer = await load_dataset_source(
+                dataset,
+                input_type=self.resolved_input_type,
+                reference_type=self.reference_type,
+                phoenix_url=phoenix_url,
+            )
+            problems = await self.dataset_problems(newer, phoenix_url=phoenix_url)
+            if problems:
+                listed = "\n".join(
+                    f"  {p.example_id}: [{p.check}] {p.message}" for p in problems[:20]
+                )
+                raise DatasetError(
+                    f"{len(problems)} dataset problem(s) in {newer.name!r}:\n{listed}"
+                )
         return await rescore(
             run,
             self.scorers,
@@ -493,6 +516,9 @@ class Evaluation:
             input_type=self.resolved_input_type,
             reference_type=self.reference_type,
             output_type=self.resolved_output_type,
+            split=split,
+            ids=ids,
+            dataset=newer,
             concurrency=concurrency if concurrency is not None else self.concurrency,
             scorer_timeout_s=self.scorer_timeout_s,
             group_by=self.group_by,

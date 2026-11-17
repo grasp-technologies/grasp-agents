@@ -160,7 +160,11 @@ repository containing the current directory changed (any file, not only the
 task's) or when the task's or scorers' source files changed; `force=True`
 overrides those two checks. A model that the run never used stops the resume.
 `rescore(run, scorers)` scores stored outputs again in a child run; unchanged
-scorers keep their scores. Runs are addressed by id, unique id prefix, run
+scorers keep their scores. `split=` and `ids=` make a child of those
+examples' trials only; `dataset=` scores the outputs against another version
+of the dataset, pairing examples by id where the input is unchanged (the
+child records that version and its splits, and lists unpaired examples in
+`metadata["unpaired"]`). Runs are addressed by id, unique id prefix, run
 directory, `latest` or `latest:<name>`.
 
 A run records the process executing it (`EvaluationRun.process`: host, pid).
@@ -230,7 +234,7 @@ A judge is validated like any other system:
 | Command | Does |
 |---|---|
 | `run SPEC [--split --ids --sample --limit --include-sealed -r -c --timeout --max-cost --resume --baseline --fail-under M=V --fail-on-regression --push]` | run an `Evaluation` |
-| `rescore RUN [--spec SPEC --rerun --allow-unvalidated]` | score stored outputs again (`--spec` defaults to the run's recorded spec) |
+| `rescore RUN [--spec SPEC --split --ids --dataset --rerun --allow-unvalidated]` | score stored outputs again (`--spec` defaults to the run's recorded spec) |
 | `close RUN [--spec SPEC --force]` | finalize a run whose process is gone |
 | `show RUN [--failures --trials --outputs --example ID]` | inspect a run |
 | `compare BASE CANDIDATE [--fail-on-regression --gate T --min-effect X]` | paired comparison |

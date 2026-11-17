@@ -550,3 +550,33 @@ async def test_a_live_or_unknown_process_keeps_its_run_open(tmp_path: Path) -> N
     assert closed.metadata["closed"]["forced"] is True
     with pytest.raises(ValueError, match="nothing to close"):
         close_run(run.id, store=store)
+
+
+def test_rescore_selects_trials_and_takes_a_newer_dataset(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = str(tmp_path / "evals")
+    code, base = _run_json(capsys, "--root", root, "run", f"{module}:buggy", "--json")
+    assert code == 0
+    code, some = _run_json(
+        capsys, "--root", root, "rescore", base["id"], "--ids", "x0,x3", "--json"
+    )
+    assert code == 0
+    assert some["dataset"]["selection"] == ["exclude_splits=test", "ids=2"]
+    assert some["counts"]["trials_done"] == 2
+    newer = tmp_path / "doubling-v2.jsonl"
+    newer.write_text(
+        "".join(
+            json.dumps(
+                {"id": f"x{i}", "input": i, "reference": -1 if i == 3 else i * 2}
+            )
+            + "\n"
+            for i in range(4)
+        )
+    )
+    code, fixed = _run_json(
+        capsys, "--root", root, "rescore", base["id"], "--dataset", str(newer), "--json"
+    )
+    assert code == 0
+    assert fixed["dataset"]["name"] == "doubling-v2"
+    assert fixed["metrics"]["pass_rate(correct)"]["value"] == 1.0

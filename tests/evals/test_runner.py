@@ -25,6 +25,7 @@ from grasp_agents.evals import (
     TrialContext,
     TrialProgress,
     Usage,
+    compare,
     evaluate,
     rescore,
     scorer,
@@ -708,6 +709,101 @@ class TestBudget:
         )
         assert run.status == RunStatus.PARTIAL
         assert run.invalid_reason == "no trial ran"
+
+
+class TestRescoreSelection:
+    @staticmethod
+    def _counting() -> tuple[Any, list[str]]:
+        calls: list[str] = []
+
+        @scorer(name="correct", version="2")
+        def counted(ctx: Ctx) -> bool:
+            calls.append(ctx.example.id)
+            return ctx.output == ctx.reference
+
+        return counted, calls
+
+    @pytest.mark.asyncio
+    async def test_rescoring_some_examples_makes_a_child_of_their_trials(
+        self, store: LocalRunStore
+    ) -> None:
+        data = Dataset(
+            [
+                Example(id=f"n{i}", input=i, reference=i * 2, splits=[split])
+                for i, split in enumerate(["dev", "dev", "test", "test"])
+            ],
+            name="numbers",
+        )
+        parent = await evaluate(
+            double,
+            data,
+            [correct],
+            repetitions=2,
+            sealed_splits=["test"],
+            include_sealed=True,
+            store=store,
+        )
+        counted, calls = self._counting()
+        child = await rescore(parent.id, [counted], store=store, ids=["n1"])
+        assert sorted(calls) == ["n1", "n1"]
+        assert [e.id for e in child.examples] == ["n1"]
+        assert child.dataset.selection == ["ids=1"]
+        assert child.status == RunStatus.COMPLETED
+        assert compare(parent, child).n_paired_examples == 1
+        calls.clear()
+        by_split = await rescore(parent.id, [counted], store=store, split="dev")
+        assert sorted(set(calls)) == ["n0", "n1"]
+        assert by_split.dataset.selection == ["split=dev"]
+        with pytest.raises(SealedSelectionError, match="1 of the 2"):
+            await rescore(parent.id, [counted], store=store, ids=["n2"])
+
+    @pytest.mark.asyncio
+    async def test_rescoring_against_a_newer_dataset_version(
+        self, store: LocalRunStore
+    ) -> None:
+        old = Dataset(
+            [
+                Example(id="n0", input=0, reference=0, splits=["dev"]),
+                Example(id="n1", input=1, reference=99, splits=["dev"]),
+                Example(id="n2", input=2, reference=4, splits=["dev"]),
+                Example(id="n3", input=3, reference=6, splits=["dev"]),
+            ],
+            name="numbers",
+        )
+        counted, calls = self._counting()
+        parent = await evaluate(double, old.split("dev"), [counted], store=store)
+        assert parent.counts.trials_done == 4
+        newer = Dataset(
+            [
+                Example(id="n0", input=0, reference=0, splits=["dev-v2"]),
+                Example(id="n1", input=1, reference=2, splits=["dev-v2"]),
+                Example(id="n2", input=20, reference=40, splits=["dev-v2"]),
+            ],
+            name="numbers",
+            version="v2",
+        )
+        calls.clear()
+        child = await rescore(parent.id, [counted], store=store, dataset=newer)
+        # The scorer is unchanged: only the example whose reference changed is
+        # scored again.
+        assert calls == ["n1"]
+        assert child.metadata["unpaired"] == {
+            "missing": ["n3"],
+            "input_changed": ["n2"],
+            "sealed": 0,
+        }
+        assert child.dataset.version == "v2"
+        assert child.dataset.selection == ["ids=2"]
+        assert {e.id: e.splits for e in child.examples} == {
+            "n0": ["dev-v2"],
+            "n1": ["dev-v2"],
+        }
+        n1 = child.trial("n1")
+        assert n1 is not None
+        assert n1.example_hash == newer["n1"].content_hash
+        score = n1.score("correct")
+        assert score is not None
+        assert score.value is True
 
 
 class TestRescoreRules:

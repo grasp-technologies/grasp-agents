@@ -23,7 +23,7 @@ from ._execution import (
     scorer_sources,
     warn_if_untyped,
 )
-from ._util import new_run_id, utc_now
+from ._util import canonical_json, new_run_id, utc_now
 from .dataset import Dataset
 from .metrics import MetricsSpec
 from .scorer import Scorer
@@ -107,20 +107,22 @@ def leave_out_sealed[InT, RefT](
     return kept
 
 
-def check_sealed(dataset: Dataset[Any, Any], sealed: frozenset[str]) -> None:
+def check_sealed(
+    dataset: Dataset[Any, Any], sealed: frozenset[str], *, known: bool = True
+) -> None:
     """
-    Sealed splits must exist, and a selection must include each sealed split
-    it touches whole: a subset would report its examples' results one by
-    one (``--ids <sealed id>``).
+    Sealed splits must exist (unless ``known=False``), and a selection must
+    include each sealed split it touches whole: a subset would report its
+    examples' results one by one (``--ids <sealed id>``).
     """
     if not sealed:
         return
-    known = set(dataset.origin.splits)
-    unknown = sorted(sealed - known)
-    if unknown:
+    splits = set(dataset.origin.splits)
+    unknown = sorted(sealed - splits)
+    if unknown and known:
         raise ValueError(
             f"Sealed splits {unknown} are not splits of {dataset.name!r} "
-            f"(splits: {sorted(known) or 'none'})"
+            f"(splits: {sorted(splits) or 'none'})"
         )
     for split in sorted(sealed):
         selected = {e.id for e in dataset if split in e.splits}
@@ -492,6 +494,44 @@ def _without(trial: Trial, replaced: set[str]) -> Trial:
     )
 
 
+def _rescored_examples(
+    parent: EvaluationRun,
+    typed: Sequence[Example[Any, Any]],
+    dataset: Dataset[Any, Any] | None,
+) -> tuple[Dataset[Any, Any], dict[str, Any]]:
+    """
+    The examples a rescore scores against, as a dataset whose selection says
+    how they were chosen, and what could not be paired with ``dataset``.
+    """
+    if dataset is None:
+        return Dataset(typed, name=parent.dataset.name), {}
+    by_id = {e.id: e for e in parent.examples}
+    sealed = frozenset(parent.config.sealed_splits)
+    paired: list[str] = []
+    missing: list[str] = []
+    changed: list[str] = []
+    hidden = 0
+    for example_id, old in by_id.items():
+        new = dataset.get(example_id)
+        if new is not None and canonical_json(new.record.input) == canonical_json(
+            old.record.input
+        ):
+            paired.append(example_id)
+        elif sealed.intersection(old.splits):
+            hidden += 1
+        else:
+            (missing if new is None else changed).append(example_id)
+    kept = [s for s in parent.dataset.selection if s.startswith("split=")]
+    start = dataset
+    if len(kept) == 1 and kept[0].removeprefix("split=") in dataset.splits:
+        start = dataset.split(kept[0].removeprefix("split="))
+    chosen = set(paired)
+    if {e.id for e in start} - chosen:
+        start = start.select([e.id for e in start if e.id in chosen])
+    unpaired = {"missing": missing, "input_changed": changed, "sealed": hidden}
+    return start, unpaired
+
+
 async def rescore(
     run: "str | EvaluationRun",
     scorers: Sequence[Scorer[Any, Any, Any]],
@@ -500,6 +540,9 @@ async def rescore(
     input_type: Any = Any,
     reference_type: Any = Any,
     output_type: Any = Any,
+    split: str | None = None,
+    ids: Sequence[str] | None = None,
+    dataset: Dataset[Any, Any] | None = None,
     name: str | None = None,
     concurrency: int = 4,
     scorer_timeout_s: float | None = None,
@@ -517,13 +560,20 @@ async def rescore(
 
     Creates a child run (``parent_run_id``) that copies the parent's trials and
     transcripts; the parent is never modified. A scorer identical to the
-    parent's (same name, version, configuration and code) keeps its scores and
-    only fills the trials where it failed or did not run; a new or changed one
-    replaces the parent's scores under its name. Only the scorer's own
-    function or class is compared: when a helper, closure or data file it
-    relies on changes, bump its version or pass ``rerun=True``, which re-runs
-    every given scorer (also to measure a judge's self-consistency). The
-    parent's other scorers' scores are kept.
+    parent's (same name, version, configuration, fingerprint and code) keeps
+    its scores and only fills the trials where it failed or did not run; a
+    new or changed one replaces the parent's scores under its name, and
+    ``rerun=True`` re-runs every given scorer (also to measure a judge's
+    self-consistency). The parent's other scorers' scores are kept.
+
+    ``split`` and ``ids`` make a child of those examples' trials only (a
+    sealed split whole, as for runs), which :func:`compare` pairs with its
+    parent on the examples they share. ``dataset`` scores the outputs
+    against another version of the dataset: each example is paired by id
+    where its input is unchanged and scored against that version's
+    reference, splits and metadata (trials whose example changed are scored
+    from scratch); the child records that version, so it is pushed to it,
+    and lists the examples it could not pair in ``metadata["unpaired"]``.
 
     Stored examples and outputs are re-validated as ``input_type`` /
     ``reference_type`` / ``output_type`` before scorers see them. A parent
@@ -543,6 +593,31 @@ async def rescore(
     typed = retype_examples(
         parent.examples, input_type=input_type, reference_type=reference_type
     )
+    sealed = frozenset(parent.config.sealed_splits)
+    source, unpaired = _rescored_examples(parent, typed, dataset)
+    selected = source.split(split) if split is not None else source
+    if dataset is not None:
+        # Sealed splits as the parent had them: run whole, or left out.
+        selected = leave_out_sealed(
+            selected, sealed, include_sealed=any(t.sealed for t in parent.trials)
+        )
+    if ids:
+        selected = selected.select(ids)
+    if len(selected) == 0:
+        raise ValueError(f"The selection from run {parent.id} has no examples")
+    check_sealed(selected, sealed, known=False)
+    if dataset is not None:
+        dataset_ref = selected.ref()
+    elif selected.selection:
+        dataset_ref = parent.dataset.model_copy(
+            update={
+                "selection": [*parent.dataset.selection, *selected.selection],
+                "selected_fingerprint": selected.fingerprint,
+                "selected_size": len(selected),
+            }
+        )
+    else:
+        dataset_ref = parent.dataset
     adapter = output_adapter(output_type)
     warn_if_untyped(output_type, (t.output for t in parent.trials if t.ok))
     previous = {info.name: info for info in parent.scorers}
@@ -550,6 +625,7 @@ async def rescore(
     replaced = {
         e.name for e in scorers if rerun or previous.get(e.name) != e.describe()
     }
+    everything = {info.name for info in parent.scorers} | given
     scorer_infos = [i for i in parent.scorers if i.name not in given] + [
         e.describe() for e in scorers
     ]
@@ -567,9 +643,12 @@ async def rescore(
         }
     )
     order: list[TrialKey] = [
-        (e.id, r) for e in parent.examples for r in range(parent.config.repetitions)
+        (e.id, r) for e in selected for r in range(parent.config.repetitions)
     ]
     child_name = name or parent.name
+    child_metadata = {**parent.metadata, **(metadata or {})}
+    if dataset is not None:
+        child_metadata["unpaired"] = unpaired
     child = EvaluationRun(
         id=new_run_id(child_name),
         name=child_name,
@@ -578,7 +657,7 @@ async def rescore(
         description=parent.description,
         evaluation=parent.evaluation,
         parent_run_id=parent.id,
-        dataset=parent.dataset,
+        dataset=dataset_ref,
         task=parent.task,
         scorers=scorer_infos,
         config=config,
@@ -586,16 +665,16 @@ async def rescore(
             parent.provenance.observed_models, sources=scorer_sources(scorers)
         ),
         config_hash=config_hash(
-            parent.task, scorer_infos, parent.dataset, parent.config.repetitions
+            parent.task, scorer_infos, dataset_ref, parent.config.repetitions
         ),
         tags=[*parent.tags, *tags],
-        metadata={**parent.metadata, **(metadata or {})},
+        metadata=child_metadata,
         directions=dict(parent.directions),
-        examples=list(parent.examples),
+        examples=list(selected),
     )
     if run_store is not None:
         run_store.create(child)
-    examples = {e.id: e for e in typed}
+    examples = {e.id: e for e in selected}
     executor = Executor(
         child,
         store=run_store,
@@ -608,16 +687,21 @@ async def rescore(
 
     async def work(parent_trial: Trial) -> None:
         async with semaphore:
-            trial = _without(parent_trial, replaced)
-            example = examples.get(trial.example_id)
+            example = examples[parent_trial.example_id]
+            moved = example.content_hash != parent_trial.example_hash
+            trial = _without(parent_trial, everything if moved else replaced)
+            trial.example_hash = example.content_hash
+            trial.sealed = bool(sealed.intersection(example.splits))
             events = events_by_key.get(trial.key, [])
-            if example is not None:
-                output = rehydrate_output(adapter, trial.output) if trial.ok else None
-                await executor.score(trial, example, output, events)
+            output = rehydrate_output(adapter, trial.output) if trial.ok else None
+            await executor.score(trial, example, output, events)
             await executor.record(trial, events)
 
     return await run_all(
-        executor, [work(t) for t in parent.trials], metrics=metrics, order=order
+        executor,
+        [work(t) for t in parent.trials if t.example_id in examples],
+        metrics=metrics,
+        order=order,
     )
 
 
