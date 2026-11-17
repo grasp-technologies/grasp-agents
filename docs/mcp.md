@@ -116,6 +116,9 @@ tools and memory through a server:
 
 - Reads use `resources/read`; `stat`, `exists`, `list_dir`, glob and grep use
   a cached index built from one `resources/list` per session.
+- A read reports the file's mtime from the index, as `stat` does, and looks it
+  up before reading the content, so the mtime never postdates the content. A
+  file the index does not list yet takes the mtime the read returns.
 - Writes and deletes call the server's `write_file(path, content, mode)` and
   `delete_file(path)` tools and then refresh the index.
 - A conditional write or delete (`expected_mtime`, which the file tools pass)

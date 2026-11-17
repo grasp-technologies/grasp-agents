@@ -125,6 +125,7 @@ To serve your own store (a database, say), implement `FileBackend` or put the st
 Subclass `FileBackend` and implement every abstract method: `allowed_roots`, `add_allowed_root`, `validate_path`, `stat`, `exists`, `parent_exists`, `read_text`, `read_bytes`, `write_bytes`, `delete`, `mkdir`, `list_dir`, `find_files`, `grep`. Override `append_bytes` if you can append in place; the default rewrites the whole file.
 
 - **Honor `expected_mtime`.** When `write_bytes` or `delete` gets one, raise `StaleFileError` without changing anything if the file is missing or its mtime differs. Check and write in one step where the store can (a conditional update); otherwise check right before writing. The file tools always pass the argument and rely on the check.
+- **Take a read's mtime first.** `read_text` and `read_bytes` return the mtime taken before the content (or with it, in one step). An mtime taken after could postdate a write that landed in between, and the conditional write that follows would then overwrite that write.
 - **Search stored text.** A backend that holds file text can return `await grep_texts_async(files, pattern, root=root, ...)` from `grep`, which builds a `GrepRawResult` shaped like the local `rg` backend's. `find_files` can filter `list_dir(root, recursive=True)` through `glob_filter_entries` (`file_backend/local.py`) in a worker thread.
 - **Grep lines.** In `content` mode, start each line with the file's path exactly as `files_with_matches` mode reports it, then `:` for a match or `-` for a context line. `Grep` attributes lines to files that way, and drops a line it cannot attribute.
 - **Notes.** Put caveats the model should see in `GrepRawResult.notes`; `Grep` prints them after the results.
@@ -164,18 +165,19 @@ Next to an environment, `SessionContext` accepts a composite when a mount includ
 
 1. Validate before any I/O: every tool resolves its path through `validate_path(path, access=...)` first, and backend I/O methods receive only validated paths (`FileBackend`).
 2. `write_bytes` is atomic and creates missing parent directories; it returns the post-write mtime. Given `expected_mtime`, `write_bytes` and `delete` change nothing and raise `StaleFileError` when the file is missing or its mtime differs (`FileBackend.write_bytes`, `FileBackend.delete`).
-3. Backends are pure I/O. The read/mtime ledger lives in the agent's `FileEditSessionState`, never in the backend.
-4. A backend that cannot search raises `NotImplementedError` from `find_files` / `grep`, so tools can report a clear error.
-5. `add_allowed_root(root)` is idempotent; `SessionContext` uses it to admit the memory directory automatically (`SessionContext._validate_memory_under_backend_roots`). A `CompositeFileBackend` adds no roots: it accepts a path inside a mount and raises `PathAccessError` for any other.
-6. `Write` and `Edit` refuse `.ipynb` and point the model at `NotebookEdit`.
-7. Read-before-write and staleness checks apply to every mutating file tool inside an agent loop, and the tool passes the read record's mtime to the backend as `expected_mtime` (`refuse_if_stale`).
-8. Skills are read from the host filesystem (`pathlib`), not through `ctx.file_backend` (see [Skills](skills.md)).
-9. A composite routes by mount path without translating it, never nests mounts, and refuses a path that resolves outside its mount (`CompositeFileBackend.validate_path`).
-10. A read-only mount refuses every change, in `validate_path(access="write")` and in each mutating call (`CompositeFileBackend`).
-11. A composite's `allowed_roots` begin with its writable scratch mount, where framework writes and path-less searches go (`CompositeFileBackend.allowed_roots`).
-12. `Copy` checks its whole plan and reads every source before its first write, and reads only files that pass `validate_path` for reading (`CopyTool`).
-13. `Glob` and `Grep` return only results whose paths pass `validate_path(access="read")`, and their totals count only those (`tools/file_search/_read_access.py`).
-14. In `content` mode, a backend's `grep` starts each line with the file's path exactly as `files_with_matches` mode reports it, then `:` or `-` (`FileBackend.grep`).
+3. A read takes the mtime before the content, so a write landing in between makes the next conditional write refuse rather than overwrite it (`FileBackend.read_text`, `read_bytes`).
+4. Backends are pure I/O. The read/mtime ledger lives in the agent's `FileEditSessionState`, never in the backend.
+5. A backend that cannot search raises `NotImplementedError` from `find_files` / `grep`, so tools can report a clear error.
+6. `add_allowed_root(root)` is idempotent; `SessionContext` uses it to admit the memory directory automatically (`SessionContext._validate_memory_under_backend_roots`). A `CompositeFileBackend` adds no roots: it accepts a path inside a mount and raises `PathAccessError` for any other.
+7. `Write` and `Edit` refuse `.ipynb` and point the model at `NotebookEdit`.
+8. Read-before-write and staleness checks apply to every mutating file tool inside an agent loop, and the tool passes the read record's mtime to the backend as `expected_mtime` (`refuse_if_stale`).
+9. Skills are read from the host filesystem (`pathlib`), not through `ctx.file_backend` (see [Skills](skills.md)).
+10. A composite routes by mount path without translating it, never nests mounts, and refuses a path that resolves outside its mount (`CompositeFileBackend.validate_path`).
+11. A read-only mount refuses every change, in `validate_path(access="write")` and in each mutating call (`CompositeFileBackend`).
+12. A composite's `allowed_roots` begin with its writable scratch mount, where framework writes and path-less searches go (`CompositeFileBackend.allowed_roots`).
+13. `Copy` checks its whole plan and reads every source before its first write, and reads only files that pass `validate_path` for reading (`CopyTool`).
+14. `Glob` and `Grep` return only results whose paths pass `validate_path(access="read")`, and their totals count only those (`tools/file_search/_read_access.py`).
+15. In `content` mode, a backend's `grep` starts each line with the file's path exactly as `files_with_matches` mode reports it, then `:` or `-` (`FileBackend.grep`).
 
 ## Limitations
 
