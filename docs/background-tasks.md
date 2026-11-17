@@ -67,7 +67,9 @@ A completion note:
 </task_notification>
 ```
 
-`status` is `completed`, `failed` (with `<error>` instead of `<result>`) or `interrupted` (stopped by a restart). `<result_file>` holds the full result; `<log_file>` holds the streamed output, which may be less.
+`status` is `completed`, `failed` (with `<error>` instead of `<result>`) or `interrupted` (stopped by a restart). `<result_file>` holds the full result (up to the spill cap, see [Context window](context-window.md#tool-output-spill)); `<log_file>` holds the streamed output, which may be less.
+
+Log and result files go under the first allowed root of `ctx.file_backend`. On a `CompositeFileBackend` that is its scratch mount; when the scratch mount is not the sandbox's, `Bash` cannot see the files, but `Read` and `Grep` can.
 
 ## Waiting and delivery runs
 

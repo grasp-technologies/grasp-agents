@@ -37,7 +37,35 @@ agent = LLMAgent[str, str, None](
 )
 ```
 
-`ctx.exec_backend` is a read-only property of `ctx.environment`, so an exec surface without its co-located filesystem cannot be expressed. Passing both `environment` and a different `file_backend` raises at construction. A file-only session (just `file_backend=`) is fine.
+`ctx.exec_backend` is a read-only property of `ctx.environment`, so an exec surface without its co-located filesystem cannot be expressed. Passing both `environment` and a `file_backend` raises at construction unless that `file_backend` includes `environment.file_backend` (`FileBackend.includes`), as a composite that mounts it does (below). A file-only session (just `file_backend=`) is fine.
+
+### In a composite backend
+
+A `CompositeFileBackend` serves the environment's files in one tree with other storage, such as a memdir in a database or an in-memory scratch (see [Files](files.md#composite-backends)):
+
+```python
+from pathlib import Path
+from grasp_agents import SessionContext
+from grasp_agents.file_backend import CompositeFileBackend, InMemoryFileBackend, Mount
+from grasp_agents.sandbox import e2b_environment
+
+env = e2b_environment()  # its file backend serves /home/user/workspace
+backend = CompositeFileBackend(
+    [
+        Mount(Path("/home/user/workspace"), env.file_backend, description="the sandbox"),
+        Mount(Path("/user/memory"), memory_backend, description="what you know about the user"),
+        Mount(Path("/scratch"), InMemoryFileBackend(["/scratch"])),
+    ],
+    scratch=Path("/scratch"),
+)
+async with env:
+    ctx = SessionContext(environment=env, file_backend=backend)
+```
+
+- Mount the environment's backend at one of its policy's roots, or below one: `/home/user/workspace` is E2B's default, and a local root goes at its resolved path. Paths are not translated, so the file tools and `Bash` name every sandbox file the same way.
+- `Bash` and code execution see only that mount. The `mounts` system-prompt section marks it as the one visible to them and tells the model the other mounts are not there. `Copy` copies files between the sandbox mount and the others.
+- Spilled output and task logs go to the scratch mount; when that is not the sandbox's mount, the model reads them with `Read` / `Grep`, not `Bash`.
+- A mount's `read_only` binds the file tools only. Commands still write wherever the policy lets them, the environment's mount included.
 
 ## `SandboxPolicy`
 
@@ -158,7 +186,7 @@ async with env:                       # creates the sandbox; kills it on exit
 
 ## Contracts
 
-1. Exec is reachable only through `ctx.environment`; a divergent standalone `file_backend` raises (`SessionContext._reconcile_environment`).
+1. Exec is reachable only through `ctx.environment`; a standalone `file_backend` that does not include the environment's raises (`SessionContext._reconcile_environment`).
 2. One `SandboxPolicy` feeds both planes; never build the file and exec surfaces from different policies (`local_environment`, `e2b_environment`).
 3. Co-location is a construction contract: an `ExecBackend` must execute against the filesystem its paired `FileBackend` addresses. The filesystem can stand alone; exec cannot (`ExecBackend` docstring).
 4. Unenforceable network policies fail at construction under `seatbelt`, `srt` and E2B (`_build_exec_backend`, `build_srt_settings`, `e2b_environment`).
@@ -190,6 +218,8 @@ async with env:                       # creates the sandbox; kills it on exit
 - Only E2B changes a live environment's network (`NetworkUpdatable`); a local environment's egress is fixed when it is built.
 - Two processes that build the same new template name at once can make one of the builds fail, because E2B cancels a build when another build of its name starts. That call raises `BuildException` ("build was cancelled"); the next call uses the other build, or builds again if the latest build failed. Serialize builds across processes yourself when that matters.
 - No Docker or SSH exec backend ships; implement `ExecutionEnvironment` / `ExecBackend` for other targets.
+- The `mounts` section tells the model that only the environment's mount exists where `Bash` runs. Under a local environment, a mount served by another `LocalFileBackend` is on the same host, so `Bash` can still reach it as far as the confinement allows.
+- A filesystem snapshot covers only the environment's own filesystem; a rollback does not rewind a composite's other mounts.
 
 ## See also
 

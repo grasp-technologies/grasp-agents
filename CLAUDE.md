@@ -89,11 +89,11 @@ See the `dev-checks`, `writing-tests` and `release` skills for details.
 ## Test layout & conventions
 
 `tests/` mirrors `src/grasp_agents/`, with one subdir per subpackage (`agent`,
-`agent_team`, `context`, `durability`, `evals`, `llm`, `mcp`, `memory`,
-`orchestration`, `processors`, `runtime`, `sandbox`, `skills`, `telemetry`,
-`tools`, `tui`) plus the provider dirs and `integration/`. Put a new test in
-the matching subdir, name files by subsystem, and keep history out of test
-docstrings.
+`agent_team`, `context`, `durability`, `evals`, `file_backend`, `llm`, `mcp`,
+`memory`, `orchestration`, `processors`, `runtime`, `sandbox`, `skills`,
+`telemetry`, `tools`, `tui`) plus the provider dirs and `integration/`. Put a
+new test in the matching subdir, name files by subsystem, and keep history out
+of test docstrings.
 
 - **Shared code split.** Importable helpers (queue-driven `MockLLM`, `Response`
   builders, sample tools) live in `tests/_helpers.py`. Pytest fixtures live in
@@ -181,12 +181,12 @@ Routing is dynamic: a processor picks downstream recipients per payload via
 | `AgentContext` | `agent/agent_context.py` | Per-agent session state (cw, tools, file-edit state, background tasks, inbox, deferred-effects outbox, kernel/shell holders). Passed to each tool call as a per-call copy (`for_tool_call`), which keeps tools stateless. Tools defer durable writes with `defer_effect` |
 | `BackgroundTaskManager` | `agent/background_tasks.py`, `agent/task_progress.py` | Backgrounded tools and sub-agents, push-delivered task notes, log and result files, spill of large outputs, durable `TaskRecord`s |
 | Tool decisions & approvals | `agent/tool_decision.py`, `agent/approval_store.py`, `agent/approval_callback.py` | Allow / reject-with-content / raise per call; ONCE/SESSION/ALWAYS approvals |
-| Prompt + context strategies | `context/` (`prompt_builder.py`, `compaction.py`, `projection.py`, `system_reminder.py`, `env_section.py`, `untrusted_content.py`) | System-prompt sections, input attachments, opt-in compaction (`Compactor`, `ContextBudget`, `CollapseToolOutputsProjector`), untrusted-content fencing |
+| Prompt + context strategies | `context/` (`prompt_builder.py`, `compaction.py`, `projection.py`, `system_reminder.py`, `env_section.py`, `mounts_section.py`, `untrusted_content.py`) | System-prompt sections, input attachments, opt-in compaction (`Compactor`, `ContextBudget`, `CollapseToolOutputsProjector`), untrusted-content fencing |
 | `SessionContext[CtxT]` | `session_context.py` | Session-scoped DI container: user state, stores, environment, usage tracker, printer, session writer, fs-snapshot policy. Bound at construction (explicit → ambient `with` → process default); `current_session_context()` resolves it |
 | `BaseTool`, `@function_tool` | `tools/base.py`, `tools/function_tool.py` | Tool ABC (timeouts, background axes, spill, untrusted output, conflict keys); async function → typed tool |
 | `AgentTool` / `ProcessorTool` | `tools/agent_tool.py`, `tools/processor_tool.py` | `.as_tool()`: any agent or processor becomes a tool; stateless, ctx bound per call |
 | Shell / code / notebook tools | `tools/bash.py`, `bash_session.py`, `code_interpreter.py` (`RunPython`), `notebook_exec.py` (`RunCell`), `file_edit/notebook.py` | `bash_tools()` = `[Bash, KillTask]`; persistent `BashSession` (experimental); kernels behind `KernelCapable` |
-| File tools + backends | `tools/file_edit/`, `tools/file_search/`, `tools/file_toolkit.py`; `file_backend/` | `Read/Write/Edit/Delete/Glob/Grep/ReadImage` over `FileBackend` (local, MCP, E2B); fuzzy edits; read-before-write |
+| File tools + backends | `tools/file_edit/`, `tools/file_search/`, `tools/file_toolkit.py`; `file_backend/` | `Read/Write/Edit/Delete/Glob/Grep/ReadImage` and opt-in `Copy` over `FileBackend` (local, MCP, E2B, in-memory; `CompositeFileBackend` mounts several as one tree); fuzzy edits; read-before-write, with each write conditional on the read's mtime (`expected_mtime`) |
 | Sandbox | `sandbox/` (`policy.py`, `exec_backend.py`, `environment.py`, `kernel.py`, `local/`, `e2b/`) | One `SandboxPolicy`, two planes. ABCs: `ExecBackend`, `ExecSession`, `KernelSession`, `ExecutionEnvironment`. Capability Protocols: `KernelCapable`, `SessionCapable`, `SnapshotCapable`, `NetworkUpdatable` (the last two E2B only); `sweep_e2b` cleans up the E2B account |
 | Durability | `durability/`, `inbox.py`, `mailbox.py` | `CheckpointStore` ABC (file, in-memory; optional `transaction()`), append-only message log, `AgentCheckpoint` / `SessionCheckpoint` / `TaskRecord`, schema versions, resume, store keys, durable mailboxes |
 | `LLM`, `CloudLLM`, `FallbackLLM`, `RetryPolicy` | `llm/` | Base LLM abstractions, platform/api-provider resolution, retries-first fallback cascade, model info, token counting, thought signatures |

@@ -110,7 +110,7 @@ agent = LLMAgent[str, str, None](
 ```
 
 - All calls of one response form a batch. Foreground calls run **concurrently** through `run_stream`, so nested sub-agent events bubble live.
-- If any two calls declare overlapping `concurrency_conflict_keys` (the same key, or one path nested under another; `"/"` claims everything), the batch runs **serially**. `Write`/`Edit`/`Delete`/`NotebookEdit` claim their path; `Bash`, `BashSession`, `RunPython` and `RunCell` claim `"/"`.
+- If any two calls declare overlapping `concurrency_conflict_keys` (the same key, or one path nested under another; `"/"` claims everything), the batch runs **serially**. `Write`/`Edit`/`Delete`/`NotebookEdit` claim their path and `Copy` its destination; `Bash`, `BashSession`, `RunPython` and `RunCell` claim `"/"`.
 - Calls of tools with `auto_background_at` set race their own deadline concurrently with the foreground batch (see [Background tasks](background-tasks.md)).
 - Invalid arguments, input-converter errors and tool exceptions become tool results the model can react to; they never crash the run. Calls whose arguments already failed validation at the LLM layer get a synthesized error result and are not dispatched.
 - Results are converted (custom `add_tool_output_converter`, else the default), spilled when over `max_inline_result_chars`, and fenced as untrusted when the tool sets `untrusted_output=True`.

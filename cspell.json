@@ -72,6 +72,7 @@
         "kernelspec",
         "killpg",
         "Kitty",
+        "KUBECONFIG",
         "litellm",
         "llms",
         "logp",

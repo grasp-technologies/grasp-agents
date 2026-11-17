@@ -34,7 +34,7 @@ agent.replace_transcript(seed_messages)  # seed history from outside the store
 
 The system message (`sys_prompt` plus registered `SystemPromptSection`s) and any leading messages form the **initial context**. It is composed at every run entry, prepended to the view on every turn, and never written to the log. A resumed session therefore always runs with the current system prompt, and the log stays pure conversation.
 
-- `agent.add_system_prompt_section(section)` adds a section; a section with the same name replaces the earlier one. Built-in sections (environment info, memory, skills, MCP instructions, background tasks, untrusted-content guidance) register the same way.
+- `agent.add_system_prompt_section(section)` adds a section; a section with the same name replaces the earlier one. Built-in sections (environment info, memory, skills, mounts, MCP instructions, background tasks, untrusted-content guidance) register the same way.
 - `@agent.add_initial_context_builder` (single slot) transforms the composed initial context: augment it, replace it with your own system message, or reorder it.
 - `await agent.preview_initial_context()` returns what a run entered now would compose.
 - Per-turn context that belongs on the *input* (current time, relevant memories) goes through `agent.add_input_attachment(...)` instead. See [Hooks](hooks.md).
@@ -123,8 +123,9 @@ async def summarize(*, agent_ctx, ctx) -> str:
 
 ## Tool-output spill
 
-A tool's `max_inline_result_chars` caps how much of each result enters the log. A larger result is written in full to `<first allowed root>/.grasp/tasks/<call_id>.result`. The model gets a head + tail excerpt that names the file, so `Read` / `Grep` can recover the rest.
+A tool's `max_inline_result_chars` caps how much of each result enters the log. A larger result is written to `<first allowed root>/.grasp/tasks/<call_id>.result` (on a `CompositeFileBackend`, its scratch mount). The model gets a head + tail excerpt that names the file, so `Read` / `Grep` can recover the rest.
 
+- A spill file holds at most 4,000,000 characters (`MAX_SPILL_CHARS`). Of a longer result it keeps the first and last 2,000,000, around a marker that says how much was cut, and the excerpt says the file holds only those.
 - Set it on any tool: `BaseTool(max_inline_result_chars=...)`, `@function_tool(max_inline_result_chars=...)`, or `processor.as_tool(..., max_inline_result_chars=...)`. Default `None` inlines everything; `Bash` defaults to 8,000.
 - Spilling needs `ctx.file_backend` with at least one allowed root. With no backend, or if the write fails, the result is inlined whole.
 - Error results and the output of a custom `add_tool_output_converter` are never spilled.
@@ -144,7 +145,7 @@ A tool's `max_inline_result_chars` caps how much of each result enters the log. 
 9. A summary request holds the conversation up to the fold's end only: no kept round and no new input (`Compactor.compact`).
 10. A summary request never writes to the transcript, never executes a tool call and runs no LLM hooks (`Compactor.summarize`).
 11. A failed summary never fails the turn; it emits a `CompactionFailedEvent`, and on the overflow path the original error is raised (`Compactor.compact`, `AgentLoop.query_llm`).
-12. Spilling never hides output without a recovery path (`spill_if_large`).
+12. Spilling never hides output without saying so: when no file can be written the result is inlined whole, and a result too long for its file keeps a head and tail there around a marker (`spill_if_large`).
 
 ## Limitations
 
@@ -157,6 +158,7 @@ A tool's `max_inline_result_chars` caps how much of each result enters the log. 
 - Input attachments run only when new input arrives. An attachment that shows some state only while the view lacks it does not run again after a fold made mid-run, so until the next input the model sees only what the summary says about that state.
 - The initial context is rebuilt per run, not per turn: a section reading live state updates at the next run.
 - Compaction runs only at turn boundaries and on the overflow path, never mid-generation.
+- A tool result over 4,000,000 characters loses its middle: neither the excerpt nor the spill file keeps it.
 
 ## See also
 

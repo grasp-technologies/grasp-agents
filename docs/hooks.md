@@ -130,6 +130,7 @@ This is how you override the auto-attached ones. Built-in names:
 | `memory` | `enable_memory=True` | `memory/injection.py` |
 | `env_info` | `env_info=True` or a section | `context/env_section.py` |
 | `skills` | `enable_skills=True` | `skills/injection.py` |
+| `mounts` | always (renders nothing unless `ctx.file_backend` is a `CompositeFileBackend`) | `context/mounts_section.py` |
 | `background_tasks` | always (renders nothing without backgroundable tools) | `agent/background_tasks.py` |
 | `mcp_instructions` | MCP clients | `mcp/section.py` |
 | `compaction` | `enable_compaction=True` | `context/compaction.py` |
