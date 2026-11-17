@@ -19,7 +19,8 @@ Three output modes, chosen via ``output_mode``:
   which files are relevant.
 - ``count``: ``path:N`` per file showing match counts.
 - ``content``: ``path:line:<content>`` per matching line. Supports
-  ``-A`` / ``-B`` / ``-C`` context lines (``path-line-<content>``) and
+  ``-A`` / ``-B`` / ``-C`` context lines (``path-line-<content>``, with
+  ``--`` between groups that are not adjacent, as rg prints them) and
   ``-n`` line numbers.
 
 ``head_limit`` / ``offset`` slice the output after the backend returns.
@@ -450,18 +451,34 @@ def _slice[T](
     return entries[start:end], end < total
 
 
-def _render_content(lines: list[GrepLine], *, show_line_numbers: bool) -> str:
+def _render_content(
+    lines: list[GrepLine], *, show_line_numbers: bool, separate_groups: bool
+) -> str:
     """
     Render ``content`` records as rg prints them: ``path:N:text`` for a
-    match and ``path-N-text`` for a context line, without ``N`` when line
-    numbers are off.
+    match, ``path-N-text`` for a context line (without ``N`` when line
+    numbers are off) and, when ``separate_groups``, ``--`` between groups
+    of lines that are not adjacent.
     """
     out: list[str] = []
+    previous: GrepLine | None = None
     for line in lines:
+        if separate_groups and previous is not None:
+            # A multiline match's text spans several lines.
+            previous_end = previous.line_number + previous.text.count("\n")
+            if line.path != previous.path or line.line_number > previous_end + 1:
+                out.append("--")
         sep = ":" if line.is_match else "-"
         number = f"{line.line_number}{sep}" if show_line_numbers else ""
         out.append(f"{line.path}{sep}{number}{line.text}")
+        previous = line
     return "\n".join(out)
+
+
+def _has_context(inp: GrepInput) -> bool:
+    if inp.context is not None:
+        return inp.context > 0
+    return bool(inp.before_context) or bool(inp.after_context)
 
 
 class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
@@ -602,7 +619,11 @@ class GrepTool(BaseTool[GrepInput, GrepResult, Any]):
         kept = [line for line in raw.content if line.path in readable]
         matches = [line for line in kept if line.is_match]
         page, truncated = _slice(kept, offset=offset, head_limit=inp.head_limit)
-        output = _render_content(page, show_line_numbers=inp.show_line_numbers)
+        output = _render_content(
+            page,
+            show_line_numbers=inp.show_line_numbers,
+            separate_groups=_has_context(inp),
+        )
         return GrepResult(
             output=_with_notes(self._redactor(output), raw.notes),
             output_mode=inp.output_mode,

@@ -341,7 +341,7 @@ class FileBackend(ABC):
         ``files_with_matches`` mode reports for it, with its line number
         whatever ``show_line_numbers`` says. The ``Grep`` tool checks each
         record's path for read access, then renders the lines itself, line
-        numbers included.
+        numbers and ``--`` group separators included.
         """
         ...
 

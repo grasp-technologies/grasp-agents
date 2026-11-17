@@ -458,6 +458,11 @@ PARITY_FILES = {
 RENDER_CASES: list[dict[str, Any]] = [
     {},
     {"show_line_numbers": False},
+    {"context": 1},
+    {"context": 1, "show_line_numbers": False},
+    {"before_context": 2},
+    {"after_context": 1},
+    {"context": 0},
 ]
 
 
