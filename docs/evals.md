@@ -55,7 +55,8 @@ integrity functions (`example -> problem message | None`) run before every run.
 ## Tasks
 
 `evaluate` accepts a `Task`, any `Processor`, or a function — async, or plain,
-which `FunctionTask` runs in a worker thread so it does not block other trials. A
+which `FunctionTask` runs in a worker thread so it does not block other trials
+(concurrent trials then call it from several threads at once). A
 `ProcessorTask(processor_or_factory, version=, ctx_factory=, input_mode=,
 input_fn=, output_fn=, output_type=)` runs each trial in its own
 `SessionContext`, with that session ambient for the whole trial:
@@ -185,8 +186,10 @@ unfinished run in place, or retries a completed run's failed trials in a new
 resume must use the same task identity, scorers, selection and repetitions;
 that cannot be forced. It is also refused when the git commit or diff of the
 repository containing the current directory changed (any file, not only the
-task's) or when the task's or scorers' source files changed; `force=True`
-overrides those two checks. A model that the run never used stops the resume.
+task's), when the task's or scorers' source files changed, or when a run left
+`running` may still be running in its process (alive on this host, or on
+another host); `force=True` overrides those three checks. A model that the
+run never used stops the resume.
 `rescore(run, scorers)` scores stored outputs again in a child run; unchanged
 scorers keep their scores. `split=` and `ids=` make a child of those
 examples' trials only; `dataset=` scores the outputs against another version
@@ -194,8 +197,8 @@ of the dataset, pairing examples by id where the input is unchanged (the
 child records that version and its splits, and lists unpaired examples in
 `metadata["unpaired"]`). Only the given scorers count then (the parent's
 others are listed in `metadata["dropped_scorers"]`); a sealed split is scored
-only when the parent ran it and all of its examples pair. Runs are addressed by id, unique id prefix, run
-directory, `latest` or `latest:<name>`.
+only when the parent ran it and all of its examples pair. Runs are addressed
+by id, unique id prefix, run directory, `latest` or `latest:<name>`.
 
 A run records the process executing it (`EvaluationRun.process`: host, pid).
 Ctrl-C, SIGTERM and SIGHUP end a CLI run `cancelled`. A run whose process was

@@ -17,6 +17,7 @@ from grasp_agents.evals import (
     Mean,
     PassRate,
     ResumeError,
+    RunProcess,
     RunStatus,
     Score,
     ScoreContext,
@@ -25,11 +26,14 @@ from grasp_agents.evals import (
     TrialContext,
     TrialProgress,
     Usage,
+    annotate_run,
+    close_run,
     compare,
     evaluate,
     rescore,
     scorer,
 )
+from grasp_agents.evals._util import utc_now
 
 type Ctx = ScoreContext[int, int, int]
 
@@ -503,6 +507,7 @@ class TestResumeRules:
         crashed = store.load(first.id)
         crashed.status = RunStatus.RUNNING
         crashed.provenance.observed_models = {}
+        crashed.process = None
         store.save(crashed)
         model["name"], fail = "m2", set()
         with pytest.raises(ResumeError, match="m2"):
@@ -930,3 +935,83 @@ class TestRescoreRules:
         store.save(loaded)
         with pytest.raises(ValueError, match="not finished"):
             await rescore(parent.id, [correct], store=store)
+
+
+class TestLifecycleGuards:
+    @pytest.mark.asyncio
+    async def test_a_run_its_process_may_still_run_is_not_resumed(
+        self, store: LocalRunStore
+    ) -> None:
+        first = await evaluate(double, _numbers(2), [correct], store=store)
+        running = store.load(first.id)
+        running.status = RunStatus.RUNNING
+        store.save(running)  # its process is this one
+        with pytest.raises(ResumeError, match="still runs it"):
+            await evaluate(double, _numbers(2), [correct], store=store, resume=first.id)
+        resumed = await evaluate(
+            double, _numbers(2), [correct], store=store, resume=first.id, force=True
+        )
+        assert resumed.status == RunStatus.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_annotations_build_on_the_stored_header(
+        self, store: LocalRunStore
+    ) -> None:
+        run = await evaluate(double, _numbers(2), [correct], store=store)
+        stale = run.model_copy(deep=True)
+        annotate_run(run.id, notes=["first"], store=store)
+        assert annotate_run(stale, notes=["second"], store=store).notes == [
+            "first",
+            "second",
+        ]
+        running = store.load(run.id)
+        running.status = RunStatus.RUNNING
+        store.save(running)
+        with pytest.raises(ValueError, match="is running"):
+            annotate_run(run.id, notes=["third"], store=store)
+
+    @pytest.mark.asyncio
+    async def test_closing_a_child_counts_only_its_own_usage(
+        self, store: LocalRunStore
+    ) -> None:
+        parent = await evaluate(_costly(1.0), _numbers(2), [correct], store=store)
+
+        @scorer(name="judge")
+        def judge(ctx: Ctx) -> bool:
+            ctx.record_usage(Usage(input_tokens=1, cost_usd=0.25))
+            return True
+
+        child = await rescore(parent.id, [judge], store=store, output_type=int)
+        assert child.usage.cost_usd == pytest.approx(0.5)
+        stuck = store.load(child.id)
+        stuck.status = RunStatus.RUNNING
+        stuck.process = None
+        stuck.usage = Usage()
+        store.save(stuck)
+        closed = close_run(child.id, store=store, force=True)
+        assert closed.usage.cost_usd == pytest.approx(0.5)
+
+
+def test_processes_are_not_probed_on_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import socket
+    import sys
+
+    from grasp_agents.evals._execution import process_alive
+
+    here = RunProcess(host=socket.gethostname(), pid=os.getpid(), started_at=utc_now())
+    assert process_alive(here) is True
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert process_alive(here) is None
+    with pytest.raises(ValueError, match="greater than 0"):
+        RunProcess(host="h", pid=-1, started_at=utc_now())
+
+
+def test_tracing_set_up_without_a_project_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from grasp_agents.evals import tracing
+
+    monkeypatch.setattr(tracing.trace, "get_tracer_provider", TracerProvider)
+    with pytest.raises(ValueError, match="without a Phoenix project"):
+        tracing.start_tracing("evals")

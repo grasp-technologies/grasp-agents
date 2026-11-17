@@ -340,11 +340,13 @@ Each item gives the wrong assumption, what actually happens, and what to do.
       `--split/--ids/--sample/--seed/--limit/-r` exactly.
     - **Refused, but `--force` overrides:** a change to the git commit or uncommitted
       diff of the repository *containing the current directory* (even a README commit),
-      or to the task's or scorers' source files.
+      or to the task's or scorers' source files; and a run left `running` whose
+      process may still run it (alive here, or on another host). If that process is
+      gone, `close RUN` or `--resume RUN --force`.
     - **Stops with `ResumeError`:** an agent answers with a model the run never used.
     - `--no-score` followed by `--resume` puts the scores in a `retry` child.
 
-    Code: `evals/runner.py` → `_resume_record`.
+    Code: `evals/runner.py` → `_resume_record`, `_check_not_running_elsewhere`.
 13. **"Rescore and pairwise see my output types."** Outputs are stored as JSON.
     - The bare `rescore()` and `pairwise()` default `output_type` to `Any`. Scorers
       receive dicts, `ctx.output.verdict` raises `AttributeError`, and every trial gets

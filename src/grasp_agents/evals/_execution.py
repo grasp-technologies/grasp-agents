@@ -5,6 +5,7 @@ import operator
 import os
 import platform
 import socket
+import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -145,10 +146,12 @@ def current_process() -> RunProcess:
 def process_alive(process: RunProcess | None) -> bool | None:
     """
     Whether ``process`` still runs: ``None`` when this host cannot tell (no
-    record, or another host). A reused process id reads as alive.
+    record, another host, or Windows). A reused process id reads as alive.
     """
     if process is None or process.host != socket.gethostname():
         return None
+    if sys.platform == "win32":
+        return None  # os.kill there terminates the process
     if process.pid == os.getpid():
         return True
     try:

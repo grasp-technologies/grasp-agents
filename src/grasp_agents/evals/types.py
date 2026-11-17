@@ -502,7 +502,7 @@ class RunProcess(BaseModel):
     """The process executing a run: where to look before declaring it dead."""
 
     host: str
-    pid: int
+    pid: int = Field(gt=0)
     started_at: datetime
 
 

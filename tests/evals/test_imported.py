@@ -154,3 +154,34 @@ async def test_an_evaluation_imports_on_its_own_selection(
     assert run.task.name == "vendor"
     assert run.metadata["imported_from"] == str(path)
     assert run.metric("pass_rate(correct)") is not None
+
+
+@pytest.mark.asyncio
+async def test_an_included_sealed_split_needs_every_output() -> None:
+    data = Dataset(
+        [
+            Example(id=f"n{i}", input=i, reference=i * 2, splits=[split])
+            for i, split in enumerate(["dev", "dev", "test", "test"])
+        ],
+        name="numbers",
+    )
+    outputs = [{"example_id": f"n{i}", "output": {"value": i * 2}} for i in range(3)]
+    with pytest.raises(DatasetError, match="1 of its 2"):
+        await import_outputs(
+            outputs,
+            data,
+            task="t",
+            sealed_splits=["test"],
+            include_sealed=True,
+            persist=False,
+        )
+    failed = [*outputs, {"example_id": "n3", "error": "timed out"}]
+    run = await import_outputs(
+        failed,
+        data,
+        task="t",
+        sealed_splits=["test"],
+        include_sealed=True,
+        persist=False,
+    )
+    assert len(run.trials) == 4

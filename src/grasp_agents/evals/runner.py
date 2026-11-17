@@ -161,6 +161,23 @@ def _code_changes(old: Provenance, new: Provenance) -> list[str]:
     return changes
 
 
+def _check_not_running_elsewhere(previous: EvaluationRun, *, force: bool) -> None:
+    # A run left ``running`` is continued in place: never while the process
+    # that ran it may still be writing to it.
+    if previous.status != RunStatus.RUNNING or previous.process is None or force:
+        return
+    alive = process_alive(previous.process)
+    if alive is False:
+        return
+    process = previous.process
+    state = "still runs it" if alive else "may still run it"
+    raise ResumeError(
+        f"Cannot resume {previous.id}: process {process.pid} on {process.host} "
+        f"{state}. Wait for it to finish, or resume with force=True once it is "
+        "gone."
+    )
+
+
 def _resume_record(
     previous: EvaluationRun,
     *,
@@ -305,9 +322,10 @@ async def evaluate[InT, OutT, RefT](
     scorers that did not finish). A run that did not complete is continued
     in place; a completed one keeps its results — its failed trials are
     retried in a new ``retry`` run that copies the rest. Resuming refuses if
-    the code changed (git state, or the task's and scorers' source files;
-    ``force=True`` overrides) and stops if an agent answers with a model the
-    run did not use.
+    the code changed (git state, or the task's and scorers' source files) or
+    if a run left ``running`` may still run in its process (``force=True``
+    overrides both), and stops if an agent answers with a model the run did
+    not use.
 
     Examples of ``sealed_splits`` are left out unless the dataset's selection
     names a sealed split (``dataset.split("test")``) or ``include_sealed``; a
@@ -360,6 +378,7 @@ async def evaluate[InT, OutT, RefT](
     known_models: dict[str, set[str]] = {}
     if resume is not None:
         previous = load_run(run_store, resume)
+        _check_not_running_elsewhere(previous, force=force)
         record = _resume_record(
             previous,
             run_hash=run_hash,
@@ -485,6 +504,10 @@ async def evaluate[InT, OutT, RefT](
         metrics=metrics,
         order=order,
     )
+
+
+# Metadata key of a rescore child: the scorers it ran (rather than kept).
+RESCORED_KEY = "rescored_scorers"
 
 
 def _without(trial: Trial, replaced: set[str]) -> Trial:
@@ -683,6 +706,7 @@ async def rescore(
     ]
     child_name = name or parent.name
     child_metadata = {**parent.metadata, **(metadata or {})}
+    child_metadata[RESCORED_KEY] = sorted(replaced)
     if dataset is not None:
         child_metadata["unpaired"] = unpaired
         if dropped:
@@ -762,6 +786,25 @@ async def rescore(
     )
 
 
+def _own_usage(run: EvaluationRun) -> Usage:
+    """What a run's stored trials cost it, without what it copied."""
+    if run.kind == "retry":
+        new = (t for t in run.trials if t.started_at >= run.created_at)
+        return sum((t.total_usage for t in new), Usage())
+    if run.kind == "rescore":
+        ran = {str(name) for name in run.metadata.get(RESCORED_KEY, [])}
+        return sum(
+            (
+                u
+                for t in run.trials
+                for name, u in t.scorer_usage.items()
+                if name in ran
+            ),
+            Usage(),
+        )
+    return sum((t.total_usage for t in run.trials), Usage())
+
+
 def close_run(
     run: "str | EvaluationRun",
     *,
@@ -779,7 +822,8 @@ def close_run(
 
     Refused while the run's process still runs on this host, or when that
     cannot be told (another host, or a run recorded without its process),
-    unless ``force``. Usage counts the stored trials, or the run's recorded
+    unless ``force``. Usage counts what the stored trials cost this run (a
+    retry's new attempts, a rescore's re-run scorers), or the run's recorded
     total when larger (attempts later retried are not stored).
     """
     run_store = resolve_store(store, persist=True)
@@ -802,7 +846,7 @@ def close_run(
     order: list[TrialKey] = [
         (e.id, r) for e in loaded.examples for r in range(loaded.config.repetitions)
     ]
-    stored = sum((t.total_usage for t in loaded.trials), Usage())
+    stored = _own_usage(loaded)
     recorded = loaded.usage
     usage = (
         recorded if (recorded.cost_usd or 0.0) > (stored.cost_usd or 0.0) else stored
@@ -842,7 +886,13 @@ def annotate_run(
     run_store = resolve_store(store, persist=True)
     if run_store is None:
         raise ValueError("Annotating a run needs a store")
-    loaded = load_run(run_store, run)
+    # From the store: the header as last saved, not a copy held in memory.
+    loaded = load_run(run_store, run if isinstance(run, str) else run.id)
+    if loaded.status == RunStatus.RUNNING:
+        raise ValueError(
+            f"Run {loaded.id} is running: annotate it once it finishes (its "
+            "process saves the header last)"
+        )
     unknown = sorted(set(remove_links) - set(loaded.links))
     if unknown:
         raise ValueError(f"Run {loaded.id} has no links named {unknown}")

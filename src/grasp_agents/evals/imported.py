@@ -161,7 +161,9 @@ async def import_outputs(
     dataset outside the selection are ignored; an id the dataset lacks, or a
     repeated (example, repetition), is an error. ``repetitions`` defaults to
     the most any example has; examples missing some leave the run
-    ``partial``. Sealed splits are handled as in :func:`evaluate`.
+    ``partial``. Sealed splits are handled as in :func:`evaluate`; one that is
+    included needs an output (or error) for each of its examples and
+    repetitions.
     """
     records = [
         r if isinstance(r, ImportedTrial) else ImportedTrial.model_validate(r)
@@ -202,6 +204,15 @@ async def import_outputs(
     beyond = sorted(f"{i}#{r}" for i, r in chosen if r >= reps)
     if beyond:
         raise DatasetError(f"Outputs beyond {reps} repetitions: {beyond[:10]}")
+    for split in sorted(sealed):
+        keys = [(e.id, r) for e in selected if split in e.splits for r in range(reps)]
+        lacking = sum(1 for key in keys if key not in chosen)
+        if lacking:
+            raise DatasetError(
+                f"Sealed split {split!r} is evaluated whole, but {lacking} of its "
+                f"{len(keys)} (example, repetition) pairs have no output (record a "
+                "failed one with error)"
+            )
     run_store = resolve_store(store, persist)
     task_info = ComponentInfo(
         name=task,

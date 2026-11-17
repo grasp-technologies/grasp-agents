@@ -30,7 +30,8 @@ def start_tracing(project: str, *, endpoint: str | None = None) -> str:
     provider for it and attach the Phoenix exporter, sending to ``endpoint``,
     else ``$TELEMETRY_COLLECTOR_HTTP_ENDPOINT``, else
     ``$PHOENIX_BASE_URL/v1/traces``. When tracing is already set up (e.g. by
-    the spec module), its project is kept. Returns the project spans go to.
+    the spec module), its project is kept; one without a Phoenix project is
+    an error. Returns the project spans go to.
     """
     existing = trace_project()
     if existing is not None:
@@ -41,6 +42,12 @@ def start_tracing(project: str, *, endpoint: str | None = None) -> str:
                 project,
             )
         return existing
+    if isinstance(trace.get_tracer_provider(), TracerProvider):
+        raise ValueError(  # ruff: ignore[type-check-without-type-error]
+            "Tracing is already set up without a Phoenix project (resource "
+            f"attribute {_PROJECT_ATTRIBUTE!r}), so spans would not reach "
+            f"{project!r}: set the attribute where tracing is set up instead"
+        )
     from grasp_agents.telemetry import (  # ruff: ignore[import-outside-top-level]
         init_tracing,
     )
