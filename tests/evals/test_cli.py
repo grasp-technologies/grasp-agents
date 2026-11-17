@@ -1,10 +1,14 @@
+import http.server
 import json
+import os
 import signal
 import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
+from typing import Any, ClassVar
 
 import pytest
 
@@ -579,7 +583,7 @@ def test_rescore_selects_trials_and_takes_a_newer_dataset(
     )
     assert code == 0
     assert fixed["dataset"]["name"] == "doubling-v2"
-    assert fixed["metrics"]["pass_rate(correct)"]["value"] == 1.0
+    assert fixed["metrics"]["pass_rate(correct)"]["value"] == pytest.approx(1.0)
 
 
 def test_outputs_produced_elsewhere_are_imported(
@@ -609,7 +613,7 @@ def test_outputs_produced_elsewhere_are_imported(
     assert run["kind"] == "import"
     assert run["task"] == {"name": "vendor", "version": "2026-11"}
     assert run["counts"]["trials_done"] == 4  # the sealed split is left out
-    assert run["metrics"]["pass_rate(correct)"]["value"] == 1.0
+    assert run["metrics"]["pass_rate(correct)"]["value"] == pytest.approx(1.0)
     assert run["cost_usd"] == pytest.approx(2.0)
 
 
@@ -636,3 +640,61 @@ def test_runs_carry_links_and_notes(
     assert shown["notes"] == ["first pass"]
     assert main(["--root", root, "annotate", base["id"], "--link", "nope"]) == 2
     assert main(["--root", root, "annotate", base["id"], "--remove-link", "x"]) == 2
+
+
+class _Collector(http.server.BaseHTTPRequestHandler):
+    received: ClassVar[list[str]] = []
+
+    def do_POST(self) -> None:  # ruff: ignore[invalid-function-name]
+        self.rfile.read(int(self.headers.get("content-length") or 0))
+        self.received.append(self.path)
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, format: str, *args: Any) -> None:  # ruff: ignore[builtin-argument-shadowing]
+        return
+
+
+def test_run_trace_gives_every_trial_a_trace_id(tmp_path: Path, module: Path) -> None:
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Collector)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    endpoint = f"http://127.0.0.1:{server.server_address[1]}/v1/traces"
+    root = tmp_path / "evals"
+    try:
+        result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+            [sys.executable, "-m", "grasp_agents.evals", "--root", str(root)]
+            + ["run", f"{module}:fixed", "--trace", "evals-test", "-q"],
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "TELEMETRY_COLLECTOR_HTTP_ENDPOINT": endpoint,
+                "NO_PROXY": "127.0.0.1",
+                "no_proxy": "127.0.0.1",
+            },
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+    finally:
+        server.shutdown()
+    assert result.returncode == 0, result.stderr.decode()
+    assert b"Phoenix project 'evals-test'" in result.stderr
+    store = LocalRunStore(root)
+    run = store.load(store.resolve("latest"))
+    assert run.trace_project == "evals-test"
+    assert all(t.trace_id for t in run.trials)
+    assert _Collector.received
+    assert all(path == "/v1/traces" for path in _Collector.received)
+
+
+def test_pushing_an_untraced_run_says_so(
+    tmp_path: Path,
+    module: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PHOENIX_BASE_URL", raising=False)
+    root = str(tmp_path / "evals")
+    _, run = _run_json(capsys, "--root", root, "run", f"{module}:fixed", "--json")
+    assert main(["--root", root, "push", run["id"]]) == 2
+    assert f"no trial of {run['id']} has a trace id" in capsys.readouterr().err

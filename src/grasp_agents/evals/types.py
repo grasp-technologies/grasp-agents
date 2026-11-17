@@ -543,6 +543,8 @@ class EvaluationRun(BaseModel):
     # The process that last executed the run (``None`` for runs recorded
     # before processes were).
     process: RunProcess | None = None
+    # The Phoenix project its trials were traced into, when tracing was on.
+    trace_project: str | None = None
 
     trials: list[Trial] = Field(default_factory=list[Trial], exclude=True)
     examples: list[Example[Any, Any]] = Field(

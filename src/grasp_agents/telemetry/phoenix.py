@@ -34,11 +34,14 @@ def init_phoenix(
     use_litellm_instr: bool = True,
     use_llm_provider_instr: bool = True,
     project_name: str = "grasp-agents",
+    collector_endpoint: str | None = None,
 ) -> None:
     """
     Attach the Phoenix exporter (and provider instrumentors) to the tracer
-    provider. Re-entry against the same provider is a no-op — the span
-    processors would otherwise duplicate and double every exported span.
+    provider, sending spans to ``collector_endpoint`` (default
+    ``$TELEMETRY_COLLECTOR_HTTP_ENDPOINT``). Re-entry against the same
+    provider is a no-op — the span processors would otherwise duplicate and
+    double every exported span.
     """
     # Deferred: these need the optional grasp-agents[phoenix] extra.
     from openinference.instrumentation.openllmetry import (  # ruff: ignore[import-outside-top-level]
@@ -50,7 +53,9 @@ def init_phoenix(
         SimpleSpanProcessor,
     )
 
-    collector_endpoint = os.getenv("TELEMETRY_COLLECTOR_HTTP_ENDPOINT")
+    collector_endpoint = collector_endpoint or os.getenv(
+        "TELEMETRY_COLLECTOR_HTTP_ENDPOINT"
+    )
 
     if not collector_endpoint:
         logger.warning(

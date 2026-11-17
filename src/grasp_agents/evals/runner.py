@@ -29,6 +29,7 @@ from .metrics import MetricsSpec
 from .scorer import Scorer
 from .store import RunStore
 from .task import Task, TaskFn, as_task
+from .tracing import trace_project
 from .types import (
     ComponentInfo,
     EvaluationRun,
@@ -385,6 +386,7 @@ async def evaluate[InT, OutT, RefT](
                 evaluation=evaluation,
             )
             run.metadata = {**run.metadata, "resumed": [record]}
+            run.trace_project = trace_project() or previous.trace_project
             if run_store is not None:
                 run_store.create(run)
                 for trial in run.trials:
@@ -395,6 +397,7 @@ async def evaluate[InT, OutT, RefT](
             run.finished_at = None
             run.invalid_reason = None
             run.config = config
+            run.trace_project = trace_project() or run.trace_project
             run.metadata = {
                 **run.metadata,
                 "resumed": [*run.metadata.get("resumed", []), record],
@@ -421,6 +424,7 @@ async def evaluate[InT, OutT, RefT](
             config_hash=run_hash,
             tags=list(tags),
             metadata=dict(metadata or {}),
+            trace_project=trace_project(),
             examples=list(dataset),
         )
         if run_store is not None:
@@ -670,6 +674,7 @@ async def rescore(
         tags=[*parent.tags, *tags],
         metadata=child_metadata,
         directions=dict(parent.directions),
+        trace_project=parent.trace_project,
         examples=list(selected),
     )
     if run_store is not None:

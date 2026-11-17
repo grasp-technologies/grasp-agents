@@ -63,6 +63,7 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 | `--fail-under METRIC=V` | Repeatable. Exit 1 when the metric's value is below V or missing |
 | `--fail-on-regression [--gate T]... [--min-effect X]` | Needs `--baseline`. `--gate` replaces the default targets (scores and `error`); `--min-effect` is in the target's units |
 | `--allow-unvalidated` | Run even though a validation gate fails; the failures are recorded in `metadata.unvalidated_judges` |
+| `--trace PROJECT` | Trace trials into this Phoenix project (default `$GRASP_EVALS_TRACE_PROJECT`); see Phoenix below |
 | `--push [--base-url URL] [--create-dataset]` | Mirror the run to Phoenix after it finishes (creating a missing Phoenix dataset only with `--create-dataset`) |
 | `--name`, `--tag` | Run name override; extra tags |
 | `--json`, `--progress text\|json\|none`, `-q` | See Output |
@@ -187,10 +188,12 @@ See [metrics.md](metrics.md#regression-gate).
     metrics) and metadata on every push, merging into the metadata on Phoenix so
     keys added there survive;
   - notes on stderr when no trial has a trace id (the experiment links no traces).
-- **Trace ids.** Trials get a `trace_id` only when an OpenTelemetry tracer provider is active during
-  the run. For example, call `grasp_agents.telemetry.init_tracing(project_name=...)` and
-  `grasp_agents.telemetry.phoenix.init_phoenix(...)` in the spec module;
-  `init_phoenix` reads `TELEMETRY_COLLECTOR_HTTP_ENDPOINT`. `labels pull` needs these
-  trace ids.
+- **Trace ids.** Trials get a `trace_id` only when an OpenTelemetry tracer provider is
+  active during the run; otherwise nothing reaches Phoenix and nothing warns at run time
+  (`push` notes it). `run --trace PROJECT` (or `$GRASP_EVALS_TRACE_PROJECT`) sets
+  tracing up before the first trial, sending to `TELEMETRY_COLLECTOR_HTTP_ENDPOINT`,
+  else `$PHOENIX_BASE_URL/v1/traces`, and flushes at the end. Tracing set up by the spec
+  module (`init_tracing` + `init_phoenix`) wins over `--trace`. Runs record the project
+  their traces went to (`trace_project`). `labels pull` needs these trace ids.
 - **Without Phoenix**, everything works except `push`, `datasets pull/push`,
   `labels pull` and `phoenix:` datasets.

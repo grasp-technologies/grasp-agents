@@ -4,7 +4,10 @@ to a comma-separated list of base URLs and run
 ``pytest -m integration tests/evals/test_phoenix_live.py``.
 """
 
+import asyncio
 import os
+import subprocess  # ruff: ignore[suspicious-subprocess-import]
+import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -516,6 +519,58 @@ async def test_every_push_refreshes_the_experiment_and_keeps_foreign_keys(
         assert metadata["links"] == {"report": "https://example.com/report"}
         assert metadata["notes"] == ["judge v2"]
         assert metadata["grasp_run_id"] == run.id
+
+
+_TRACED_MODULE = """
+from grasp_agents.evals import Dataset, Evaluation, Example, FunctionTask
+
+
+async def add(x: int) -> int:
+    return x + 1
+
+
+traced = Evaluation(
+    name="traced",
+    task=FunctionTask(add),
+    dataset=Dataset([Example(id=f"t{i}", input=i, reference=i + 1) for i in range(3)]),
+)
+"""
+
+
+@pytest.mark.asyncio
+async def test_run_trace_sends_trials_to_the_named_project(
+    base_url: str, tmp_path: Path
+) -> None:
+    spec = tmp_path / "traced_evals.py"
+    spec.write_text(_TRACED_MODULE)
+    project = _name("traced")
+    root = tmp_path / "evals"
+    result = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
+        [sys.executable, "-m", "grasp_agents.evals", "--root", str(root), "run"]
+        + [f"{spec}:traced", "--trace", project, "-q"],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "TELEMETRY_COLLECTOR_HTTP_ENDPOINT": f"{base_url}/v1/traces",
+        },
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    store = LocalRunStore(root)
+    run = store.load(store.resolve("latest"))
+    assert run.trace_project == project
+    async with PhoenixClient(base_url) as client:
+        for trial in run.trials:
+            assert trial.trace_id is not None
+            found = None
+            for _ in range(20):
+                found = await client.trace_project(trial.trace_id)
+                if found is not None:
+                    break
+                await asyncio.sleep(0.5)
+            assert found == project
 
 
 # --- Labels from human annotations ---

@@ -21,6 +21,7 @@ exit code says what happened:
 import argparse
 import asyncio
 import json
+import os
 import signal
 import sys
 import traceback
@@ -52,6 +53,7 @@ from .report import (
 )
 from .runner import ResumeError, SealedSelectionError, annotate_run, close_run
 from .store import LocalRunStore, RunNotFoundError, store_for_ref
+from .tracing import TRACE_PROJECT_ENV, flush_traces, start_tracing
 from .types import EvaluationRun, RunStatus, Trial
 from .validation import UnvalidatedJudgeError
 
@@ -264,6 +266,10 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     resume: EvaluationRun | None = None
     if args.resume:
         store, resume = _resolve_run(args.resume, args.root)
+    traced = args.trace or os.environ.get(TRACE_PROJECT_ENV)
+    if traced:
+        project = start_tracing(traced)
+        sys.stderr.write(f"tracing trials into Phoenix project {project!r}\n")
     ids = [i for i in (args.ids or "").split(",") if i]
     run = await evaluation.run(
         dataset=args.dataset,
@@ -287,6 +293,8 @@ async def _cmd_run(args: argparse.Namespace) -> int:
         phoenix_url=args.base_url,
         allow_unvalidated=args.allow_unvalidated,
     )
+    if traced:
+        flush_traces()
     comparison = compare(baseline, run) if baseline is not None else None
     pushed: str | None = None
     push_error: str | None = None
@@ -1028,6 +1036,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="exit 1 if a metric's value is below VALUE",
     )
     _add_gate(run, needs="with --baseline: ")
+    run.add_argument(
+        "--trace",
+        metavar="PROJECT",
+        help=(
+            "trace trials into this Phoenix project (default: "
+            f"${TRACE_PROJECT_ENV}); needs TELEMETRY_COLLECTOR_HTTP_ENDPOINT "
+            "or PHOENIX_BASE_URL"
+        ),
+    )
     run.add_argument("--push", action="store_true", help="mirror the run to Phoenix")
     run.add_argument(
         "--create-dataset",

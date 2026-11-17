@@ -40,8 +40,9 @@ init_phoenix(project_name="my-app")   # needs TELEMETRY_COLLECTOR_HTTP_ENDPOINT
   OTLP/HTTP; it needs `opentelemetry-exporter-otlp-proto-http`, which is not a
   dependency.
 - `init_phoenix(batch=False, use_litellm_instr=True, use_llm_provider_instr=True,
-  project_name=...)` reads `TELEMETRY_COLLECTOR_HTTP_ENDPOINT` (it logs a warning
-  and does nothing when unset), creates the provider if needed, and adds an
+  project_name=..., collector_endpoint=None)` sends spans to `collector_endpoint`,
+  else `TELEMETRY_COLLECTOR_HTTP_ENDPOINT` (it logs a warning and does nothing
+  when neither is set), creates the provider if needed, and adds an
   OpenInference span processor (converting OpenLLMetry-style attributes) plus a
   Phoenix HTTP exporter wrapped in `FilteringExporter`. The filter drops spans
   whose `gen_ai.system` / `gen_ai.provider.name` is an LLM provider (those calls

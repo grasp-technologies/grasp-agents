@@ -251,7 +251,7 @@ A judge is validated like any other system:
 
 | Command | Does |
 |---|---|
-| `run SPEC [--split --ids --sample --limit --include-sealed -r -c --timeout --max-cost --resume --baseline --fail-under M=V --fail-on-regression --push]` | run an `Evaluation` |
+| `run SPEC [--split --ids --sample --limit --include-sealed -r -c --timeout --max-cost --resume --baseline --fail-under M=V --fail-on-regression --trace PROJECT --push]` | run an `Evaluation` |
 | `rescore RUN [--spec SPEC --split --ids --dataset --rerun --allow-unvalidated]` | score stored outputs again (`--spec` defaults to the run's recorded spec) |
 | `close RUN [--spec SPEC --force]` | finalize a run whose process is gone |
 | `annotate RUN [--link NAME=URL --note TEXT --remove-link NAME]` | add links and notes to a run |
@@ -307,9 +307,14 @@ PostgreSQL store rejects, are replaced with U+FFFD in everything pushed
 Phoenix deduplicates are retried on gateway errors, and a failure names the
 trial; a 5xx from the server is `PhoenixUnavailableError`. Phoenix 20.0 or
 later is required; older servers raise
-`PhoenixCompatibilityError`. To give trials trace ids, initialize tracing in
-the spec module (`init_tracing` + `init_phoenix`; see
-[Observability](observability.md)).
+`PhoenixCompatibilityError`. Trials get trace ids only while tracing is on:
+`grasp-evals run --trace PROJECT` (or `$GRASP_EVALS_TRACE_PROJECT`;
+`grasp_agents.evals.tracing.start_tracing` in Python) sets it up before the
+first trial, sending to `TELEMETRY_COLLECTOR_HTTP_ENDPOINT` or
+`$PHOENIX_BASE_URL/v1/traces`; tracing the spec module set up itself
+(`init_tracing` + `init_phoenix`, see [Observability](observability.md)) wins.
+Runs record the project in `trace_project`, and `push` notes a run without
+trace ids.
 
 ## Contracts
 

@@ -263,6 +263,29 @@ class PhoenixClient:
             raise PhoenixError(response.status_code, method, path, response.text[:500])
         return cast("dict[str, Any]", response.json())
 
+    async def graphql(
+        self, query: str, variables: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """The ``data`` of a GraphQL request (errors raise :class:`PhoenixError`)."""
+        body = await self.request_json(
+            "POST", "graphql", json={"query": query, "variables": dict(variables or {})}
+        )
+        errors = cast("list[dict[str, Any]]", body.get("errors") or [])
+        if errors:
+            detail = "; ".join(str(e.get("message")) for e in errors)
+            raise PhoenixError(200, "POST", "graphql", detail)
+        return cast("dict[str, Any]", body.get("data") or {})
+
+    async def trace_project(self, trace_id: str) -> str | None:
+        """The project holding a trace (by its OTel id), or ``None``."""
+        data = await self.graphql(
+            "query($id: String!) { getTraceByOtelId(traceId: $id) "
+            "{ project { name } } }",
+            {"id": trace_id.lower()},
+        )
+        found = cast("dict[str, Any] | None", data.get("getTraceByOtelId"))
+        return None if found is None else str(found["project"]["name"])
+
     async def server_version(self) -> ServerVersion:
         if self._version is None:
             response = await self.http.get("arize_phoenix_version")
