@@ -244,6 +244,9 @@ A judge is validated like any other system:
 - `sample_for_labeling(run, n, score=, against=)` picks outputs worth labeling
   (disagreements with a cheaper check first, never sealed trials);
   `import_labels(paths, into)` merges filled-in files with labeler and time.
+  On the CLI, `labels sample --exclude` and `labels import --into` also take
+  a Phoenix labels dataset (`phoenix:[URL/]NAME[@VER]`): the import pushes a
+  new version based on the given one and prints the reference to pin.
 
 ## The `grasp-evals` CLI
 

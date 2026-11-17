@@ -43,8 +43,8 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 | `datasets show PATH` | Count, fingerprint, splits, ids | No spec needed |
 | `datasets pull [URL/]NAME[@VER] [-o FILE]` | Pull from Phoenix (cached by server and version) | A server in the reference wins over `$PHOENIX_BASE_URL`; a different `--base-url` is an error |
 | `datasets push PATH [--name --base-version --force --allow-deletes]` | Make a Phoenix dataset match a file | Uploads every example, sealed ones included |
-| `labels sample RUN -o FILE` | Writes a to-label JSONL | See [judges.md](judges.md#labeling-loop) |
-| `labels import FILES --into LABELS.jsonl` | Merges filled-in labels | |
+| `labels sample RUN -o FILE [--exclude FILE\|phoenix:REF]...` | Writes a to-label JSONL | See [judges.md](judges.md#labeling-loop) |
+| `labels import FILES --into LABELS.jsonl\|phoenix:[URL/]NAME[@VER]` | Merges filled-in labels | Into Phoenix: pushes a new version based on the given one and prints the reference to pin |
 | `labels pull FILE --project P --into LABELS.jsonl` | Reads human annotations from Phoenix | Needs traced trials |
 | `labels show FILE` | Counts labels by split and value | |
 | `push RUN [--dataset NAME --create-dataset]` | Mirrors a finished run to Phoenix as an experiment | See Phoenix below |

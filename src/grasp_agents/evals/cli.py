@@ -27,7 +27,7 @@ import sys
 import traceback
 from collections.abc import Coroutine, Sequence
 from pathlib import Path
-from typing import Any, NoReturn, cast, override
+from typing import TYPE_CHECKING, Any, NoReturn, cast, override
 
 from pydantic import ValidationError
 from rich.console import Console
@@ -37,6 +37,7 @@ from ._execution import ProgressCallback, TrialProgress
 from .compare import Comparison, compare, regressions
 from .dataset import Dataset, DatasetError, example_json_schema
 from .evaluation import (
+    PHOENIX_PREFIX,
     Evaluation,
     SpecError,
     list_evaluations,
@@ -55,6 +56,9 @@ from .runner import ResumeError, SealedSelectionError, annotate_run, close_run
 from .store import LocalRunStore, RunNotFoundError, store_for_ref
 from .tracing import TRACE_PROJECT_ENV, flush_traces, start_tracing
 from .types import EvaluationRun, RunStatus, Trial
+
+if TYPE_CHECKING:
+    from .labeling import LabelImport
 from .validation import UnvalidatedJudgeError
 
 EXIT_OK = 0
@@ -790,11 +794,57 @@ async def _delete_dataset(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+async def _merge_labels(
+    args: argparse.Namespace, records: Sequence[Any]
+) -> "LabelImport":
+    from .labeling import (  # ruff: ignore[import-outside-top-level]
+        merge_labels,
+        merge_labels_into_phoenix,
+    )
+
+    if args.into.startswith(PHOENIX_PREFIX):
+        return await merge_labels_into_phoenix(
+            records,
+            args.into,
+            labeler=getattr(args, "labeler", None),
+            replace=args.replace,
+            phoenix_url=args.base_url,
+        )
+    return merge_labels(
+        records, args.into, labeler=getattr(args, "labeler", None), replace=args.replace
+    )
+
+
+def _report_merge(result: "LabelImport") -> None:
+    _print_json(result.model_dump())
+    for conflict in result.conflicts:
+        sys.stderr.write(f"conflict: {json.dumps(conflict, default=str)}\n")
+    if result.unlabeled and not (result.added or result.updated):
+        sys.stderr.write(
+            f"{result.unlabeled} records had no label yet: fill in "
+            "their reference first\n"
+        )
+    if result.ref and (result.added or result.updated):
+        sys.stderr.write(f"pin the new labels version: {result.ref}\n")
+
+
+async def _excluded_records(
+    sources: Sequence[str], base_url: str | None
+) -> list[dict[str, Any]]:
+    from .labeling import label_records  # ruff: ignore[import-outside-top-level]
+
+    return [
+        r
+        for source in sources
+        for r in await label_records(source, phoenix_url=base_url)
+    ]
+
+
 def _cmd_labels(args: argparse.Namespace) -> int:
     from .labeling import (  # ruff: ignore[import-outside-top-level]
-        import_labels,
         known_splits,
         label_requests,
+        merge_labels,
         sample_for_labeling,
         write_records,
     )
@@ -808,7 +858,15 @@ def _cmd_labels(args: argparse.Namespace) -> int:
         if output.exists() and not args.force:
             raise CLIError(f"{output} exists; pass --force to replace it")
         _, run = _resolve_run(args.run, args.root)
-        earlier = [r for path in args.exclude for r in label_requests(path)]
+        on_phoenix = [s for s in args.exclude if s.startswith(PHOENIX_PREFIX)]
+        earlier = [
+            r
+            for path in args.exclude
+            if not path.startswith(PHOENIX_PREFIX)
+            for r in label_requests(path)
+        ]
+        if on_phoenix:
+            earlier += asyncio.run(_excluded_records(on_phoenix, args.base_url))
         records = sample_for_labeling(
             run,
             args.n,
@@ -843,17 +901,15 @@ def _cmd_labels(args: argparse.Namespace) -> int:
             )
         return EXIT_OK
     if args.labels_command == "import":
-        result = import_labels(
-            args.paths, args.into, labeler=args.labeler, replace=args.replace
-        )
-        _print_json(result.model_dump())
-        for conflict in result.conflicts:
-            sys.stderr.write(f"conflict: {json.dumps(conflict, default=str)}\n")
-        if result.unlabeled and not (result.added or result.updated):
-            sys.stderr.write(
-                f"{result.unlabeled} records had no label yet: fill in "
-                "their reference first\n"
+        records = [r for path in args.paths for r in label_requests(path)]
+        result = (
+            asyncio.run(_merge_labels(args, records))
+            if args.into.startswith(PHOENIX_PREFIX)
+            else merge_labels(
+                records, args.into, labeler=args.labeler, replace=args.replace
             )
+        )
+        _report_merge(result)
         return EXIT_OK
     if args.labels_command == "pull":
         return _run_async(_pull_labels(args))
@@ -864,7 +920,6 @@ async def _pull_labels(args: argparse.Namespace) -> int:
     from .labeling import (  # ruff: ignore[import-outside-top-level]
         annotation_value,
         label_requests,
-        merge_labels,
     )
     from .phoenix import PhoenixClient  # ruff: ignore[import-outside-top-level]
     from .phoenix.annotations import (  # ruff: ignore[import-outside-top-level]
@@ -920,7 +975,7 @@ async def _pull_labels(args: argparse.Namespace) -> int:
         if annotation.explanation:
             metadata["label_note"] = annotation.explanation
         labeled.append({**record, "reference": value, "metadata": metadata})
-    result = merge_labels(labeled, args.into, replace=args.replace)
+    result = await _merge_labels(args, labeled)
     _print_json(
         {
             **result.model_dump(),
@@ -932,6 +987,8 @@ async def _pull_labels(args: argparse.Namespace) -> int:
     )
     for conflict in result.conflicts:
         sys.stderr.write(f"conflict: {json.dumps(conflict, default=str)}\n")
+    if result.ref and (result.added or result.updated):
+        sys.stderr.write(f"pin the new labels version: {result.ref}\n")
     return EXIT_OK
 
 
@@ -1311,9 +1368,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--exclude",
         action="append",
         default=[],
-        metavar="FILE",
-        help="skip outputs already in this labels or to-label file",
+        metavar="FILE|phoenix:REF",
+        help="skip outputs already in this labels or to-label file, or Phoenix dataset",
     )
+    sample.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     sample.add_argument(
         "--test-share",
         type=float,
@@ -1327,7 +1385,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json(sample)
     imp = lsub.add_parser("import", help="merge filled-in to-label files")
     imp.add_argument("paths", nargs="+")
-    imp.add_argument("--into", required=True, help="labels dataset file")
+    imp.add_argument(
+        "--into",
+        required=True,
+        help="labels dataset file, or phoenix:[URL/]NAME[@VER] (pushes a new version)",
+    )
+    imp.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     imp.add_argument("--labeler", help="who labeled them (unless a record says)")
     imp.add_argument(
         "--replace", action="store_true", help="replace conflicting labels"
@@ -1353,7 +1416,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="LABEL",
         help="an annotation label that means fail (false/no/fail already do)",
     )
-    lpull.add_argument("--into", required=True, help="labels dataset file")
+    lpull.add_argument(
+        "--into",
+        required=True,
+        help="labels dataset file, or phoenix:[URL/]NAME[@VER] (pushes a new version)",
+    )
     lpull.add_argument(
         "--replace", action="store_true", help="replace conflicting labels"
     )

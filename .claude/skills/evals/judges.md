@@ -152,8 +152,9 @@ grasp-evals run spec.py:judge_v1_validation --dataset labels.jsonl --split dev
 | `--score` / `--against` | `--score` may name a score the run does not have yet (a warning; no spreading over verdicts). `--against` must exist |
 | Record identity | `id` is a hash of (input, output, reference, metadata). `metadata` carries `example_id`, `repetition`, `run_id`, `score`, and `trace_id` when the run was traced |
 | Splits | `test` or `dev` from a hash of the original example id, so `--test-share` is approximate and every output of one example lands in the same split. Splits found in `--exclude` files are reused |
+| Phoenix | `--exclude` takes `phoenix:[URL/]NAME[@VER]` too. `labels import --into phoenix:[URL/]NAME[@VER]` (and `labels pull --into`) pulls that version (the latest when unpinned; none for a new dataset), merges, and pushes a new version based on it — refused (`StaleDatasetError`, exit 2) when Phoenix moved past it — then prints the new reference to pin (`ref` in the JSON) |
 | Import | Labels are stored per score, with `labeler` and `labeled_at` per score. Equality is typed: `true`, `"pass"` and `1` are different labels, so relabeling with another spelling reports conflicts and keeps the old value unless `--replace`. A record whose id matches but whose output differs is refused. `--into` must be `.jsonl`. Blank or null references count as unlabeled. Nothing is written when nothing changed |
-| Python | `sample_for_labeling(run, n, score=..., against=...)` returns records; `grasp_agents.evals.labeling.write_records(records, path)` writes them; `import_labels(paths, into, labeler=...)` merges |
+| Python | `sample_for_labeling(run, n, score=..., against=...)` returns records; `grasp_agents.evals.labeling.write_records(records, path)` writes them; `import_labels(paths, into, labeler=...)` merges into a file, `labeling.merge_labels_into_phoenix(records, "phoenix:...")` into a Phoenix dataset |
 
 Labels from Phoenix: `grasp-evals labels pull to_label.jsonl --project P --into
 labels.jsonl [--name S] [--true WORD]... [--false WORD]...`

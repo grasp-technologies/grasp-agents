@@ -5,6 +5,7 @@ to a comma-separated list of base URLs and run
 """
 
 import asyncio
+import json
 import os
 import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sys
@@ -27,6 +28,8 @@ from grasp_agents.evals import (
     evaluate,
     scorer,
 )
+from grasp_agents.evals.cli import main
+from grasp_agents.evals.labeling import write_records
 from grasp_agents.evals.phoenix import (
     DatasetPushError,
     PhoenixClient,
@@ -657,6 +660,50 @@ async def test_pushes_leave_no_empty_projects_and_report_trace_retention(
         assert second["project_name"] not in await _project_names(client)
         # The tracing project and its traces stay.
         assert project in await _project_names(client)
+
+
+def test_labels_go_into_and_come_out_of_phoenix(
+    base_url: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = LocalRunStore(tmp_path / "evals")
+    run = asyncio.run(
+        evaluate(
+            FunctionTask(add), _dataset(_name("labeled"), n=8), [exact], store=store
+        )
+    )
+    root = str(store.root)
+    into = f"phoenix:{base_url}/{_name('labels')}"
+
+    def sample(n: int, *excluded: str) -> list[dict[str, Any]]:
+        path = tmp_path / f"to_label_{n}_{len(excluded)}.jsonl"
+        args = ["--root", root, "labels", "sample", run.id, "-n", str(n), "-o"]
+        args += [str(path), *(a for e in excluded for a in ("--exclude", e))]
+        assert main(args) == 0
+        capsys.readouterr()
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def label(records: list[dict[str, Any]], name: str) -> Path:
+        path = tmp_path / name
+        write_records([{**r, "reference": True} for r in records], path)
+        return path
+
+    first = sample(3)
+    assert main(["labels", "import", str(label(first, "a.jsonl")), "--into", into]) == 0
+    imported = json.loads(capsys.readouterr().out)
+    assert imported["added"] == 3
+    pinned = imported["ref"]
+    assert pinned.startswith(into + "@")
+    second = sample(3, pinned)
+    assert {r["id"] for r in second}.isdisjoint({r["id"] for r in first})
+    more = label(second, "b.jsonl")
+    assert main(["labels", "import", str(more), "--into", pinned]) == 0
+    merged = json.loads(capsys.readouterr().out)
+    assert (merged["added"], merged["total"]) == (3, 6)
+    assert merged["ref"] != pinned
+    # The first version is no longer the latest: importing on it is refused.
+    extra = label(sample(1, merged["ref"]), "c.jsonl")
+    assert main(["labels", "import", str(extra), "--into", pinned]) == 2
+    assert "is at version" in capsys.readouterr().err
 
 
 # --- Labels from human annotations ---

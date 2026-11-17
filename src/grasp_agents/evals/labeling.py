@@ -315,6 +315,7 @@ def _same(a: Any, b: Any) -> bool:
 class LabelImport(BaseModel):
     """What :func:`import_labels` did to the labels dataset."""
 
+    # The labels file, or the Phoenix reference merged into.
     path: str
     added: int = 0
     updated: int = 0
@@ -325,6 +326,10 @@ class LabelImport(BaseModel):
     # were unless ``replace``).
     conflicts: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]])
     total: int = 0
+    # For a Phoenix labels dataset: the version written (or the one merged
+    # into, when nothing changed) and its reference to pin.
+    version: str | None = None
+    ref: str | None = None
 
 
 def _per_score(value: Any, held: Iterable[str]) -> dict[str, Any]:
@@ -373,11 +378,31 @@ def merge_labels(
     target = Path(into)
     if target.suffix != ".jsonl":
         raise DatasetError(f"{target}: a labels dataset is a .jsonl file")
-    current: dict[str, dict[str, Any]] = {}
-    if target.exists():
-        for record in Dataset.load(target).to_records():
-            current[str(record["id"])] = record
-    result = LabelImport(path=str(target))
+    held = Dataset.load(target).to_records() if target.exists() else []
+    result, merged = merge_label_records(
+        records, held, labeler=labeler, replace=replace, where=str(target)
+    )
+    if result.added or result.updated:
+        write_records(merged, target)
+    return result
+
+
+def merge_label_records(
+    records: Iterable[Mapping[str, Any]],
+    existing_records: Iterable[Mapping[str, Any]],
+    *,
+    labeler: str | None = None,
+    replace: bool = False,
+    where: str = "labels",
+) -> tuple[LabelImport, list[dict[str, Any]]]:
+    """
+    :func:`merge_labels` in memory: what merging ``records`` into
+    ``existing_records`` did, and the merged records.
+    """
+    current: dict[str, dict[str, Any]] = {
+        str(r["id"]): dict(r) for r in existing_records
+    }
+    result = LabelImport(path=where)
     now = utc_now().isoformat()
     for record in records:
         incoming = _labels(record)
@@ -405,7 +430,7 @@ def merge_labels(
         if existing.get("input") != record.get("input"):
             raise DatasetError(
                 f"Record {record_id!r} labels a different output than the one "
-                f"{target} holds under that id"
+                f"{where} holds under that id"
             )
         held: Any = _labels(existing)
         changed: list[str] = []
@@ -461,9 +486,7 @@ def merge_labels(
         existing["metadata"] = kept
         result.updated += 1
     result.total = len(current)
-    if result.added or result.updated:
-        write_records(current.values(), target)
-    return result
+    return result, list(current.values())
 
 
 def import_labels(
@@ -484,6 +507,77 @@ def import_labels(
 def label_requests(path: str | Path) -> list[dict[str, Any]]:
     """The records of a to-label file, labeled or not."""
     return Dataset.load(path).to_records()
+
+
+async def label_records(
+    source: str,
+    *,
+    phoenix_url: str | None = None,
+    cache_dir: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """The records of a labels or to-label file, or of a Phoenix dataset."""
+    from .evaluation import (  # ruff: ignore[import-outside-top-level]
+        PHOENIX_PREFIX,
+        load_phoenix_dataset,
+    )
+
+    if source.startswith(PHOENIX_PREFIX):
+        dataset = await load_phoenix_dataset(
+            source, base_url=phoenix_url, cache_dir=cache_dir
+        )
+        return dataset.to_records()
+    return label_requests(source)
+
+
+async def merge_labels_into_phoenix(
+    records: Iterable[Mapping[str, Any]],
+    into: str,
+    *,
+    labeler: str | None = None,
+    replace: bool = False,
+    phoenix_url: str | None = None,
+    cache_dir: str | Path | None = None,
+) -> LabelImport:
+    """
+    :func:`merge_labels` into the Phoenix labels dataset ``into``
+    (``phoenix:[https://HOST/]NAME[@VERSION]``): its version (the latest
+    when unpinned; none for a new dataset) is pulled, the labels merged, and a
+    new version based on it pushed — refused when Phoenix has moved past it.
+    ``ref`` in the result is the version to pin.
+    """
+    from .evaluation import (  # ruff: ignore[import-outside-top-level]
+        parse_phoenix_ref,
+    )
+    from .phoenix import (  # ruff: ignore[import-outside-top-level]
+        PhoenixClient,
+        pull_dataset,
+        push_dataset,
+    )
+
+    ref = parse_phoenix_ref(into)
+    async with PhoenixClient(ref.server(phoenix_url)) as client:
+        base: Dataset[Any, Any] | None = None
+        if ref.version is not None or await client.find_dataset(ref.name):
+            base = await pull_dataset(
+                client, ref.name, version=ref.version, cache_dir=cache_dir
+            )
+        held = base.to_records() if base is not None else []
+        result, merged = merge_label_records(
+            records, held, labeler=labeler, replace=replace, where=into
+        )
+        version = None if base is None else base.version
+        if result.added or result.updated:
+            pushed = await push_dataset(
+                client,
+                Dataset.from_records(merged, name=ref.name),
+                name=ref.name,
+                base_version=version,
+            )
+            version = pushed.version_id
+        result.version = version
+        if version is not None:
+            result.ref = f"phoenix:{client.base_url}/{ref.name}@{version}"
+    return result
 
 
 _TRUE_LABELS = frozenset({"true", "yes", "pass", "passed"})
