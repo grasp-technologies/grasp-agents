@@ -386,6 +386,37 @@ async def _cmd_rescore(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+async def _cmd_import(args: argparse.Namespace) -> int:
+    evaluation = load_evaluation(args.spec)
+    store = LocalRunStore(args.root)
+    ids = [i for i in (args.ids or "").split(",") if i]
+    run = await evaluation.import_outputs(
+        args.outputs,
+        task=args.task,
+        task_version=args.task_version,
+        dataset=args.dataset,
+        split=args.split,
+        ids=ids or None,
+        sample=args.sample,
+        seed=args.seed,
+        limit=args.limit,
+        include_sealed=args.include_sealed,
+        repetitions=args.repetitions,
+        name=args.name,
+        store=store,
+        tags=args.tag,
+        progress=_progress_printer(args.progress),
+        phoenix_url=args.base_url,
+        allow_unvalidated=args.allow_unvalidated,
+    )
+    if args.json:
+        _print_json({**run_summary(run), "path": str(store.run_dir(run.id))})
+    else:
+        _print_markdown(render_run_markdown(run))
+        sys.stderr.write(f"run stored in {store.run_dir(run.id)}\n")
+    return EXIT_OK
+
+
 def _cmd_close(args: argparse.Namespace) -> int:
     store, run = _resolve_run(args.run, args.root)
     spec = args.spec or run.evaluation
@@ -963,6 +994,38 @@ def build_parser() -> argparse.ArgumentParser:
     push.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     _add_json(push)
 
+    imp_run = sub.add_parser(
+        "import", help="score outputs produced elsewhere as a run (JSONL file)"
+    )
+    imp_run.add_argument("spec")
+    imp_run.add_argument(
+        "outputs", help="JSONL: example_id, repetition, output, error, cost_usd, ..."
+    )
+    imp_run.add_argument(
+        "--task", help="what produced the outputs (default: the file's stem)"
+    )
+    imp_run.add_argument("--task-version")
+    imp_run.add_argument("--dataset", help="override the evaluation's dataset")
+    imp_run.add_argument("--split")
+    imp_run.add_argument("--ids", help="comma-separated example ids")
+    imp_run.add_argument("--sample", type=_non_negative_int)
+    imp_run.add_argument("--seed", type=int, default=0)
+    imp_run.add_argument("--limit", type=_non_negative_int)
+    imp_run.add_argument("--include-sealed", action="store_true")
+    imp_run.add_argument(
+        "-r", "--repetitions", type=_positive_int, help="default: the most in the file"
+    )
+    imp_run.add_argument(
+        "--allow-unvalidated",
+        action="store_true",
+        help="score with judges whose validation gate does not pass",
+    )
+    imp_run.add_argument("--base-url", help="Phoenix URL for phoenix: datasets")
+    imp_run.add_argument("--name")
+    imp_run.add_argument("--tag", action="append", default=[])
+    _add_json(imp_run)
+    _add_progress(imp_run)
+
     close = sub.add_parser(
         "close", help="finalize a run whose process is gone (partial or completed)"
     )
@@ -1158,6 +1221,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             return _run_async(_cmd_rescore(args))
         case "close":
             return _cmd_close(args)
+        case "import":
+            return _run_async(_cmd_import(args))
         case "push":
             return _run_async(_cmd_push(args))
         case "show":

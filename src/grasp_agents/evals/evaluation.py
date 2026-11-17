@@ -2,7 +2,7 @@ import importlib
 import importlib.util
 import inspect
 import sys
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -13,6 +13,7 @@ from grasp_agents.processors.processor import Processor
 from ._execution import ProgressCallback
 from ._util import SPEC_MODULE_PREFIX, short_hash
 from .dataset import Dataset, DatasetCheck, DatasetError, DatasetProblem
+from .imported import ImportedTrial, import_outputs, read_outputs
 from .metrics import MetricsSpec, default_metrics
 from .runner import evaluate as evaluate_task
 from .runner import leave_out_sealed, rescore
@@ -527,6 +528,80 @@ class Evaluation:
             store=store,
             persist=persist,
             metadata=judges,
+            progress=progress,
+        )
+
+    async def import_outputs(
+        self,
+        outputs: "str | Path | Iterable[ImportedTrial | Mapping[str, Any]]",
+        *,
+        task: str | None = None,
+        task_version: str | None = None,
+        task_config: Mapping[str, Any] | None = None,
+        dataset: Dataset[Any, Any] | str | Path | None = None,
+        split: str | None = None,
+        ids: Sequence[str] | None = None,
+        sample: int | None = None,
+        seed: int = 0,
+        limit: int | None = None,
+        include_sealed: bool = False,
+        repetitions: int | None = None,
+        name: str | None = None,
+        store: RunStore | None = None,
+        persist: bool = True,
+        tags: Sequence[str] = (),
+        metadata: Mapping[str, Any] | None = None,
+        progress: ProgressCallback | None = None,
+        phoenix_url: str | None = None,
+        allow_unvalidated: bool = False,
+    ) -> EvaluationRun:
+        """
+        Score outputs produced elsewhere (a JSONL file of
+        :class:`ImportedTrial` records, or the records) as a run of this
+        evaluation, on the same selection :meth:`run` would make; ``task``
+        (default: the file's stem) names what produced them. Gated judges
+        must be validated, as for :meth:`run`. See :func:`import_outputs`.
+        """
+        metrics, judges = self.check_judges(store, allow_unvalidated=allow_unvalidated)
+        if isinstance(outputs, str | Path):
+            records: list[ImportedTrial] | list[Any] = read_outputs(outputs)
+            source: dict[str, Any] = {"imported_from": str(outputs)}
+            label = Path(outputs).stem
+        else:
+            records, source, label = list(outputs), {}, "imported"
+        data = await self.select(
+            dataset=dataset,
+            split=split,
+            ids=ids,
+            sample=sample,
+            seed=seed,
+            limit=limit,
+            include_sealed=include_sealed,
+            phoenix_url=phoenix_url,
+        )
+        return await import_outputs(
+            records,
+            data,
+            self.scorers,
+            metrics,
+            task=task or label,
+            task_version=task_version,
+            task_config=task_config,
+            output_type=self.resolved_output_type,
+            repetitions=repetitions,
+            name=name or self.name,
+            description=self.description,
+            concurrency=self.concurrency,
+            scorer_timeout_s=self.scorer_timeout_s,
+            group_by=self.group_by,
+            cluster_by=self.cluster_by,
+            sealed_splits=self.sealed_splits,
+            include_sealed=include_sealed,
+            store=store,
+            persist=persist,
+            tags=[*self.tags, *tags],
+            metadata={**self.metadata, **source, **(metadata or {}), **judges},
+            evaluation=self.spec,
             progress=progress,
         )
 

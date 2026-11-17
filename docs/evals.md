@@ -17,7 +17,8 @@ them. The `grasp-evals` CLI drives the same API from the shell.
 | `Task`, `ProcessorTask`, `FunctionTask` | `evals/task.py` | The system under test |
 | `Scorer`, `@scorer`, `ScoreContext`, `Score` | `evals/scorer.py`, `evals/types.py` | Per-trial judgments |
 | `Metric` (`PassRate`, `PassAtK`, `PassHatK`, `Mean`, `Percentile`, `ErrorRate`, `CohenKappa`, …) | `evals/metrics.py` | Aggregates with intervals |
-| `evaluate`, `rescore` | `evals/runner.py` | Run / re-score |
+| `evaluate`, `rescore`, `close_run` | `evals/runner.py` | Run / re-score / finalize a run whose process died |
+| `import_outputs`, `ImportedTrial`, `read_outputs` | `evals/imported.py` | Score outputs produced elsewhere as a run |
 | `Evaluation` | `evals/evaluation.py` | An importable, CLI-runnable definition |
 | `EvaluationRun`, `Trial` | `evals/types.py` | The run record |
 | `RunStore`, `LocalRunStore` | `evals/store.py` | Persistence |
@@ -149,7 +150,8 @@ runs/<run_id>/transcripts.jsonl  per-trial event streams
 runs/<run_id>/report.md
 ```
 
-`EvaluationRun.kind` is `evaluation`, `rescore`, `pairwise` or `retry`. A run
+`EvaluationRun.kind` is `evaluation`, `rescore`, `pairwise`, `retry` or
+`import`. A run
 records provenance (git commit/branch/dirty state, source hashes, Python and
 package versions, observed models). `evaluate(..., resume=run)` continues an
 unfinished run in place, or retries a completed run's failed trials in a new
@@ -174,6 +176,16 @@ finalizes it from its stored trials as `partial` (or `completed`), which
 `rescore`, `push` and `resume` accept. It refuses while the process still runs
 on this host, or when that cannot be told (another host, an older run),
 unless forced.
+
+**Outputs produced elsewhere** (another agent, a person, a vendor) become a
+run with `import_outputs(records, dataset, scorers, task=...)`,
+`Evaluation.import_outputs(path)` or `grasp-evals import SPEC FILE`. Each
+`ImportedTrial` (one JSONL line) carries `example_id`, `repetition`, `output`
+or `error`, and optionally `duration_s`, `cost_usd`, `usage`, `models`,
+`measurements`, `trace_id` and `started_at`. The run (`kind="import"`) is
+scored as a rescore scores stored outputs, on the selection a run would make,
+so it compares, pairs and pushes like any run; its task is identified only by
+the `task` name, version and config you give.
 
 ## Comparing
 
@@ -236,6 +248,7 @@ A judge is validated like any other system:
 | `run SPEC [--split --ids --sample --limit --include-sealed -r -c --timeout --max-cost --resume --baseline --fail-under M=V --fail-on-regression --push]` | run an `Evaluation` |
 | `rescore RUN [--spec SPEC --split --ids --dataset --rerun --allow-unvalidated]` | score stored outputs again (`--spec` defaults to the run's recorded spec) |
 | `close RUN [--spec SPEC --force]` | finalize a run whose process is gone |
+| `import SPEC FILE [--task NAME --task-version V --split --ids ...]` | score outputs produced elsewhere as a run |
 | `show RUN [--failures --trials --outputs --example ID]` | inspect a run |
 | `compare BASE CANDIDATE [--fail-on-regression --gate T --min-effect X]` | paired comparison |
 | `pairwise BASE CANDIDATE --judge MODULE:ATTR [--one-order]` | A/B judging |
@@ -308,8 +321,8 @@ The `evals` skill in `.claude/skills/evals/` lists these and more, with fixes.
 
 ## Limitations
 
-- Only offline evaluation of runs started by the framework; traces produced
-  elsewhere are not scored.
+- Only offline evaluation. Outputs produced elsewhere can be imported
+  (`import_outputs`), but traces are not read back into runs.
 - LLM calls are not recorded for replay; rerunning a task calls the models
   again.
 - Trials share the host: no per-trial sandbox or environment is created unless

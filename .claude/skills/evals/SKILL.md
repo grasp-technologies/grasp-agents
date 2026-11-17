@@ -47,6 +47,7 @@ What each action does to runs:
 | Resume a completed run with nothing to redo | Returns that same run; nothing new is created | Unchanged |
 | `close` a run whose process was killed (`SIGKILL`, OOM, a lost machine) | No new run | Finalized in place as `partial` (or `completed`); then rescore, push or resume it |
 | `rescore` | A `rescore` child. The task is not re-run | Unchanged |
+| `import` outputs produced elsewhere | A new `import` run, scored like a rescore | — |
 | `pairwise` | A `pairwise` run whose trials hold both arms' outputs | Unchanged |
 | `push` (Phoenix) | No new run | Only the Phoenix link is written to `run.json` |
 

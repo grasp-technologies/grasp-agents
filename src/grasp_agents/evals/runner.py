@@ -71,7 +71,7 @@ class SealedSelectionError(ValueError):
     pass
 
 
-def _check_scorers(
+def check_scorers(
     scorers: Sequence[Scorer[Any, Any, Any]], metrics: MetricsSpec = None
 ) -> None:
     seen: set[str] = set()
@@ -323,7 +323,7 @@ async def evaluate[InT, OutT, RefT](
         raise ValueError(f"The selection from {dataset.name!r} has no examples")
     the_task = as_task(task)
     scorer_list: list[Scorer[Any, Any, Any]] = list(scorers)
-    _check_scorers(scorer_list, metrics)
+    check_scorers(scorer_list, metrics)
     sealed = frozenset(sealed_splits)
     dataset = leave_out_sealed(dataset, sealed, include_sealed=include_sealed)
     check_sealed(dataset, sealed)
@@ -579,7 +579,7 @@ async def rescore(
     ``reference_type`` / ``output_type`` before scorers see them. A parent
     that did not complete yields a ``partial`` child.
     """
-    _check_scorers(scorers, metrics)
+    check_scorers(scorers, metrics)
     run_store = resolve_store(store, persist)
     parent = load_run(run_store, run)
     if parent.status == RunStatus.RUNNING:

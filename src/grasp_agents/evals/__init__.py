@@ -38,6 +38,7 @@ from .evaluation import (
     load_phoenix_dataset,
     parse_phoenix_ref,
 )
+from .imported import ImportedTrial, import_outputs, read_outputs
 from .judge import (
     JudgedPair,
     ProcessorPairwiseJudge,
@@ -134,6 +135,7 @@ __all__ = [
     "FunctionPairwiseJudge",
     "FunctionScorer",
     "FunctionTask",
+    "ImportedTrial",
     "JudgeErrorRates",
     "JudgeValidation",
     "JudgedOutput",
@@ -188,6 +190,7 @@ __all__ = [
     "evaluate",
     "example_json_schema",
     "import_labels",
+    "import_outputs",
     "judge_probes",
     "judge_validation",
     "judged_outputs",
@@ -197,6 +200,7 @@ __all__ = [
     "load_phoenix_dataset",
     "pairwise",
     "parse_phoenix_ref",
+    "read_outputs",
     "render_comparison_markdown",
     "render_run_markdown",
     "rescore",

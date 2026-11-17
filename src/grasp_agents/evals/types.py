@@ -469,7 +469,7 @@ class RunProcess(BaseModel):
     started_at: datetime
 
 
-type RunKind = Literal["evaluation", "rescore", "pairwise", "retry"]
+type RunKind = Literal["evaluation", "rescore", "pairwise", "retry", "import"]
 type Direction = Literal["higher", "lower"]
 
 

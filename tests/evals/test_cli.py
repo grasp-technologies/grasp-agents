@@ -580,3 +580,34 @@ def test_rescore_selects_trials_and_takes_a_newer_dataset(
     assert code == 0
     assert fixed["dataset"]["name"] == "doubling-v2"
     assert fixed["metrics"]["pass_rate(correct)"]["value"] == 1.0
+
+
+def test_outputs_produced_elsewhere_are_imported(
+    tmp_path: Path, module: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = str(tmp_path / "evals")
+    outputs = tmp_path / "vendor.jsonl"
+    outputs.write_text(
+        "".join(
+            json.dumps({"example_id": f"x{i}", "output": i * 2, "cost_usd": 0.5}) + "\n"
+            for i in range(6)
+        )
+    )
+    code, run = _run_json(
+        capsys,
+        "--root",
+        root,
+        "import",
+        f"{module}:buggy",
+        str(outputs),
+        "--task-version",
+        "2026-11",
+        "--json",
+        "-q",
+    )
+    assert code == 0
+    assert run["kind"] == "import"
+    assert run["task"] == {"name": "vendor", "version": "2026-11"}
+    assert run["counts"]["trials_done"] == 4  # the sealed split is left out
+    assert run["metrics"]["pass_rate(correct)"]["value"] == 1.0
+    assert run["cost_usd"] == pytest.approx(2.0)
