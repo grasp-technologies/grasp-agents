@@ -10,6 +10,7 @@ from .client import (
     PhoenixClient,
     PhoenixCompatibilityError,
     PhoenixError,
+    PhoenixUnavailableError,
     normalize_base_url,
 )
 from .sync import (
@@ -31,6 +32,7 @@ __all__ = [
     "PhoenixClient",
     "PhoenixCompatibilityError",
     "PhoenixError",
+    "PhoenixUnavailableError",
     "StaleDatasetError",
     "experiment_url",
     "from_phoenix_record",

@@ -261,7 +261,7 @@ A judge is validated like any other system:
 | `runs`, `list MODULE` | list runs / evaluations |
 | `datasets {schema, validate, show, pull, push}` | dataset utilities |
 | `labels {sample, import, pull, show}` | label collection |
-| `push RUN` | mirror a finished run to Phoenix |
+| `push RUN [--dataset NAME --create-dataset]` | mirror a finished run to Phoenix |
 
 Every command accepts `--json` (one JSON document on stdout, errors included);
 progress goes to stderr (`--progress json` for one object per trial).
@@ -289,7 +289,17 @@ server a reference names wins over `PHOENIX_BASE_URL` (and conflicts with a
 different `--base-url`). `PHOENIX_API_KEY` is still sent only to
 `PHOENIX_BASE_URL`'s server, or to any server when that is unset. Pinned
 versions are cached per server and pulled once. `load_phoenix_dataset` and
-`parse_phoenix_ref` are exported for loaders of your own. Phoenix 20.0 or
+`parse_phoenix_ref` are exported for loaders of your own.
+
+`push` attaches a run to the dataset its examples were pulled from, or to a
+Phoenix dataset (`--dataset NAME`, default the run's dataset name) that holds
+exactly its examples; it creates a missing dataset only with
+`--create-dataset`, and `GRASP_EVALS_DATASET_PREFIX` keeps push and
+`datasets push` inside one namespace. NUL characters, which Phoenix's
+PostgreSQL store rejects, are replaced with U+FFFD in everything pushed
+(`run.phoenix.altered_trials` lists the trials affected). Trial posts that
+Phoenix deduplicates are retried on gateway errors, and a failure names the
+trial; a 5xx from the server is `PhoenixUnavailableError`. Phoenix 20.0 or
 later is required; older servers raise
 `PhoenixCompatibilityError`. To give trials trace ids, initialize tracing in
 the spec module (`init_tracing` + `init_phoenix`; see

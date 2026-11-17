@@ -293,7 +293,9 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     push_exit = EXIT_OK
     if args.push:
         try:
-            pushed = await _push(run, store, args.base_url)
+            pushed = await _push(
+                run, store, args.base_url, create_dataset=args.create_dataset
+            )
         except Exception as exc:
             push_error = f"{type(exc).__name__}: {exc}"
             push_exit = _exit_code(exc)
@@ -329,7 +331,14 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     return EXIT_GATE if failures else EXIT_OK
 
 
-async def _push(run: EvaluationRun, store: LocalRunStore, base_url: str | None) -> str:
+async def _push(
+    run: EvaluationRun,
+    store: LocalRunStore,
+    base_url: str | None,
+    *,
+    dataset: str | None = None,
+    create_dataset: bool = False,
+) -> str:
     from .phoenix import (  # ruff: ignore[import-outside-top-level]
         PhoenixClient,
         experiment_url,
@@ -337,13 +346,21 @@ async def _push(run: EvaluationRun, store: LocalRunStore, base_url: str | None) 
     )
 
     async with PhoenixClient(base_url) as client:
-        link = await push_run(client, run, store=store)
+        link = await push_run(
+            client, run, store=store, dataset=dataset, create_dataset=create_dataset
+        )
     return experiment_url(link) or link.base_url
 
 
 async def _cmd_push(args: argparse.Namespace) -> int:
     store, run = _resolve_run(args.run, args.root)
-    url = await _push(run, store, args.base_url)
+    url = await _push(
+        run,
+        store,
+        args.base_url,
+        dataset=args.dataset,
+        create_dataset=args.create_dataset,
+    )
     if args.json:
         _print_json({"id": run.id, "phoenix_url": url})
     else:
@@ -983,6 +1000,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_gate(run, needs="with --baseline: ")
     run.add_argument("--push", action="store_true", help="mirror the run to Phoenix")
+    run.add_argument(
+        "--create-dataset",
+        action="store_true",
+        help="with --push: create the Phoenix dataset when it is missing",
+    )
     run.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     run.add_argument("--name")
     run.add_argument("--tag", action="append", default=[])
@@ -991,6 +1013,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     push = sub.add_parser("push", help="mirror a finished run to Phoenix")
     push.add_argument("run")
+    push.add_argument(
+        "--dataset",
+        help="attach to this Phoenix dataset (it must hold the run's examples)",
+    )
+    push.add_argument(
+        "--create-dataset",
+        action="store_true",
+        help="create the Phoenix dataset when it is missing",
+    )
     push.add_argument("--base-url", help="Phoenix URL (default: $PHOENIX_BASE_URL)")
     _add_json(push)
 

@@ -30,7 +30,23 @@ type AnnotatorKind = Literal["LLM", "CODE", "HUMAN"]
 MIN_SERVER_VERSION: ServerVersion = (20, 0, 0)
 
 _IDEMPOTENT = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
+# POSTs the server makes idempotent: a repeated experiment run is refused
+# (409) once it succeeded and overwritten otherwise; an evaluation is an
+# upsert on (run, name).
+_IDEMPOTENT_POSTS = (
+    re.compile(r"/v1/experiments/[^/]+/runs$"),
+    re.compile(r"/v1/experiment_evaluations$"),
+)
 _GATEWAY_ERRORS = frozenset({502, 503, 504})
+
+
+def _repeatable(request: httpx.Request) -> bool:
+    if request.method in _IDEMPOTENT:
+        return True
+    path = request.url.path
+    return request.method == "POST" and any(p.search(path) for p in _IDEMPOTENT_POSTS)
+
+
 _MAX_DELAY_S = 60.0
 _VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)\S*")
 
@@ -39,11 +55,17 @@ class PhoenixError(RuntimeError):
     def __init__(self, status: int, method: str, path: str, detail: str) -> None:
         super().__init__(f"Phoenix {method} {path} failed ({status}): {detail}")
         self.status = status
+        self.method = method
+        self.path = path
         self.detail = detail
 
 
 class PhoenixCompatibilityError(RuntimeError):
     pass
+
+
+class PhoenixUnavailableError(PhoenixError):
+    """The server answered with a server error (5xx) after retries."""
 
 
 def normalize_base_url(url: str) -> str:
@@ -86,7 +108,8 @@ class _RetryingClient(httpx.AsyncClient):
     """
     Retries a request only when repeating it cannot duplicate a write: it
     never reached the server, the server rate-limited it (429), or it is
-    idempotent and failed on a gateway error or timeout.
+    idempotent (by method, or a POST the server makes idempotent) and failed
+    on a gateway error, a timeout or a dropped connection.
     """
 
     def __init__(self, *, retries: int, **kwargs: Any) -> None:
@@ -116,12 +139,12 @@ class _RetryingClient(httpx.AsyncClient):
                 if attempt >= self._retries:
                     raise
             except (httpx.TimeoutException, httpx.NetworkError):
-                if request.method not in _IDEMPOTENT or attempt >= self._retries:
+                if not _repeatable(request) or attempt >= self._retries:
                     raise
             else:
                 status = response.status_code
                 retryable = status == 429 or (
-                    status in _GATEWAY_ERRORS and request.method in _IDEMPOTENT
+                    status in _GATEWAY_ERRORS and _repeatable(request)
                 )
                 if not retryable or attempt >= self._retries:
                     return response
@@ -244,6 +267,13 @@ class PhoenixClient:
         if self._version is None:
             response = await self.http.get("arize_phoenix_version")
             text = response.text.strip()
+            if response.status_code >= 500:
+                raise PhoenixUnavailableError(
+                    response.status_code,
+                    "GET",
+                    "arize_phoenix_version",
+                    f"{self.base_url} is unavailable: {text[:80]!r}",
+                )
             match = _VERSION_RE.fullmatch(text) if response.is_success else None
             if match is None:
                 raise PhoenixCompatibilityError(

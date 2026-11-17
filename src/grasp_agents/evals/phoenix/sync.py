@@ -13,6 +13,7 @@ import binascii
 import json
 import logging
 import math
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -46,10 +47,61 @@ logger = logging.getLogger(__name__)
 GRASP_KEY = "grasp_example"
 _VALUE_KEY = "value"
 _SOURCE_PREFIX = "phoenix:"
+# Phoenix dataset names that push and datasets push may use must start with
+# this prefix (e.g. "staging/"), when set.
+DATASET_PREFIX_ENV = "GRASP_EVALS_DATASET_PREFIX"
+# PostgreSQL rejects NUL in text and JSONB; Phoenix answers a bare 500.
+_NUL = "\x00"
+NUL_REPLACEMENT = "\ufffd"
 
 
 class StaleDatasetError(RuntimeError):
     pass
+
+
+def scrub(value: Any) -> tuple[Any, bool]:
+    """
+    ``value`` with NUL characters in its strings (keys included) replaced by
+    U+FFFD, and whether any was.
+    """
+    if isinstance(value, str):
+        return (
+            (value.replace(_NUL, NUL_REPLACEMENT), True)
+            if _NUL in value
+            else (
+                value,
+                False,
+            )
+        )
+    if isinstance(value, Mapping):
+        altered = False
+        cleaned: dict[Any, Any] = {}
+        for key, item in cast("Mapping[Any, Any]", value).items():
+            new_key, key_altered = scrub(key)
+            new_item, item_altered = scrub(item)
+            cleaned[new_key] = new_item
+            altered = altered or key_altered or item_altered
+        return (cleaned, True) if altered else (cast("Any", value), False)
+    if isinstance(value, list | tuple):
+        items = [scrub(v) for v in cast("Sequence[Any]", value)]
+        if any(changed for _, changed in items):
+            return [v for v, _ in items], True
+        return cast("Any", value), False
+    return value, False
+
+
+def _scrubbed(value: Any) -> Any:
+    return scrub(value)[0]
+
+
+def check_dataset_name(name: str) -> None:
+    """Refuse a Phoenix dataset name outside ``$GRASP_EVALS_DATASET_PREFIX``."""
+    prefix = os.environ.get(DATASET_PREFIX_ENV)
+    if prefix and not name.startswith(prefix):
+        raise DatasetPushError(
+            f"Phoenix dataset {name!r} is outside {prefix!r} "
+            f"(${DATASET_PREFIX_ENV}): name a dataset under it"
+        )
 
 
 class DatasetPushError(RuntimeError):
@@ -95,22 +147,25 @@ def _content(raw_input: Any, raw_output: Any, metadata: Any) -> str:
 
 
 def to_phoenix_record(example: Example[Any, Any]) -> PhoenixRecord:
+    """
+    An example as a Phoenix row, NUL characters replaced (see :func:`scrub`).
+    """
     content = example.record
     wrapped: list[str] = []
-    payload = to_jsonable(content.input)
+    payload = _scrubbed(to_jsonable(content.input))
     if not isinstance(payload, dict):
         payload = {_VALUE_KEY: payload}
         wrapped.append("input")
     output: Any = {}
     grasp: dict[str, Any] = {}
     if content.reference is not None:
-        output = to_jsonable(content.reference)
+        output = _scrubbed(to_jsonable(content.reference))
         if not isinstance(output, dict):
             output = {_VALUE_KEY: output}
             wrapped.append("reference")
         elif not output:
             grasp["empty_reference"] = True
-    metadata = dict(cast("dict[str, Any]", to_jsonable(content.metadata)))
+    metadata = dict(cast("dict[str, Any]", _scrubbed(to_jsonable(content.metadata))))
     if wrapped:
         grasp["wrapped"] = wrapped
     if example.splits:
@@ -336,8 +391,9 @@ async def push_dataset(
             "pushing it would remove the other examples from Phoenix. Push the "
             "whole dataset, or force."
         )
-    await client.check_server()
     target = name or dataset.name
+    check_dataset_name(target)
+    await client.check_server()
     records = [to_phoenix_record(e) for e in dataset]
     existing = await client.find_dataset(target)
     timeout = int(client.timeout_s)
@@ -481,27 +537,52 @@ def _shareable(run: EvaluationRun) -> list[Example[Any, Any]]:
     return [e for e in run.examples if not sealed.intersection(e.splits)]
 
 
+def _row_digest(record: PhoenixRecord, descriptive: Sequence[str]) -> str:
+    # The content hash a row as uploaded unpacks to, as for pulled rows.
+    row = {"input": record.input, "output": record.output, "metadata": record.metadata}
+    return content_digest(*_unpack(row), descriptive=descriptive)
+
+
 async def _resolve_dataset(
-    client: PhoenixClient, run: EvaluationRun
+    client: PhoenixClient,
+    run: EvaluationRun,
+    *,
+    dataset: str | None = None,
+    create: bool = False,
 ) -> tuple[str, str]:
     source = parse_phoenix_source(run.dataset.source)
-    if source is not None and source[0] == client.base_url and run.dataset.version:
+    if (
+        dataset is None
+        and source is not None
+        and source[0] == client.base_url
+        and run.dataset.version
+    ):
+        check_dataset_name(run.dataset.name)
         return source[1], run.dataset.version
-    # A run on a local file (or on another server's dataset): reuse a Phoenix
-    # dataset of the same name only if it holds exactly these examples.
+    # A run on a local file, on another server's dataset, or attached by
+    # name: use a Phoenix dataset only if it holds exactly these examples.
+    name = dataset or run.dataset.name
+    check_dataset_name(name)
     examples = _shareable(run)
     records = [to_phoenix_record(e) for e in examples]
-    existing = await client.find_dataset(run.dataset.name)
+    existing = await client.find_dataset(name)
     timeout = int(client.timeout_s)
     if existing is None and not records:
         raise DatasetPushError(
             f"Every example of run {run.id} is in a sealed split, so there is no "
-            f"Phoenix dataset {run.dataset.name!r} to attach it to: push a run on "
-            "the shareable splits first"
+            f"Phoenix dataset {name!r} to attach it to: push a run on the "
+            "shareable splits first"
+        )
+    if existing is None and not create:
+        raise DatasetPushError(
+            f"Phoenix has no dataset {name!r} at {client.base_url}, and pushing "
+            f"run {run.id} would create it. Attach the run to an existing dataset "
+            "(--dataset NAME), push the dataset first (grasp-evals datasets push), "
+            "or create it (--create-dataset)."
         )
     if existing is None:
         created = await client.upsert_dataset(
-            name=run.dataset.name,
+            name=name,
             examples=[
                 _upload(r, None if _is_example_node_id(r.id) else r.id) for r in records
             ],
@@ -516,10 +597,12 @@ async def _resolve_dataset(
         record_id(r): content_digest(*_unpack(r), descriptive=descriptive)
         for r in cast("list[Mapping[str, Any]]", remote.examples)
     }
-    differing = [e.id for e in examples if remote_hashes.get(e.id) != e.content_hash]
+    differing = [
+        r.id for r in records if remote_hashes.get(r.id) != _row_digest(r, descriptive)
+    ]
     if differing:
         raise DatasetPushError(
-            f"Phoenix dataset {run.dataset.name!r} at {client.base_url} does not hold "
+            f"Phoenix dataset {name!r} at {client.base_url} does not hold "
             f"{len(differing)} of this run's examples as evaluated (e.g. "
             f"{differing[:3]}). Push the dataset first (grasp-evals datasets push), or "
             "run on a dataset pulled from this server."
@@ -597,24 +680,36 @@ async def push_run(
     *,
     store: RunStore | None = None,
     concurrency: int = 8,
+    dataset: str | None = None,
+    create_dataset: bool = False,
 ) -> PhoenixLink:
     """
     Mirror a finished run into Phoenix as an experiment.
 
-    The dataset is resolved (a dataset pulled from this server, or one of the
-    same name holding exactly the run's examples, created when missing); then
-    every trial is logged as a Phoenix run and every score as an evaluation.
-    Trials in sealed splits are withheld (their count is in the experiment
-    metadata). Progress is recorded on ``run.phoenix`` (and saved to
-    ``store``): an interrupted push resumes where it stopped, and pushing again
-    after the run was resumed logs only the trials that changed.
+    The dataset is the one the run's examples were pulled from on this
+    server, else the Phoenix dataset named ``dataset`` (default: the run's
+    dataset name) if it holds exactly the run's examples. A missing dataset
+    is created only with ``create_dataset``; names must start with
+    ``$GRASP_EVALS_DATASET_PREFIX`` when it is set. Then every trial is
+    logged as a Phoenix run and every score as an evaluation, with NUL
+    characters replaced (their trials are listed in
+    ``run.phoenix.altered_trials``). Trials in sealed splits are withheld
+    (their count is in the experiment metadata). Progress is recorded on
+    ``run.phoenix`` (and saved to ``store``): an interrupted push resumes
+    where it stopped, and pushing again after the run was resumed logs only
+    the trials that changed.
     """
     if not run.finished:
-        raise ValueError(f"Run {run.id} is still running; push it when it finishes")
+        raise ValueError(
+            f"Run {run.id} is still running; push it when it finishes (or close "
+            "it if its process is gone)"
+        )
     await client.check_server()
     link = run.phoenix
-    if link is None or link.base_url != client.base_url:
-        dataset_id, version_id = await _resolve_dataset(client, run)
+    if link is None or link.base_url != client.base_url or dataset is not None:
+        dataset_id, version_id = await _resolve_dataset(
+            client, run, dataset=dataset, create=create_dataset
+        )
         link = PhoenixLink(
             base_url=client.base_url,
             dataset_id=dataset_id,
@@ -647,6 +742,7 @@ async def push_run(
     }
     versions = {e.name: e.version for e in run.scorers}
     logged = dict(link.logged_trials)
+    altered = set(link.altered_trials)
     known_runs: dict[tuple[str, int], str] = {}
     lock = asyncio.Lock()
     semaphore = asyncio.Semaphore(concurrency)
@@ -674,66 +770,92 @@ async def push_run(
             )
         return found
 
+    async def log_trial(trial: Trial) -> bool:
+        """Log one trial and its scores; whether a NUL had to be replaced."""
+        node_id = node_ids[trial.example_id]
+        ended = trial.started_at + timedelta(seconds=trial.duration_s)
+        repetition = trial.repetition + 1
+        output, output_altered = scrub(trial.output)
+        error, error_altered = scrub(
+            None if trial.error is None else trial.error.message
+        )
+        changed = output_altered or error_altered
+        try:
+            logged_run = await client.call(
+                client.sdk.experiments.log_run(
+                    experiment_id=experiment_id,
+                    dataset_example_id=node_id,
+                    output=output,
+                    start_time=trial.started_at,
+                    end_time=ended,
+                    repetition_number=repetition,
+                    trace_id=trial.trace_id,
+                    error=error,
+                    timeout=int(client.timeout_s),
+                )
+            )
+            run_id = str(logged_run["id"])
+        except PhoenixError as exc:
+            # A successful run of this trial is already logged; its scores
+            # are updated below.
+            if exc.status != 409:
+                raise
+            run_id = await existing_run_id(node_id, repetition)
+        evaluations: list[dict[str, Any]] = []
+        for score in trial.scores:
+            scorer = score.scorer or score.name
+            evaluations.append(
+                {
+                    "name": score.name,
+                    "annotator_kind": annotators.get(scorer, "CODE"),
+                    "metadata": {
+                        "scorer": scorer,
+                        "scorer_version": versions.get(scorer),
+                        "reason": score.reason,
+                        **cast("dict[str, Any]", to_jsonable(score.metadata)),
+                    },
+                    "trace_id": trial.trace_id,
+                    **_evaluation_fields(score),
+                }
+            )
+        evaluations.extend(
+            {
+                "name": failure.scorer,
+                "annotator_kind": annotators.get(failure.scorer, "CODE"),
+                "error": failure.error.message,
+            }
+            for failure in trial.scorer_failures
+        )
+        for evaluation in evaluations:
+            fields, fields_altered = scrub(evaluation)
+            changed = changed or fields_altered
+            await client.call(
+                client.sdk.experiments.log_evaluation(
+                    experiment_run_id=run_id,
+                    start_time=ended,
+                    end_time=ended,
+                    timeout=int(client.timeout_s),
+                    **cast("dict[str, Any]", fields),
+                )
+            )
+        return changed
+
     async def push_trial(trial: Trial) -> None:
         async with semaphore:
-            node_id = node_ids[trial.example_id]
-            ended = trial.started_at + timedelta(seconds=trial.duration_s)
-            repetition = trial.repetition + 1
             try:
-                logged_run = await client.call(
-                    client.sdk.experiments.log_run(
-                        experiment_id=experiment_id,
-                        dataset_example_id=node_id,
-                        output=trial.output,
-                        start_time=trial.started_at,
-                        end_time=ended,
-                        repetition_number=repetition,
-                        trace_id=trial.trace_id,
-                        error=None if trial.error is None else trial.error.message,
-                        timeout=int(client.timeout_s),
-                    )
-                )
-                run_id = str(logged_run["id"])
+                changed = await log_trial(trial)
             except PhoenixError as exc:
-                # A successful run of this trial is already logged; its scores
-                # are updated below.
-                if exc.status != 409:
-                    raise
-                run_id = await existing_run_id(node_id, repetition)
-            for score in trial.scores:
-                scorer = score.scorer or score.name
-                await client.call(
-                    client.sdk.experiments.log_evaluation(
-                        experiment_run_id=run_id,
-                        name=score.name,
-                        annotator_kind=annotators.get(scorer, "CODE"),
-                        start_time=ended,
-                        end_time=ended,
-                        metadata={
-                            "scorer": scorer,
-                            "scorer_version": versions.get(scorer),
-                            "reason": score.reason,
-                            **cast("dict[str, Any]", to_jsonable(score.metadata)),
-                        },
-                        trace_id=trial.trace_id,
-                        timeout=int(client.timeout_s),
-                        **_evaluation_fields(score),
-                    )
-                )
-            for failure in trial.scorer_failures:
-                await client.call(
-                    client.sdk.experiments.log_evaluation(
-                        experiment_run_id=run_id,
-                        name=failure.scorer,
-                        annotator_kind=annotators.get(failure.scorer, "CODE"),
-                        start_time=ended,
-                        end_time=ended,
-                        error=failure.error.message,
-                        timeout=int(client.timeout_s),
-                    )
-                )
+                raise type(exc)(
+                    exc.status,
+                    exc.method,
+                    exc.path,
+                    f"{exc.detail} (logging run {run.id}, example "
+                    f"{trial.example_id!r}, repetition {trial.repetition})",
+                ) from exc
             async with lock:
                 logged[_trial_key(trial)] = _digest(trial)
+                if changed:
+                    altered.add(_trial_key(trial))
 
     pending = [t for t in trials if logged.get(_trial_key(t)) != _digest(t)]
     try:
@@ -750,6 +872,7 @@ async def push_run(
         raise
     finally:
         link.logged_trials = dict(sorted(logged.items()))
+        link.altered_trials = sorted(altered)
         if store is not None:
             store.save(run)
     if existed and pending:

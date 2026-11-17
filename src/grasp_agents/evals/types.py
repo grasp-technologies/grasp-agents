@@ -477,6 +477,9 @@ class PhoenixLink(BaseModel):
     # Trial key ("<example_id>#<repetition>") → digest of what was logged for
     # it, so trials that changed since (resumed, re-scored) are logged again.
     logged_trials: dict[str, str] = Field(default_factory=dict[str, str])
+    # Trials logged with NUL characters replaced (Phoenix's PostgreSQL store
+    # cannot hold them).
+    altered_trials: list[str] = Field(default_factory=list[str])
 
 
 class RunProcess(BaseModel):

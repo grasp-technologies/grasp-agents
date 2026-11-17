@@ -21,6 +21,7 @@ from grasp_agents.evals.phoenix import (
     PhoenixClient,
     PhoenixCompatibilityError,
     PhoenixError,
+    PhoenixUnavailableError,
     from_phoenix_record,
     normalize_base_url,
     phoenix_source,
@@ -38,6 +39,7 @@ from grasp_agents.evals.phoenix.sync import (
     parse_phoenix_source,
     record_id,
     record_node_id,
+    scrub,
 )
 
 
@@ -414,3 +416,57 @@ async def test_a_named_server_wins_over_the_environment(
     )
     assert dataset.ids == ["q1"]
     assert dataset.source == phoenix_source(server, "RGF0YXNldDox")
+
+
+# --- Push safety ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_backoff")
+async def test_trial_posts_the_server_dedupes_are_retried() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) == 1:
+            return httpx.Response(502)
+        return httpx.Response(200, json={})
+
+    async with _client(handler) as client:
+        for path in ("v1/experiments/RXhw/runs", "v1/experiment_evaluations"):
+            calls.clear()
+            assert (await client.http.post(path, json={})).status_code == 200
+            assert len(calls) == 2
+        calls.clear()
+        # Creating an experiment is not repeatable.
+        assert (
+            await client.http.post("v1/datasets/RGF0/experiments", json={})
+        ).status_code == 502
+        assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("no_backoff")
+async def test_an_unavailable_server_is_not_called_foreign() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, text="Bad Gateway")
+
+    async with _client(handler, retries=1) as client:
+        with pytest.raises(PhoenixUnavailableError, match="unavailable"):
+            await client.check_server()
+
+
+def test_nul_characters_are_scrubbed_everywhere() -> None:
+    value = {"a\x00": ["x\x00y", 1, {"k": "ok"}], "b": "fine"}
+    cleaned, altered = scrub(value)
+    assert altered
+    assert cleaned == {"a�": ["x�y", 1, {"k": "ok"}], "b": "fine"}
+    same = {"b": ["fine", 2]}
+    assert scrub(same) == (same, False)
+    record = to_phoenix_record(
+        Example[str, str](
+            id="e", input="in\x00put", reference="r", metadata={"n": "\x00"}
+        )
+    )
+    assert record.input == {"value": "in�put"}
+    assert record.metadata["n"] == "�"

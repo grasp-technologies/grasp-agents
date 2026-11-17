@@ -18,6 +18,7 @@ from grasp_agents.evals import (
     Example,
     FunctionTask,
     LocalRunStore,
+    Score,
     ScoreContext,
     evaluate,
     scorer,
@@ -214,7 +215,7 @@ async def test_push_run_is_idempotent_and_resumable(
         FunctionTask(add), dataset, [exact, judge], repetitions=2, store=store
     )
     async with PhoenixClient(base_url) as client:
-        link = await push_run(client, run, store=store)
+        link = await push_run(client, run, store=store, create_dataset=True)
         assert link.experiment_id is not None
         assert len(link.logged_trials) == 8
         assert len(await _task_runs(client, link.experiment_id)) == 8
@@ -252,7 +253,7 @@ async def test_changed_trials_are_logged_again(base_url: str, tmp_path: Path) ->
         FunctionTask(flaky), _dataset(_name("resync")), [exact], store=store
     )
     async with PhoenixClient(base_url) as client:
-        link = await push_run(client, run, store=store)
+        link = await push_run(client, run, store=store, create_dataset=True)
         assert link.experiment_id is not None
         failed = [
             r for r in await _task_runs(client, link.experiment_id) if r.get("error")
@@ -283,10 +284,11 @@ async def test_sealed_trials_are_withheld(base_url: str, tmp_path: Path) -> None
         _dataset(_name("sealed"), sealed_from=2),
         [exact],
         sealed_splits=["test"],
+        include_sealed=True,
         store=store,
     )
     async with PhoenixClient(base_url) as client:
-        link = await push_run(client, run, store=store)
+        link = await push_run(client, run, store=store, create_dataset=True)
         assert link.experiment_id is not None
         runs = await _task_runs(client, link.experiment_id)
         assert len(runs) == 2
@@ -347,6 +349,7 @@ async def test_a_fully_sealed_run_needs_a_shared_dataset(
         _dataset(name, sealed_from=0),
         [exact],
         sealed_splits=["test"],
+        include_sealed=True,
         store=store,
     )
     async with PhoenixClient(base_url) as client:
@@ -418,8 +421,65 @@ async def test_a_failed_trial_push_reports_the_phoenix_error(
         FunctionTask(add), _dataset(_name("fails")), [exact], store=store
     )
     async with PhoenixClient(base_url, transport=_FailRuns(), retries=0) as client:
-        with pytest.raises(PhoenixError, match="500"):
+        with pytest.raises(PhoenixError, match=r"500.*example 'p\d', repetition 0"):
+            await push_run(client, run, store=store, create_dataset=True)
+
+
+@pytest.mark.asyncio
+async def test_push_creates_no_dataset_unless_asked(
+    base_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = LocalRunStore(tmp_path / "evals")
+    local = _name("local")
+    run = await evaluate(FunctionTask(add), _dataset(local), [exact], store=store)
+    async with PhoenixClient(base_url) as client:
+        with pytest.raises(DatasetPushError, match=f"no dataset '{local}'"):
             await push_run(client, run, store=store)
+        assert await client.find_dataset(local) is None
+        # A dataset under another name that holds the run's examples.
+        shared = _name("shared")
+        pushed = await push_dataset(client, _dataset(shared))
+        link = await push_run(client, run, store=store, dataset=shared)
+        assert link.dataset_id == pushed.dataset_id
+        monkeypatch.setenv("GRASP_EVALS_DATASET_PREFIX", "staging/")
+        other = await evaluate(FunctionTask(add), _dataset(local), [exact], store=store)
+        with pytest.raises(DatasetPushError, match="outside 'staging/'"):
+            await push_run(client, other, store=store, create_dataset=True)
+
+
+@pytest.mark.asyncio
+async def test_nul_characters_are_replaced_on_push(
+    base_url: str, tmp_path: Path
+) -> None:
+    async def with_nul(problem: Problem) -> str:
+        return f"page\x00{problem.a}" if problem.a % 2 else str(problem.a)
+
+    @scorer(name="kept")
+    def kept(ctx: ScoreContext[Problem, str, int]) -> Score:
+        return Score(name="kept", value=True, explanation=f"saw {ctx.output}")
+
+    dataset = Dataset(
+        [
+            Example(id=f"p{i}", input=Problem(a=i, b=1), metadata={"note": "x\x00y"})
+            for i in range(4)
+        ],
+        name=_name("nul"),
+    )
+    store = LocalRunStore(tmp_path / "evals")
+    run = await evaluate(FunctionTask(with_nul), dataset, [kept], store=store)
+    async with PhoenixClient(base_url) as client:
+        link = await push_run(client, run, store=store, create_dataset=True)
+        assert link.altered_trials == ["p1#0", "p3#0"]
+        assert link.experiment_id is not None
+        outputs = sorted(
+            str(r["output"]) for r in await _task_runs(client, link.experiment_id)
+        )
+        assert "page\ufffd1" in outputs
+        # A second run on the same local dataset attaches to the scrubbed rows.
+        again = await evaluate(FunctionTask(with_nul), dataset, [kept], store=store)
+        relinked = await push_run(client, again, store=store)
+        assert relinked.dataset_id == link.dataset_id
+        assert store.load(run.id).phoenix == link
 
 
 # --- Labels from human annotations ---

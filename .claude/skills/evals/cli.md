@@ -44,7 +44,7 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 | `labels import FILES --into LABELS.jsonl` | Merges filled-in labels | |
 | `labels pull FILE --project P --into LABELS.jsonl` | Reads human annotations from Phoenix | Needs traced trials |
 | `labels show FILE` | Counts labels by split and value | |
-| `push RUN` | Mirrors a finished run to Phoenix as an experiment | |
+| `push RUN [--dataset NAME --create-dataset]` | Mirrors a finished run to Phoenix as an experiment | See Phoenix below |
 
 `datasets` and `labels` always print JSON.
 
@@ -62,7 +62,7 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 | `--fail-under METRIC=V` | Repeatable. Exit 1 when the metric's value is below V or missing |
 | `--fail-on-regression [--gate T]... [--min-effect X]` | Needs `--baseline`. `--gate` replaces the default targets (scores and `error`); `--min-effect` is in the target's units |
 | `--allow-unvalidated` | Run even though a validation gate fails; the failures are recorded in `metadata.unvalidated_judges` |
-| `--push [--base-url URL]` | Mirror the run to Phoenix after it finishes |
+| `--push [--base-url URL] [--create-dataset]` | Mirror the run to Phoenix after it finishes (creating a missing Phoenix dataset only with `--create-dataset`) |
 | `--name`, `--tag` | Run name override; extra tags |
 | `--json`, `--progress text\|json\|none`, `-q` | See Output |
 
@@ -153,6 +153,17 @@ See [metrics.md](metrics.md#regression-gate).
   or later. Configure it with `PHOENIX_BASE_URL` (or `--base-url`) and
   `PHOENIX_API_KEY`. When `PHOENIX_BASE_URL` is set, the environment key is never sent
   to a different `--base-url`.
+- **Dataset names.** With `GRASP_EVALS_DATASET_PREFIX` set (e.g. `staging/`), `push`
+  and `datasets push` refuse any Phoenix dataset name outside it.
+- **Failures.** A 5xx from the server after retries is `PhoenixUnavailableError` (exit
+  3), not a compatibility error. GET/PUT/DELETE and the trial posts Phoenix
+  deduplicates (a trial's run, its evaluations) are retried on 502–504, timeouts and
+  dropped connections; other POSTs are not. A trial that still fails names the run,
+  the example id and the repetition.
+- **NUL characters.** Phoenix stores rows in PostgreSQL, which rejects `\u0000`. Pushes
+  replace NULs in every string (keys included) with U+FFFD; `run.phoenix.altered_trials`
+  lists the trials that had any. Datasets pushed with NULs pull back without them, so
+  their content hashes differ from the local file's.
 - **`datasets push`:**
   - refuses a derived subset unless `--force`;
   - refuses if Phoenix moved past the version you pulled (`--base-version`, or the
@@ -161,9 +172,12 @@ See [metrics.md](metrics.md#regression-gate).
   - creates no version when the copy is unchanged.
 - **`push RUN`:**
   - creates one experiment per run (a rescore is a separate experiment);
-  - attaches to a Phoenix dataset of the same name only if that dataset holds exactly
-    the run's non-sealed examples, creates the dataset if it is missing, and otherwise
-    refuses, so push the dataset file first;
+  - attaches to the dataset the run's examples were pulled from on this server;
+    otherwise to the Phoenix dataset named `--dataset NAME` (default: the run's
+    dataset name), only if it holds exactly the run's non-sealed examples;
+  - never creates a dataset unless `--create-dataset` (also on `run --push`): the
+    error names the dataset it would have created. Push the dataset file first, or
+    attach the run to the shared dataset with `--dataset`;
   - withholds sealed trials (their count goes into the experiment metadata);
   - scopes the experiment to the run's split when it selected exactly one
     (`--split dev`); otherwise the experiment covers every example;
