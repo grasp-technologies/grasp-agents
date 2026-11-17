@@ -745,4 +745,4 @@ def test_compare_filters_and_groups_by_metadata(
         "--json",
     )
     assert none["n_paired_examples"] == 0
-    assert none["where"] == {"k": 1}
+    assert none["where"] == {"k": "1"}

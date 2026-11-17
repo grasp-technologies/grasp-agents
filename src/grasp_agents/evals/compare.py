@@ -1,4 +1,4 @@
-import math
+import json
 from collections.abc import Hashable, Mapping, Sequence
 from typing import Any, Literal
 
@@ -12,8 +12,8 @@ from .metrics import (
     as_target,
     has_weights,
     mean,
+    pooled_sums,
     trial_value,
-    weighted_value,
 )
 from .stats import holm_adjust, paired_difference, paired_pooled_difference
 from .types import EvaluationRun, RunStatus, Trial, pairing_hashes
@@ -30,10 +30,6 @@ _RESOURCES = frozenset(
 _RESOURCE_NAMES = frozenset(str(m) for m in _RESOURCES)
 _LOWER_IS_BETTER = _RESOURCES | {Measure.ERROR}
 _EPS = 1e-9
-# Groups holding fewer held-out examples than this are not reported: their
-# aggregates (minus the visible members' results) would come close to
-# per-example results.
-MIN_SEALED_GROUP = 5
 
 
 class ExampleDelta(BaseModel):
@@ -51,8 +47,8 @@ class TargetComparison(BaseModel):
     target: str
     kind: Literal["score", "measure"] = "score"
     higher_is_better: bool = True
-    # Weighted score compared on pooled values (Σ value·weight / Σ weight)
-    # with a paired bootstrap, not on per-example means.
+    # A score both runs weigh, compared on pooled values
+    # (Σ value·weight / Σ weight) rather than on per-example means.
     pooled: bool = False
     n_pairs: int
     base_mean: float | None = None
@@ -93,6 +89,19 @@ class TargetComparison(BaseModel):
         return self.diff < 0 if self.higher_is_better else self.diff > 0
 
 
+class GroupComparison(BaseModel):
+    """The comparison of the paired examples sharing one ``group_by`` value."""
+
+    n_paired_examples: int
+    targets: list[TargetComparison] = Field(default_factory=list[TargetComparison])
+
+    def target(self, name: str) -> TargetComparison | None:
+        for target in self.targets:
+            if target.target == name:
+                return target
+        return None
+
+
 class Comparison(BaseModel):
     base_run: str
     candidate_run: str
@@ -115,10 +124,13 @@ class Comparison(BaseModel):
     # targets, and the gate fails on them.
     conflicting_directions: list[str] = Field(default_factory=list[str])
     # Example metadata the paired examples were filtered on, and the
-    # comparisons per value of ``group_by`` ("key=value").
+    # comparisons per value of ``group_by`` ("key=value"). Sealed examples
+    # are left out of both.
     where: dict[str, Any] = Field(default_factory=dict[str, Any])
     group_by: str | None = None
-    groups: dict[str, "Comparison"] = Field(default_factory=dict[str, "Comparison"])
+    groups: dict[str, GroupComparison] = Field(
+        default_factory=dict[str, GroupComparison]
+    )
 
     def target(self, name: str) -> TargetComparison | None:
         for target in self.targets:
@@ -147,12 +159,7 @@ class _ExampleView:
         return reduce(values) if values else None
 
     def pooled(self, target: str) -> tuple[float, float] | None:
-        """``(Σ value·weight, Σ weight)`` over the repetitions with a value."""
-        found = [p for t in self.trials if (p := weighted_value(t, target))]
-        total = sum(w for _, w in found)
-        if not found or total <= 0:
-            return None
-        return math.fsum(v * w for v, w in found), total
+        return pooled_sums(self.trials, target)
 
     def explanation(
         self, target: Target, pick: Literal["lowest", "highest"]
@@ -325,91 +332,89 @@ def _clusters(
     return clusters
 
 
-def compare(
-    base: EvaluationRun,
-    candidate: EvaluationRun,
-    *,
-    targets: Sequence[Target] | None = None,
-    top: int = 5,
-    reduce: Reducer = mean,
-    confidence: float = 0.95,
-    cluster_by: str | None = None,
-    where: Mapping[str, Any] | None = None,
-    group_by: str | None = None,
-) -> Comparison:
-    """
-    Paired comparison of two runs on the examples they share.
+def _text(value: Any) -> str:
+    # Metadata values compare by this text, so a value given on the command
+    # line matches its JSON form and ``True`` never matches ``1``.
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True, default=str)
 
-    A score that carries weights (``Score.weight``) is compared on pooled
-    values — ``Σ value·weight / Σ weight`` per run — with a paired bootstrap
-    over examples. ``where`` keeps the examples whose metadata has those
-    values; ``group_by`` adds a comparison per value of a metadata key
-    (``groups``; groups with a few sealed examples are left out).
 
-    Each score is read in the direction the runs recorded for it (higher is
-    better unless its scorer declared ``lower_is_better``); a score the runs
-    disagree on is left out with a warning. Examples are paired by id and
-    only when their content is unchanged (metadata keys either run declared
-    descriptive aside); repetitions are reduced per example first, and a
-    task error counts as a failure of pass/fail scores. Each target reports
-    the mean paired difference with a confidence interval, a p-value (exact
-    McNemar for pass/fail scores, a paired t-test otherwise — clustered when
-    the base run was clustered, or by ``cluster_by``), the minimum detectable
-    effect, and the examples that moved most. ``significant`` uses
-    Holm-adjusted p-values at ``1 - confidence``, adjusted among the outcome
-    targets (scores, the error rate) and separately among resource targets
-    (duration, cost); targets where no example changed are left out of the
-    adjustment.
-    Examples in sealed splits contribute to the statistics but are never
-    listed.
-    """
-    base_hashes, candidate_hashes = pairing_hashes(base, candidate)
-    base_views = _views(base, base_hashes)
-    candidate_views = _views(candidate, candidate_hashes)
-    shared = [i for i in base_views if i in candidate_views]
-    paired = [i for i in shared if base_views[i].hash == candidate_views[i].hash]
-    n_changed = len(shared) - len(paired)
-    metadata = {e.id: e.metadata for e in base.examples}
-    if where:
-        paired = [i for i in paired if _matches(metadata.get(i, {}), where)]
-    cluster_key = cluster_by if cluster_by is not None else base.config.cluster_by
-    pass_fail = _pass_fail_scores(base, candidate)
-    errored_one_side = sum(
-        1 for i in paired if base_views[i].errored != candidate_views[i].errored
-    )
-    comparisons: list[TargetComparison] = []
-    disagreements: list[str] = []
-    for raw_target in (
-        targets if targets is not None else _default_targets(base, candidate)
-    ):
-        target = as_target(raw_target)
-        higher_is_better = _higher_is_better(target, base, candidate)
-        if higher_is_better is None:
-            disagreements.append(str(target))
-            continue
-        as_failures = not isinstance(target, Measure) and target in pass_fail
-        pooled = not isinstance(target, Measure) and (
-            has_weights(base.trials, target) or has_weights(candidate.trials, target)
+def _matches(metadata: Mapping[str, Any], where: Mapping[str, Any]) -> bool:
+    return all(_text(metadata.get(k)) == _text(v) for k, v in where.items())
+
+
+class _Pairs:
+    """What every target of a comparison shares: the paired examples."""
+
+    def __init__(
+        self,
+        base: EvaluationRun,
+        candidate: EvaluationRun,
+        *,
+        reduce: Reducer,
+        top: int,
+        cluster_key: str | None,
+    ) -> None:
+        self.base = base
+        self.candidate = candidate
+        base_hashes, candidate_hashes = pairing_hashes(base, candidate)
+        self.base_views = _views(base, base_hashes)
+        self.candidate_views = _views(candidate, candidate_hashes)
+        shared = [i for i in self.base_views if i in self.candidate_views]
+        self.paired = [
+            i for i in shared if self.base_views[i].hash == self.candidate_views[i].hash
+        ]
+        self.n_changed = len(shared) - len(self.paired)
+        self.metadata = {e.id: e.metadata for e in base.examples}
+        self.reduce = reduce
+        self.top = top
+        self.cluster_key = cluster_key
+        self.pass_fail = _pass_fail_scores(base, candidate)
+
+    def sealed(self, example_id: str) -> bool:
+        return (
+            self.base_views[example_id].sealed
+            or self.candidate_views[example_id].sealed
         )
+
+    def pools(self, target: Target) -> bool:
+        return (
+            not isinstance(target, Measure)
+            and target not in self.pass_fail
+            and has_weights(self.base.trials, target)
+            and has_weights(self.candidate.trials, target)
+        )
+
+    def compare(
+        self,
+        target: Target,
+        higher_is_better: bool,
+        example_ids: Sequence[str],
+        *,
+        confidence: float,
+    ) -> TargetComparison:
+        as_failures = not isinstance(target, Measure) and target in self.pass_fail
+        pooled = self.pools(target)
         rows: list[tuple[str, float, float]] = []
         sums: list[tuple[tuple[float, float], tuple[float, float]]] = []
-        for example_id in paired:
+        for example_id in example_ids:
+            base_view = self.base_views[example_id]
+            candidate_view = self.candidate_views[example_id]
             if pooled:
-                bp = base_views[example_id].pooled(str(target))
-                cp = candidate_views[example_id].pooled(str(target))
+                bp = base_view.pooled(str(target))
+                cp = candidate_view.pooled(str(target))
                 if bp is not None and cp is not None:
                     rows.append((example_id, bp[0] / bp[1], cp[0] / cp[1]))
                     sums.append((bp, cp))
                 continue
-            b = base_views[example_id].value(
-                target, reduce, errors_as_failures=as_failures
-            )
-            c = candidate_views[example_id].value(
-                target, reduce, errors_as_failures=as_failures
+            b = base_view.value(target, self.reduce, errors_as_failures=as_failures)
+            c = candidate_view.value(
+                target, self.reduce, errors_as_failures=as_failures
             )
             if b is not None and c is not None:
                 rows.append((example_id, b, c))
-        clusters = _clusters(base, cluster_key, [i for i, _, _ in rows])
+        clusters = _clusters(self.base, self.cluster_key, [i for i, _, _ in rows])
         estimate = (
             paired_pooled_difference(
                 [b for b, _ in sums],
@@ -442,9 +447,7 @@ def compare(
                 improved += 1
             elif gain < -_EPS:
                 regressed += 1
-            if abs(c - b) > _EPS and not (
-                base_views[example_id].sealed or candidate_views[example_id].sealed
-            ):
+            if abs(c - b) > _EPS and not self.sealed(example_id):
                 got_worse = gain < 0
                 deltas.append(
                     ExampleDelta(
@@ -452,42 +455,43 @@ def compare(
                         base=b,
                         candidate=c,
                         delta=c - b,
-                        base_explanation=base_views[example_id].explanation(
+                        base_explanation=self.base_views[example_id].explanation(
                             target, best if got_worse else worst
                         ),
-                        candidate_explanation=candidate_views[example_id].explanation(
-                            target, worst if got_worse else best
-                        ),
+                        candidate_explanation=self.candidate_views[
+                            example_id
+                        ].explanation(target, worst if got_worse else best),
                     )
                 )
         deltas.sort(key=lambda d: sign * d.delta)
         has_rows = estimate.n > 0
-        comparisons.append(
-            TargetComparison(
-                target=str(target),
-                kind="measure" if isinstance(target, Measure) else "score",
-                higher_is_better=higher_is_better,
-                pooled=pooled,
-                n_pairs=estimate.n,
-                base_mean=estimate.base_mean if has_rows else None,
-                candidate_mean=estimate.candidate_mean if has_rows else None,
-                diff=estimate.diff if has_rows else None,
-                stderr=estimate.stderr,
-                ci_low=ci_low,
-                ci_high=ci_high,
-                p_value=estimate.p_value,
-                mde=estimate.mde,
-                test=estimate.test,
-                improved=improved,
-                regressed=regressed,
-                unchanged=len(rows) - improved - regressed,
-                top_regressions=[d for d in deltas if sign * d.delta < 0][:top],
-                top_improvements=[d for d in reversed(deltas) if sign * d.delta > 0][
-                    :top
-                ],
-            )
+        return TargetComparison(
+            target=str(target),
+            kind="measure" if isinstance(target, Measure) else "score",
+            higher_is_better=higher_is_better,
+            pooled=pooled,
+            n_pairs=estimate.n,
+            base_mean=estimate.base_mean if has_rows else None,
+            candidate_mean=estimate.candidate_mean if has_rows else None,
+            diff=estimate.diff if has_rows else None,
+            stderr=estimate.stderr,
+            ci_low=ci_low,
+            ci_high=ci_high,
+            p_value=estimate.p_value,
+            mde=estimate.mde,
+            test=estimate.test,
+            improved=improved,
+            regressed=regressed,
+            unchanged=len(rows) - improved - regressed,
+            top_regressions=[d for d in deltas if sign * d.delta < 0][: self.top],
+            top_improvements=[d for d in reversed(deltas) if sign * d.delta > 0][
+                : self.top
+            ],
         )
-    alpha = 1.0 - confidence
+
+
+def _adjust(comparisons: Sequence[TargetComparison], alpha: float) -> None:
+    """Holm-adjusts outcome and resource targets as separate families."""
     for resource in (False, True):
         family = [
             t
@@ -501,17 +505,106 @@ def compare(
     for comparison in comparisons:
         if comparison.p_adjusted is None:
             comparison.p_adjusted = comparison.p_value
+
+
+def compare(
+    base: EvaluationRun,
+    candidate: EvaluationRun,
+    *,
+    targets: Sequence[Target] | None = None,
+    top: int = 5,
+    reduce: Reducer = mean,
+    confidence: float = 0.95,
+    cluster_by: str | None = None,
+    where: Mapping[str, Any] | None = None,
+    group_by: str | None = None,
+) -> Comparison:
+    """
+    Paired comparison of two runs on the examples they share.
+
+    A score both runs weigh (``Score.weight``), other than a pass/fail score,
+    is compared on pooled values — ``Σ value·weight / Σ weight`` per run,
+    each example's repetitions averaged first — with a linearized interval
+    and a paired sign-flip randomization test (``test="pooled_randomization"``).
+    ``where`` keeps the examples whose metadata has those values (compared as
+    text, so ``"2024"`` matches ``2024``); ``group_by`` adds a comparison per
+    value of a metadata key (``groups``), Holm-adjusted across all groups.
+    Sealed examples are left out of both, so a filter cannot single them
+    out.
+
+    Each score is read in the direction the runs recorded for it (higher is
+    better unless its scorer declared ``lower_is_better``); a score the runs
+    disagree on is left out with a warning. Examples are paired by id and
+    only when their content is unchanged (metadata keys either run declared
+    descriptive aside); repetitions are reduced per example first, and a
+    task error counts as a failure of pass/fail scores. Each target reports
+    the mean paired difference with a confidence interval, a p-value (exact
+    McNemar for pass/fail scores, a paired t-test otherwise — clustered when
+    the base run was clustered, or by ``cluster_by``), the minimum detectable
+    effect, and the examples that moved most. ``significant`` uses
+    Holm-adjusted p-values at ``1 - confidence``, adjusted among the outcome
+    targets (scores, the error rate) and separately among resource targets
+    (duration, cost); targets where no example changed are left out of the
+    adjustment.
+    Examples in sealed splits contribute to the statistics but are never
+    listed.
+    """
+    cluster_key = cluster_by if cluster_by is not None else base.config.cluster_by
+    pairs = _Pairs(base, candidate, reduce=reduce, top=top, cluster_key=cluster_key)
+    paired = pairs.paired
+    left_out = 0
+    if where:
+        visible = [i for i in paired if not pairs.sealed(i)]
+        left_out = len(paired) - len(visible)
+        paired = [i for i in visible if _matches(pairs.metadata.get(i, {}), where)]
+    errored_one_side = sum(
+        1
+        for i in paired
+        if pairs.base_views[i].errored != pairs.candidate_views[i].errored
+    )
+    directions: list[tuple[Target, bool]] = []
+    disagreements: list[str] = []
+    one_sided: list[str] = []
+    for raw_target in (
+        targets if targets is not None else _default_targets(base, candidate)
+    ):
+        target = as_target(raw_target)
+        higher_is_better = _higher_is_better(target, base, candidate)
+        if higher_is_better is None:
+            disagreements.append(str(target))
+            continue
+        directions.append((target, higher_is_better))
+        if (
+            not isinstance(target, Measure)
+            and target not in pairs.pass_fail
+            and has_weights(base.trials, target)
+            != has_weights(candidate.trials, target)
+        ):
+            one_sided.append(str(target))
+    comparisons = [
+        pairs.compare(target, higher, paired, confidence=confidence)
+        for target, higher in directions
+    ]
+    alpha = 1.0 - confidence
+    _adjust(comparisons, alpha)
     warnings = _warnings(
         base,
         candidate,
-        n_changed=n_changed,
-        n_paired=len(paired),
+        n_changed=pairs.n_changed,
+        n_paired=len(pairs.paired),
         errored_one_side=errored_one_side,
     )
+    if where and not paired:
+        warnings.append(f"No paired example matches {dict(where)}.")
     warnings.extend(
         f"The runs disagree on whether higher or lower {name!r} is better "
         "(its scorer's lower_is_better changed); it is left out."
         for name in disagreements
+    )
+    warnings.extend(
+        f"{name!r} carries weights in only one run: it is compared on "
+        "per-example means, not pooled."
+        for name in one_sided
     )
     candidate_scores = set(_numeric_scores(candidate))
     missing = [n for n in _numeric_scores(base) if n not in candidate_scores]
@@ -527,15 +620,42 @@ def compare(
                 f"All paired examples are in one {cluster_key!r} cluster: "
                 "nothing can be tested."
             )
-    result = Comparison(
+    groups: dict[str, GroupComparison] = {}
+    if group_by is not None:
+        visible = [i for i in paired if not pairs.sealed(i)]
+        left_out = max(left_out, len(paired) - len(visible))
+        members: dict[str, list[str]] = {}
+        labels: dict[str, str] = {}
+        for example_id in visible:
+            value = pairs.metadata.get(example_id, {}).get(group_by)
+            key = _text(value)
+            members.setdefault(key, []).append(example_id)
+            labels.setdefault(key, f"{group_by}={value}")
+        for key in sorted(members):
+            groups[labels[key]] = GroupComparison(
+                n_paired_examples=len(members[key]),
+                targets=[
+                    pairs.compare(target, higher, members[key], confidence=confidence)
+                    for target, higher in directions
+                ],
+            )
+        _adjust([t for g in groups.values() for t in g.targets], alpha)
+    if left_out:
+        warnings.append(
+            f"{left_out} paired examples in sealed splits are left out of the "
+            "filtered and grouped comparisons."
+        )
+    return Comparison(
         base_run=base.id,
         candidate_run=candidate.id,
         base_name=base.name,
         candidate_name=candidate.name,
         n_paired_examples=len(paired),
-        n_changed_examples=n_changed,
-        n_base_only=sum(1 for i in base_views if i not in candidate_views),
-        n_candidate_only=sum(1 for i in candidate_views if i not in base_views),
+        n_changed_examples=pairs.n_changed,
+        n_base_only=sum(1 for i in pairs.base_views if i not in pairs.candidate_views),
+        n_candidate_only=sum(
+            1 for i in pairs.candidate_views if i not in pairs.base_views
+        ),
         alpha=alpha,
         cluster_by=cluster_key,
         warnings=warnings,
@@ -544,41 +664,7 @@ def compare(
         conflicting_directions=disagreements,
         where=dict(where or {}),
         group_by=group_by,
-    )
-    if group_by is None:
-        return result
-    values: dict[str, Any] = {}
-    for example_id in paired:
-        value = metadata.get(example_id, {}).get(group_by)
-        values.setdefault(str(value), value)
-    for label, value in sorted(values.items()):
-        members = [
-            i for i in paired if _matches(metadata.get(i, {}), {group_by: value})
-        ]
-        sealed = sum(
-            1 for i in members if base_views[i].sealed or candidate_views[i].sealed
-        )
-        if 0 < sealed < MIN_SEALED_GROUP:
-            continue
-        result.groups[f"{group_by}={label}"] = compare(
-            base,
-            candidate,
-            targets=targets,
-            top=top,
-            reduce=reduce,
-            confidence=confidence,
-            cluster_by=cluster_by,
-            where={**(where or {}), group_by: value},
-        )
-    return result
-
-
-def _matches(metadata: Mapping[str, Any], where: Mapping[str, Any]) -> bool:
-    # Values given as text (from the command line) also match their text form.
-    return all(
-        metadata.get(key) == wanted
-        or (isinstance(wanted, str) and str(metadata.get(key)) == wanted)
-        for key, wanted in where.items()
+        groups=groups,
     )
 
 

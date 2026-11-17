@@ -8,6 +8,7 @@ two systems evaluated on the same examples are compared on paired
 differences.
 """
 
+import itertools
 import math
 import random
 from collections.abc import Callable, Hashable, Sequence
@@ -575,32 +576,90 @@ def paired_difference(
 
 def _ratio(pairs: Sequence[tuple[float, float]]) -> float:
     total = math.fsum(w for _, w in pairs)
-    return math.fsum(v for v, _ in pairs) / total if total > 0 else math.nan
+    return math.fsum(y for y, _ in pairs) / total if total > 0 else math.nan
 
 
 def pooled_estimate(
-    values: Sequence[float],
-    weights: Sequence[float],
+    sums: Sequence[tuple[float, float]],
     *,
     clusters: Sequence[Hashable] | None = None,
-    n_resamples: int = 2000,
-    seed: int = 0,
     confidence: float = 0.95,
 ) -> Estimate:
     """
-    Weighted mean ``Σ value·weight / Σ weight`` (a ratio of sums: a share over
-    all items rather than a mean of per-unit shares), with a percentile
-    bootstrap interval resampling ``clusters`` (or single values).
+    The pooled value ``Σ y / Σ w`` of per-unit sums ``(y, w)`` — ``y`` the
+    weighted values, ``w`` the weights — with a linearized (delta-method)
+    standard error, clustered when ``clusters`` maps each unit to a cluster,
+    and a t interval. With few units or very uneven weights the interval is
+    approximate and tends to be too narrow.
     """
-    pairs = [(v * w, w) for v, w in zip(values, weights, strict=True)]
-    return bootstrap_estimate(
-        pairs,
-        _ratio,
+    n = len(sums)
+    total = math.fsum(w for _, w in sums)
+    if n == 0 or total <= 0:
+        return Estimate(value=math.nan, n=0)
+    ratio = math.fsum(y for y, _ in sums) / total
+    mean_weight = total / n
+    linear = mean_estimate(
+        [(y - ratio * w) / mean_weight for y, w in sums],
         clusters=clusters,
-        n_resamples=n_resamples,
-        seed=seed,
         confidence=confidence,
     )
+    if linear.stderr is None:
+        return Estimate(value=ratio, n=n, units=linear.units)
+    half = critical_value(confidence, linear.df) * linear.stderr
+    return Estimate(
+        value=ratio,
+        n=n,
+        stderr=linear.stderr,
+        ci_low=ratio - half,
+        ci_high=ratio + half,
+        df=linear.df,
+        units=linear.units,
+    )
+
+
+# Up to this many clusters, a randomization test enumerates every sign flip.
+_EXACT_FLIPS = 12
+
+
+def _flip_p_value(
+    groups: Sequence[tuple[float, float, float, float]],
+    observed: float,
+    *,
+    n_resamples: int,
+    seed: int,
+) -> float:
+    """
+    Two-sided sign-flip randomization p-value of a pooled difference: under
+    the null the two arms are exchangeable within each group, so swapping
+    them in any subset of groups is as likely as the data observed.
+    """
+
+    def difference(flips: Sequence[bool]) -> float:
+        yb = wb = yc = wc = 0.0
+        for flip, (gyb, gwb, gyc, gwc) in zip(flips, groups, strict=True):
+            first, second = (
+                ((gyc, gwc), (gyb, gwb)) if flip else ((gyb, gwb), (gyc, gwc))
+            )
+            yb += first[0]
+            wb += first[1]
+            yc += second[0]
+            wc += second[1]
+        if wb <= 0 or wc <= 0:
+            return math.nan
+        return yc / wc - yb / wb
+
+    bar = abs(observed) - 1e-12 * max(1.0, abs(observed))
+    if len(groups) <= _EXACT_FLIPS:
+        flips = list(itertools.product((False, True), repeat=len(groups)))
+        hits = sum(1 for f in flips if abs(difference(f)) >= bar)
+        return hits / len(flips)
+    rng = random.Random(seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]
+    hits = sum(
+        1
+        for _ in range(n_resamples)
+        if abs(difference([rng.random() < 0.5 for _ in groups])) >= bar
+    )
+    return (hits + 1) / (n_resamples + 1)
 
 
 def paired_pooled_difference(
@@ -615,75 +674,75 @@ def paired_pooled_difference(
 ) -> PairedEstimate:
     """
     Pooled difference ``candidate - base`` on paired examples, each given as
-    ``(Σ value·weight, Σ weight)``, with a paired percentile bootstrap that
-    resamples examples (or ``clusters`` of them) for both arms at once. The
-    p-value is the two-sided bootstrap tail of zero.
+    ``(Σ value·weight, Σ weight)``. The p-value is a sign-flip randomization
+    test that swaps the arms within each example (or cluster): exact up to 12
+    of them, Monte Carlo beyond. The interval and minimum detectable effect
+    use the linearized standard error (as :func:`pooled_estimate`); they
+    reduce to the paired t-test's when every weight is equal.
     """
     if len(base) != len(candidate):
         raise ValueError("base and candidate must be paired")
     n = len(base)
     base_value, candidate_value = _ratio(base), _ratio(candidate)
     diff = candidate_value - base_value
+    none = PairedEstimate(
+        n=n,
+        base_mean=base_value,
+        candidate_mean=candidate_value,
+        diff=diff,
+        stderr=None,
+        ci_low=None,
+        ci_high=None,
+        p_value=None,
+        mde=None,
+        test="none",
+    )
+    if n == 0 or not math.isfinite(diff):
+        return none
     keys: Sequence[Hashable] = clusters if clusters is not None else range(n)
-    groups: dict[Hashable, list[int]] = {}
-    for index, key in enumerate(keys):
-        groups.setdefault(key, []).append(index)
-    members = list(groups.values())
-    if n == 0 or len(members) < 2 or not math.isfinite(diff):
-        return PairedEstimate(
-            n=n,
-            base_mean=base_value,
-            candidate_mean=candidate_value,
-            diff=diff,
-            stderr=None,
-            ci_low=None,
-            ci_high=None,
-            p_value=None,
-            mde=None,
-            test="none",
-        )
-    rng = random.Random(seed)  # ruff: ignore[suspicious-non-cryptographic-random-usage]
-    draws: list[float] = []
-    for _ in range(n_resamples):
-        chosen = [i for g in rng.choices(members, k=len(members)) for i in g]
-        delta = _ratio([candidate[i] for i in chosen]) - _ratio(
-            [base[i] for i in chosen]
-        )
-        if math.isfinite(delta):
-            draws.append(delta)
-    if len(draws) < 2:
-        return PairedEstimate(
-            n=n,
-            base_mean=base_value,
-            candidate_mean=candidate_value,
-            diff=diff,
-            stderr=None,
-            ci_low=None,
-            ci_high=None,
-            p_value=None,
-            mde=None,
-            test="none",
-        )
-    draws.sort()
-    alpha = (1.0 - confidence) / 2.0
-    mean = _mean(draws)
-    se = math.sqrt(math.fsum((d - mean) ** 2 for d in draws) / (len(draws) - 1))
-    below = (sum(1 for d in draws if d <= 0) + 1) / (len(draws) + 1)
-    above = (sum(1 for d in draws if d >= 0) + 1) / (len(draws) + 1)
-    degenerate = se <= _DEGENERATE * max(1.0, abs(diff))
+    sums: dict[Hashable, list[float]] = {}
+    for (yb, wb), (yc, wc), key in zip(base, candidate, keys, strict=True):
+        group = sums.setdefault(key, [0.0, 0.0, 0.0, 0.0])
+        group[0] += yb
+        group[1] += wb
+        group[2] += yc
+        group[3] += wc
+    if len(sums) < 2:
+        return none
+    mean_base = math.fsum(w for _, w in base) / n
+    mean_candidate = math.fsum(w for _, w in candidate) / n
+    linear = mean_estimate(
+        [
+            (yc - candidate_value * wc) / mean_candidate
+            - (yb - base_value * wb) / mean_base
+            for (yb, wb), (yc, wc) in zip(base, candidate, strict=True)
+        ],
+        clusters=clusters,
+        confidence=confidence,
+    )
+    se = linear.stderr
+    half = None if se is None else critical_value(confidence, linear.df) * se
+    degenerate = se is None or se <= _DEGENERATE * max(1.0, abs(diff))
     return PairedEstimate(
         n=n,
         base_mean=base_value,
         candidate_mean=candidate_value,
         diff=diff,
         stderr=se,
-        ci_low=percentile(draws, 100.0 * alpha),
-        ci_high=percentile(draws, 100.0 * (1.0 - alpha)),
-        p_value=min(1.0, 2.0 * min(below, above)),
+        ci_low=None if half is None else diff - half,
+        ci_high=None if half is None else diff + half,
+        p_value=_flip_p_value(
+            [(g[0], g[1], g[2], g[3]) for g in sums.values()],
+            diff,
+            n_resamples=n_resamples,
+            seed=seed,
+        ),
         mde=None
-        if degenerate
-        else minimum_detectable_effect(se, confidence=confidence, power=power),
-        test="pooled_bootstrap",
+        if degenerate or se is None
+        else minimum_detectable_effect(
+            se, df=linear.df, confidence=confidence, power=power
+        ),
+        test="pooled_randomization",
     )
 
 

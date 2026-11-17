@@ -107,9 +107,10 @@ recorded measurements. Runs record each score's direction in
 
 A share over a varying number of items (the headings on a page) can carry
 that number as its weight, `Score(name=..., value=share, weight=n_items)`:
-`Pooled(name)` (added by default for weighted scores) reports the share over
-all items, `Σ value·weight / Σ weight`, where `Mean` weighs a page with two
-items like one with forty.
+`Pooled(name)` (added by default for weighted scores that are not pass/fail)
+reports the share over all items, `Σ value·weight / Σ weight`, where `Mean`
+weighs a page with two items like one with forty. Each example's repetitions
+are averaged first, and the interval comes from a linearized standard error.
 
 ## Running
 
@@ -216,11 +217,14 @@ failures of pass/fail scores. Each score is read in the direction the runs
 recorded (a score they disagree on is left out). Default targets are the
 numeric scores present in both runs; a score of the base run that the
 candidate lacks is listed in `missing_scores` and fails the default
-regression gate. A weighted score is compared on pooled values with a paired
-bootstrap over examples (`test="pooled_bootstrap"`). `where={key: value}`
-keeps the examples whose metadata matches, and `group_by=key` adds a
-comparison per value in `groups` (groups with one to four sealed examples
-are left out).
+regression gate. A score both runs weigh (other than a pass/fail score) is
+compared on pooled values, with a linearized interval and a paired sign-flip
+randomization test over examples or clusters (`test="pooled_randomization"`,
+exact up to 12 of them). `where={key: value}` keeps the examples whose
+metadata matches, compared as JSON text (`"2024"` matches `2024`; `True` does
+not match `1`), and `group_by=key` adds a `GroupComparison` per value in
+`groups`, Holm-adjusted across all groups. Sealed examples are left out of
+both, so a filter cannot single one out.
 
 `pairwise(base, candidate, judge)` asks a `PairwiseJudge` which of two outputs
 is better. The judge sees them only as `first` and `second`; with

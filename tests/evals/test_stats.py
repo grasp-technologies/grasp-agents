@@ -229,7 +229,7 @@ class TestComparisonStatistics:
 
 
 def test_pooled_values_are_ratios_of_sums() -> None:
-    estimate = pooled_estimate([0.5, 0.75], [2.0, 40.0], clusters=["a", "b"])
+    estimate = pooled_estimate([(1.0, 2.0), (30.0, 40.0)], clusters=["a", "b"])
     assert estimate.value == pytest.approx(31 / 42)
     same = paired_pooled_difference(
         [(1.0, 2.0), (30.0, 40.0)] * 5, [(1.0, 2.0), (30.0, 40.0)] * 5
@@ -240,8 +240,30 @@ def test_pooled_values_are_ratios_of_sums() -> None:
         [(10.0, 20.0)] * 12, [(16.0, 20.0)] * 6 + [(14.0, 20.0)] * 6
     )
     assert better.diff == pytest.approx(0.25)
-    assert better.test == "pooled_bootstrap"
+    assert better.test == "pooled_randomization"
     assert better.p_value is not None
     assert better.p_value < 0.01
     assert better.ci_low is not None
     assert better.ci_low > 0
+
+
+def test_a_pooled_difference_on_two_examples_is_not_significant() -> None:
+    # Every sign flip of two examples is equally likely: p cannot fall below 0.5.
+    worse = paired_pooled_difference([(9.0, 10.0), (18.0, 20.0)], [(8.0, 10.0)] * 2)
+    assert worse.p_value is not None
+    assert worse.p_value >= 0.5
+
+
+def test_pooled_randomization_holds_its_level() -> None:
+    import random
+
+    rng = random.Random(7)  # ruff: ignore[suspicious-non-cryptographic-random-usage]
+    rejections = 0
+    trials = 200
+    for _ in range(trials):
+        weights = [rng.choice([1.0, 5.0, 40.0]) for _ in range(20)]
+        base = [(w * rng.random(), w) for w in weights]
+        candidate = [(w * rng.random(), w) for w in weights]
+        result = paired_pooled_difference(base, candidate, n_resamples=500)
+        rejections += result.p_value is not None and result.p_value < 0.05
+    assert rejections / trials < 0.1

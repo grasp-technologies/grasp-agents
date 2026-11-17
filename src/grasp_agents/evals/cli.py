@@ -220,16 +220,14 @@ def _check_threshold_names(
         raise CLIError(f"--fail-under names unknown metrics {unknown}; known: {known}")
 
 
-def _parse_where(values: Sequence[str]) -> dict[str, Any]:
-    where: dict[str, Any] = {}
+def _parse_where(values: Sequence[str]) -> dict[str, str]:
+    # Values stay text: ``compare`` matches metadata by its JSON text form.
+    where: dict[str, str] = {}
     for item in values:
         key, sep, raw = item.partition("=")
         if not sep or not key:
             raise CLIError(f"--where expects KEY=VALUE, got {item!r}")
-        try:
-            where[key] = json.loads(raw)
-        except json.JSONDecodeError:
-            where[key] = raw
+        where[key] = raw
     return where
 
 
@@ -1288,7 +1286,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="KEY=VALUE",
-        help="only examples whose metadata has this value (repeatable)",
+        help=(
+            "only examples whose metadata has this value, compared as JSON text "
+            "(repeatable; sealed examples are left out)"
+        ),
     )
     cmp.add_argument(
         "--group-by", metavar="KEY", help="also compare per value of a metadata key"

@@ -3,10 +3,14 @@
 from collections.abc import Iterable
 from typing import Any, cast
 
-from .compare import MIN_SEALED_GROUP, Comparison, TargetComparison
+from .compare import Comparison, TargetComparison
 from .types import EvaluationRun, MetricResult, Score, Trial
 
 _MAX_TEXT = 300
+# Groups holding fewer held-out examples than this are not reported: their
+# aggregates (minus the visible members' results) would come close to
+# per-example results.
+MIN_SEALED_GROUP = 5
 
 
 def _num(value: float | None, digits: int = 3) -> str:
@@ -348,6 +352,8 @@ def render_comparison_markdown(comparison: Comparison, *, max_rows: int = 5) -> 
         lines += [
             "",
             f"## By `{c.group_by}`",
+            "",
+            ("Sealed examples are left out; ✱ is Holm-corrected across all groups."),
             "",
             "| group · target | base | candidate | Δ | CI | p | MDE | n | +/- |",
             "|---|---|---|---|---|---|---|---|---|",

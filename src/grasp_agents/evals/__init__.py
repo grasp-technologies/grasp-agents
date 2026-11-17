@@ -20,7 +20,13 @@ passed validation.
 """
 
 from ._execution import TrialProgress
-from .compare import Comparison, ExampleDelta, TargetComparison, compare
+from .compare import (
+    Comparison,
+    ExampleDelta,
+    GroupComparison,
+    TargetComparison,
+    compare,
+)
 from .dataset import (
     Dataset,
     DatasetCheck,
@@ -143,6 +149,7 @@ __all__ = [
     "FunctionPairwiseJudge",
     "FunctionScorer",
     "FunctionTask",
+    "GroupComparison",
     "ImportedTrial",
     "JudgeErrorRates",
     "JudgeValidation",

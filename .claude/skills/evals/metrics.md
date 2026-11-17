@@ -41,7 +41,7 @@ Always added: `error_rate`, `p50(duration_s)` and `p95(duration_s)`, plus
 | `PassRate(of, threshold=None, errors_as_failures=True, reduce=mean, higher_is_better=None)` | examples | failures | `pass_rate(of)`, `pass_rate(of>=0.7)`, `pass_rate(of)[all_pass]` |
 | `PassAtK(of, k)` / `PassHatK(of, k)` | examples; an example with fewer than `k` repetitions is n/a | failures | `pass@k(of)` / `pass^k(of)` |
 | `Mean(of, reduce=mean, unit="example", higher_is_better=None)` | examples (or trials) | missing | `mean(of)` |
-| `Pooled(of)` | examples (resampled); every weighted trial counts | missing | `pooled(of)`: `Σ value·weight / Σ weight` with `Score.weight` (1 when unset), bootstrap interval; `details.weight` is the total weight. Added by `default_metrics` for scores with weights |
+| `Pooled(of)` | examples (or clusters); each example's repetitions averaged first | missing | `pooled(of)`: `Σ value·weight / Σ weight` with `Score.weight` (1 when unset), linearized interval (approximate with few examples or very uneven weights); `details.weight` is the total weight. Added by `default_metrics` for weighted scores that are not pass/fail |
 | `Percentile(of, q, unit="trial")` | trials | missing | `p95(of)` |
 | `ErrorRate()` | trials (clustered on the example) | what it measures | `error_rate` (`details.by_type`) |
 | `Total(of)` | trials | missing | `total(of)` (no interval) |
@@ -120,11 +120,14 @@ cluster_by=None)`:
    or a metric's `higher_is_better=False` says otherwise; a run without the record
    takes the other run's). A score the runs record opposite directions for is left
    out and listed in `conflicting_directions`.
-3. **Per example**: repetitions are reduced with `reduce`. A score with weights
-   (`Score.weight`) in either run is compared pooled instead: per run
-   `Σ value·weight / Σ weight` over the paired examples, a paired bootstrap over
-   examples (or clusters) for the interval and p-value (`test="pooled_bootstrap"`,
-   `pooled=True`); `improved`/`regressed` compare per-example pooled values.
+3. **Per example**: repetitions are reduced with `reduce`. A score both runs weigh
+   (`Score.weight`), other than a pass/fail score, is compared pooled instead: per
+   run `Σ value·weight / Σ weight` over the paired examples (each example's
+   repetitions averaged), a linearized interval, and a paired sign-flip
+   randomization test over examples or clusters, exact up to 12 of them
+   (`test="pooled_randomization"`, `pooled=True`); `improved`/`regressed` compare
+   per-example pooled values. Weights in only one run: compared on means, with a
+   warning.
    - For scores that are always `bool`, a task-errored trial counts as 0.
    - Numeric scores skip errored trials, so `n_pairs` drops. The `error` target catches
      those crashes.
@@ -163,11 +166,14 @@ cluster_by=None)`:
 
 ## Subsets and groups
 
-`compare(..., where={"source": "arxiv"})` (CLI `--where source=arxiv`, values parsed as
-JSON when they parse) keeps the paired examples whose base-run metadata matches;
-`group_by="source"` (`--group-by source`) adds one comparison per value under
-`groups["source=<value>"]`, each with its own Holm family. A group holding one to four
-sealed examples is left out. The regression gate reads only the overall comparison.
+`compare(..., where={"source": "arxiv"})` (CLI `--where source=arxiv`) keeps the paired
+examples whose base-run metadata matches. Values compare as JSON text: `"2024"` matches
+`2024`, `--where flag=true` matches `True`, and `True` never matches `1`.
+`group_by="source"` (`--group-by source`) adds a `GroupComparison` (`n_paired_examples`,
+`targets`) per value under `groups["source=<value>"]`; all groups' targets form one Holm
+family per kind. Sealed examples are left out of filtered and grouped comparisons (a
+warning counts them), so a filter cannot single one out. A filter matching nothing
+warns. The regression gate reads only the overall comparison.
 
 ## Regression gate
 

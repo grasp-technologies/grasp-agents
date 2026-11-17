@@ -16,6 +16,7 @@ from grasp_agents.evals import (
     Measure,
     PairwiseContext,
     PairwiseVerdict,
+    Pooled,
     Score,
     ScoreContext,
     Trial,
@@ -725,19 +726,122 @@ class TestPooled:
         target = result.target("found")
         assert target is not None
         assert target.pooled
-        assert target.test == "pooled_bootstrap"
+        assert target.test == "pooled_randomization"
         assert target.diff == pytest.approx(0.2 * 440 / 442)
         assert target.significant
         assert sorted(result.groups) == ["source=arxiv", "source=other"]
         arxiv = result.groups["source=arxiv"]
         assert arxiv.n_paired_examples == 6
-        assert arxiv.where == {"source": "arxiv"}
+        arxiv_found = arxiv.target("found")
+        assert arxiv_found is not None
+        assert arxiv_found.p_adjusted is not None
         assert regressions(compare(candidate, base))
         only = compare(base, candidate, where={"source": "other"})
         assert only.n_paired_examples == 6
         text = render_comparison_markdown(result)
         assert "found (pooled)" in text
         assert "## By `source`" in text
+
+    @pytest.mark.asyncio
+    async def test_weights_in_one_run_only_are_compared_on_means(
+        self, store: LocalRunStore
+    ) -> None:
+        @scorer(name="found")
+        def unweighted(ctx: ScoreContext[int, int, int]) -> float:
+            return 0.5
+
+        base = await evaluate(good, self._pages(), [unweighted], store=store)
+        candidate = await evaluate(good, self._pages(), [self._found(0.5)], store=store)
+        result = compare(base, candidate)
+        target = result.target("found")
+        assert target is not None
+        assert not target.pooled
+        assert any("weights in only one run" in w for w in result.warnings)
+
+    def test_failed_repetitions_do_not_change_an_example_weight(self) -> None:
+        from datetime import UTC, datetime
+
+        def trial(example: str, rep: int, value: float | None, weight: float) -> Trial:
+            scores = (
+                [] if value is None else [Score(name="f", value=value, weight=weight)]
+            )
+            return Trial(
+                example_id=example,
+                repetition=rep,
+                example_hash="h",
+                started_at=datetime(2026, 1, 1, tzinfo=UTC),
+                duration_s=0.0,
+                scores=scores,
+            )
+
+        # "big" has one scored repetition of two; it still weighs 40, not 20.
+        trials = [
+            trial("small", 0, 1.0, 10.0),
+            trial("small", 1, 1.0, 10.0),
+            trial("big", 0, 0.0, 40.0),
+            trial("big", 1, None, 40.0),
+        ]
+        result = Pooled("f").compute(trials)
+        assert result.value == pytest.approx(10 / 50)
+        assert result.details["weight"] == pytest.approx(50)
+
+
+class TestCompareFilters:
+    @staticmethod
+    def _data() -> Dataset[int, int]:
+        flags: list[Any] = [True, 1, True, 1, "2024", 2024]
+        return Dataset(
+            [
+                Example(
+                    id=f"x{i}",
+                    input=i,
+                    reference=i * 2,
+                    metadata={"flag": flags[i % 6], "year": 2024 if i % 2 else "2024"},
+                    splits=["test" if i >= 10 else "dev"],
+                )
+                for i in range(12)
+            ],
+            name="filtered",
+        )
+
+    @pytest.mark.asyncio
+    async def test_true_and_one_are_different_groups(
+        self, store: LocalRunStore
+    ) -> None:
+        base = await evaluate(
+            flawed, self._data(), [correct], include_sealed=True, store=store
+        )
+        candidate = await evaluate(
+            good, self._data(), [correct], include_sealed=True, store=store
+        )
+        result = compare(base, candidate, group_by="flag")
+        assert result.groups["flag=True"].n_paired_examples == 4
+        assert result.groups["flag=1"].n_paired_examples == 4
+        # "2024" and 2024 have the same text, so they form one group.
+        assert result.groups["flag=2024"].n_paired_examples == 4
+        assert len(result.groups) == 3
+
+    @pytest.mark.asyncio
+    async def test_filters_match_text_and_leave_out_sealed_examples(
+        self, store: LocalRunStore
+    ) -> None:
+        data = self._data()
+        base = await evaluate(flawed, data, [correct], include_sealed=True, store=store)
+        candidate = await evaluate(
+            good, data, [correct], include_sealed=True, store=store
+        )
+        sealed_ids = {e.id for e in data if "test" in e.splits}
+        base.config.sealed_splits = ["test"]
+        for run in (base, candidate):
+            for trial in run.trials:
+                trial.sealed = trial.example_id in sealed_ids
+        result = compare(base, candidate, where={"year": "2024"})
+        assert result.n_paired_examples == 10
+        assert any("sealed splits are left out" in w for w in result.warnings)
+        assert compare(base, candidate).n_paired_examples == 12
+        nothing = compare(base, candidate, where={"year": 1999})
+        assert nothing.n_paired_examples == 0
+        assert any("No paired example matches" in w for w in nothing.warnings)
 
 
 class TestDescriptiveMetadata:

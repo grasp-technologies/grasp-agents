@@ -406,14 +406,30 @@ def has_weights(trials: Iterable[Trial], of: str) -> bool:
     )
 
 
+def pooled_sums(trials: Iterable[Trial], of: str) -> tuple[float, float] | None:
+    """
+    One example's ``(mean value·weight, mean weight)`` over its repetitions
+    with a value, so failed repetitions don't change how much it counts.
+    """
+    found = [p for t in trials if (p := weighted_value(t, of)) is not None]
+    if not found:
+        return None
+    weight = math.fsum(w for _, w in found) / len(found)
+    if weight <= 0:
+        return None
+    return math.fsum(v * w for v, w in found) / len(found), weight
+
+
 class Pooled(Metric):
     """
-    A score pooled over every trial: ``Σ value·weight / Σ weight``, with
-    ``Score.weight`` (1 when unset). For shares over varying numbers of items
-    — give each score its item count as weight — this is the share over all
-    items, where :class:`Mean` weighs a page with two items like one with
-    forty. The interval resamples examples (or ``cluster_by`` clusters);
-    ``n`` counts examples, and ``details["weight"]`` is the total weight.
+    A score pooled over examples: ``Σ value·weight / Σ weight``, with
+    ``Score.weight`` (1 when unset) and each example's repetitions averaged
+    first. For shares over varying numbers of items — give each score its
+    item count as weight — this is the share over all items, where
+    :class:`Mean` weighs a page with two items like one with forty. The
+    interval uses a linearized standard error (clustered with ``cluster_by``)
+    and is approximate with few examples or very uneven weights; ``n``
+    counts examples and ``details["weight"]`` is their total weight.
     """
 
     def __init__(
@@ -422,15 +438,11 @@ class Pooled(Metric):
         *,
         name: str | None = None,
         confidence: float = 0.95,
-        n_resamples: int = 2000,
-        seed: int = 0,
         higher_is_better: bool | None = None,
     ) -> None:
         self.of = of
         self.name = name or f"pooled({of})"
         self.confidence = confidence
-        self.n_resamples = n_resamples
-        self.seed = seed
         self.higher_is_better = higher_is_better
 
     @override
@@ -444,44 +456,34 @@ class Pooled(Metric):
         *,
         clusters: Mapping[str, Hashable] | None = None,
     ) -> MetricResult:
-        values: list[float] = []
-        weights: list[float] = []
+        sums: list[tuple[float, float]] = []
         keys: list[Hashable] = []
         missing = na = 0
         for example_id, group in _group_by_example(trials).items():
-            found = [p for t in group if (p := weighted_value(t, self.of)) is not None]
-            if not found:
-                if all(_not_applicable(t, self.of) for t in group):
-                    na += 1
-                else:
-                    missing += 1
-                continue
-            for value, weight in found:
-                values.append(value)
-                weights.append(weight)
+            found = pooled_sums(group, self.of)
+            if found is not None:
+                sums.append(found)
                 keys.append(
                     clusters.get(example_id, example_id) if clusters else example_id
                 )
+            elif all(_not_applicable(t, self.of) for t in group):
+                na += 1
+            else:
+                missing += 1
         estimate = pooled_estimate(
-            values,
-            weights,
-            clusters=keys,
-            n_resamples=self.n_resamples,
-            seed=self.seed,
-            confidence=self.confidence,
+            sums, clusters=keys if clusters else None, confidence=self.confidence
         )
-        examples = len({t.example_id for t in trials if weighted_value(t, self.of)})
         return MetricResult(
             name=self.name,
             value=None if math.isnan(estimate.value) else estimate.value,
-            n=examples,
+            n=len(sums),
             n_missing=missing,
             n_na=na,
             stderr=estimate.stderr,
             ci_low=estimate.ci_low,
             ci_high=estimate.ci_high,
             confidence=self.confidence,
-            details={"weight": math.fsum(weights)} if weights else {},
+            details={"weight": math.fsum(w for _, w in sums)} if sums else {},
         )
 
 
