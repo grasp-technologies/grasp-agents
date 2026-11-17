@@ -63,7 +63,7 @@ async with env:
 ```
 
 - Mount the environment's backend at one of its policy's roots, or below one: `/home/user/workspace` is E2B's default, and a local root goes at its resolved path. Paths are not translated, so the file tools and `Bash` name every sandbox file the same way.
-- `Bash` and code execution see only that mount. The `mounts` system-prompt section marks it as the one visible to them and tells the model the other mounts are not there. `Copy` copies files between the sandbox mount and the others.
+- `Bash` and code execution see only that mount. The `mounts` system-prompt section marks it as the one visible to them and tells the model to use the file tools for the other mounts. `Copy` copies files between the sandbox mount and the others.
 - Spilled output and task logs go to the scratch mount; when that is not the sandbox's mount, the model reads them with `Read` / `Grep`, not `Bash`.
 - A mount's `read_only` binds the file tools only. Commands still write wherever the policy lets them, the environment's mount included.
 
@@ -218,7 +218,7 @@ async with env:                       # creates the sandbox; kills it on exit
 - Only E2B changes a live environment's network (`NetworkUpdatable`); a local environment's egress is fixed when it is built.
 - Two processes that build the same new template name at once can make one of the builds fail, because E2B cancels a build when another build of its name starts. That call raises `BuildException` ("build was cancelled"); the next call uses the other build, or builds again if the latest build failed. Serialize builds across processes yourself when that matters.
 - No Docker or SSH exec backend ships; implement `ExecutionEnvironment` / `ExecBackend` for other targets.
-- The `mounts` section tells the model that only the environment's mount exists where `Bash` runs. Under a local environment, a mount served by another `LocalFileBackend` is on the same host, so `Bash` can still reach it as far as the confinement allows.
+- Under a local environment, a mount served by another `LocalFileBackend` is on the same host, so `Bash` can reach it as far as the confinement allows, although the `mounts` section directs the model to the file tools for it.
 - A filesystem snapshot covers only the environment's own filesystem; a rollback does not rewind a composite's other mounts.
 
 ## See also

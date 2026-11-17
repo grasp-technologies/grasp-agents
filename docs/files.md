@@ -67,7 +67,7 @@ A successful write refreshes the record, so consecutive edits do not trip on the
 
 `Copy` copies through `ctx.file_backend`, so bytes go from backend to backend and never through the model. Across the mounts of a `CompositeFileBackend`, it is how files get into a sandbox mount and how results come back.
 
-- A file copied onto an existing directory lands inside it; otherwise `destination` is the new file's path, and its parent must exist. A directory's contents land under `destination`, which is created if missing (`a/b.txt` → `destination/a/b.txt`).
+- A file copied onto an existing directory lands inside it; otherwise `destination` is the new file's path, and missing parent directories are created. A directory's contents land under `destination`, which is created if missing (`a/b.txt` → `destination/a/b.txt`).
 - Inside a directory, every file is validated for reading, must resolve to its own path under the source, and must be a regular file. A file that fails (refused by the policy, a symbolic link, a FIFO or device) is skipped and never read: `files_skipped` counts them and `skipped` lists the first 20 with the reason.
 - The whole plan is checked before anything is written: at most `max_files` files (1,000) and `max_bytes` bytes (50 MiB), no existing destination file unless `overwrite=True`, and no existing file where the copy needs a directory. Inside an agent, overwriting a file also needs a current read record, as `Write` does, and the write is conditional on it.
 - Every source is read before the first write, and the byte cap counts the bytes actually read.
@@ -149,7 +149,7 @@ ctx = SessionContext(file_backend=backend, memory=MemoryProvider(root="/user/mem
 - **Scratch.** `allowed_roots` lists the `scratch` mount first (by default the first writable mount; it must be writable). Spilled tool output and background-task logs land there, and `Glob` / `Grep` calls without a path search it, rather than, say, the user's memory.
 - **Searching above mounts.** `Glob` at a virtual directory keeps the newest matches across the mounts below it. `Grep` there searches those mounts concurrently and joins their results in path order. A mount it could not search (a backend without grep, an offline server) is named in a note after the results; the call fails only when every mount failed.
 - **Memory.** The memdir must sit inside a mount: the composite's `add_allowed_root` admits no other path. `mkdir` of a mount's own path reaches its backend, so a memdir mounted from a new local directory is created on first use.
-- **The prompt.** `LLMAgent` always registers the `mounts` system-prompt section (`make_mounts_section`). For a composite it lists each mount with its description and access, marks the one `Bash` and code execution can see, and points at `Copy` when the agent has it. For any other backend it renders nothing.
+- **The prompt.** `LLMAgent` always registers the `mounts` system-prompt section (`make_mounts_section`). For a composite it lists each mount with its description and access, names the scratch mount that path-less Glob and Grep search and large tool output goes to, marks the one `Bash` and code execution can see, and points at `Copy` when the agent has it. For any other backend it renders nothing.
 
 Next to an environment, `SessionContext` accepts a composite when a mount includes `environment.file_backend` (`FileBackend.includes`); see [Sandbox](sandbox.md#in-a-composite-backend).
 

@@ -238,8 +238,8 @@ async def test_refuses_to_copy_onto_itself_or_into_itself() -> None:
     assert "itself" in _error(into)
 
 
-async def test_single_file_needs_an_existing_parent() -> None:
-    _, ctx, agent_ctx, _ = _setup(**{"a.md": "x"})
+async def test_single_file_creates_missing_folders() -> None:
+    _, ctx, agent_ctx, children = _setup(**{"a.md": "x"})
 
     result = await _copy(
         ctx,
@@ -248,7 +248,8 @@ async def test_single_file_needs_an_existing_parent() -> None:
         destination=str(WORK / "no/such/a.md"),
     )
 
-    assert "Parent directory" in _error(result)
+    assert result.files_copied == 1
+    assert (await children["work"].read_text(WORK / "no/such/a.md"))[0] == "x"
 
 
 async def test_toolkit_offers_copy_only_when_asked() -> None:

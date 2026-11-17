@@ -209,11 +209,6 @@ class CopyTool(BaseTool[CopyInput, CopyResult, Any]):
                 target_root = await check(
                     destination / source.name, must_exist=False, access="write"
                 )
-            if not await backend.parent_exists(target_root):
-                raise ValueError(
-                    f"Parent directory for {target_root} does not exist. "
-                    "Create it explicitly first."
-                )
             steps = [
                 _Step(
                     source, target_root, source_stat.size, _mode_bits(source_stat.mode)
@@ -236,7 +231,7 @@ class CopyTool(BaseTool[CopyInput, CopyResult, Any]):
         made_dirs: set[Path] = set()
         for step, data in zip(steps, contents, strict=True):
             parent = step.destination.parent
-            if parent not in made_dirs and parent != target_root.parent:
+            if parent not in made_dirs:
                 await backend.mkdir(parent)
                 made_dirs.add(parent)
             with refuse_if_stale(

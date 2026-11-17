@@ -38,9 +38,10 @@ def make_mounts_section(
 
     Each mount renders as ``- `<path>`: <description> (<access>)``, with
     "visible to Bash and code execution" added for the mount whose backend
-    includes ``ctx.environment``'s file backend. A closing line names the
-    mounts that exist inside the sandbox, and another points at ``Copy``
-    when the agent has that tool.
+    includes ``ctx.environment``'s file backend. Closing lines name the
+    scratch mount (the default root for Glob and Grep, where large tool output
+    is saved), say where Bash and code run when the session has an
+    environment, and point at ``Copy`` when the agent has that tool.
     """
 
     def compute(
@@ -72,18 +73,24 @@ def make_mounts_section(
             description = f": {mount.description}" if mount.description else ""
             rows.append(f"- `{mount.path}`{description} ({', '.join(flags)})")
 
-        lines = ["Your file tools work on one tree made of these mounts:", *rows]
+        lines = [
+            "Your file tools work on one tree made of these mounts:",
+            *rows,
+            (
+                f"Glob and Grep without a path search `{backend.scratch.path}`, "
+                "and large tool output is saved there."
+            ),
+        ]
         if env_backend is not None:
             if visible:
-                verb = "exists" if len(visible) == 1 else "exist"
                 lines.append(
-                    f"Inside the sandbox where Bash and code run, only "
-                    f"{', '.join(visible)} {verb}; the other mounts are not there."
+                    f"Bash and code execution work in {', '.join(visible)}; use "
+                    "the file tools for the other mounts."
                 )
             else:
                 lines.append(
-                    "None of these mounts exists inside the sandbox where Bash "
-                    "and code run."
+                    "Bash and code execution work outside these mounts; use the "
+                    "file tools for them."
                 )
         if agent_ctx is not None and _COPY_TOOL_NAME in agent_ctx.tools:
             lines.append(

@@ -59,6 +59,10 @@ async def test_lists_each_mount_with_its_access() -> None:
     assert "- `/user/memory`: what you know about the user (read-write)" in text
     assert "- `/user/notes`: the user's notes (read-only)" in text
     assert "- `/scratch` (read-write)" in text
+    assert (
+        "Glob and Grep without a path search `/user/memory`, and large tool "
+        "output is saved there." in text
+    )
     assert "Bash" not in text
     assert "Copy" not in text
 
@@ -90,7 +94,11 @@ async def test_marks_the_mount_bash_can_see(tmp_path: Path) -> None:
     assert (
         f"- `{root}`: sandbox (read-write, visible to Bash and code execution)" in text
     )
-    assert f"only `{root}` exists" in text
+    assert (
+        f"Bash and code execution work in `{root}`; use the file tools for "
+        "the other mounts." in text
+    )
+    assert "Glob and Grep without a path search `/scratch`" in text
 
 
 async def test_renders_nothing_without_a_composite() -> None:
