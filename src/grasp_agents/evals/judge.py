@@ -12,10 +12,10 @@ from pydantic import BaseModel, Field
 
 from grasp_agents.session_context import SessionContext
 
-from ._util import user_code_hash
+from ._util import identity_hash, short_hash, user_code_hash
 from .evaluation import DatasetSource, Evaluation
 from .pairwise import PairwiseContext, PairwiseJudge, PairwiseVerdict
-from .scorer import ScoreContext, Scorer, ScorerOutput
+from .scorer import IdentityPart, LowerIsBetter, ScoreContext, Scorer, ScorerOutput
 from .task import ProcessorSource, ProcessorTask, TrialContext
 from .types import ComponentInfo, Example, JudgedOutput, Usage
 from .validation import (
@@ -45,6 +45,13 @@ class JudgedPair[InT, OutT, RefT](BaseModel):
     second: OutT
     reference: RefT | None = None
     metadata: dict[str, Any] = Field(default_factory=dict[str, Any])
+
+
+def _combined(*fingerprints: str | None) -> str | None:
+    found = [f for f in fingerprints if f is not None]
+    if len(found) <= 1:
+        return found[0] if found else None
+    return short_hash(*found)
 
 
 class _JudgeRunner:
@@ -84,6 +91,7 @@ class _JudgeRunner:
         config: Mapping[str, Any],
         annotator: Annotator,
         code: list[Any],
+        identity: Sequence[IdentityPart],
     ) -> ComponentInfo:
         info = self.task.describe()
         return ComponentInfo(
@@ -92,7 +100,7 @@ class _JudgeRunner:
             version=version,
             config=dict(config),
             annotator=annotator,
-            fingerprint=info.fingerprint,
+            fingerprint=_combined(info.fingerprint, identity_hash(identity)),
             source=user_code_hash([*code, *self.task.source_objects()]),
         )
 
@@ -111,11 +119,13 @@ class ProcessorScorer[InT, OutT, RefT, JudgeInT, JudgeOutT](Scorer[InT, OutT, Re
 
     The judge's models, settings, prompts, output schema and tools are part of
     its identity (``describe().fingerprint``), as is the code of ``to_input``,
-    ``to_scores`` and custom processor classes: changing any of them makes
-    rescoring run it again and invalidates earlier validation runs. A judge
-    built by a factory has no fingerprint, so declare its model and prompt in
-    ``version`` or ``config``. A judge that raises (including on a verdict
-    that does not parse) is a scorer failure, which rescoring retries.
+    ``to_scores``, a factory and custom processor classes, with the user-code
+    helpers and module-level constants they refer to: changing any of them
+    makes rescoring run it again and invalidates earlier validation runs.
+    List what else the judge depends on in ``identity`` — a prompt file, a
+    prompt or model a factory reads from elsewhere (see :class:`Scorer`). A
+    judge that raises (including on a verdict that does not parse) is a
+    scorer failure, which rescoring retries.
     """
 
     annotator: Annotator = "LLM"
@@ -133,11 +143,18 @@ class ProcessorScorer[InT, OutT, RefT, JudgeInT, JudgeOutT](Scorer[InT, OutT, Re
         input_mode: Literal["in_args", "chat"] = "in_args",
         scores_errors: bool = False,
         annotator: Annotator = "LLM",
+        identity: Sequence[IdentityPart] = (),
+        lower_is_better: LowerIsBetter = (),
     ) -> None:
         self._runner = _JudgeRunner(
             judge, ctx_factory=ctx_factory, input_mode=input_mode
         )
-        super().__init__(name=name or self._runner.task.name, version=version)
+        super().__init__(
+            name=name or self._runner.task.name,
+            version=version,
+            identity=identity,
+            lower_is_better=lower_is_better,
+        )
         self._to_input = to_input
         self._to_scores = to_scores
         self._config = dict(config or {})
@@ -154,6 +171,7 @@ class ProcessorScorer[InT, OutT, RefT, JudgeInT, JudgeOutT](Scorer[InT, OutT, Re
             config=self.config(),
             annotator=self.annotator,
             code=[type(self), self._to_input, self._to_scores],
+            identity=self.identity,
         )
 
     async def score(self, ctx: ScoreContext[InT, OutT, RefT]) -> ScorerOutput:
@@ -197,11 +215,14 @@ class ProcessorPairwiseJudge[InT, OutT, RefT, JudgeInT, JudgeOutT](
         ctx_factory: Callable[[Example[Any, Any]], SessionContext[Any]] | None = None,
         input_mode: Literal["in_args", "chat"] = "in_args",
         annotator: Annotator = "LLM",
+        identity: Sequence[IdentityPart] = (),
     ) -> None:
         self._runner = _JudgeRunner(
             judge, ctx_factory=ctx_factory, input_mode=input_mode
         )
-        super().__init__(name=name or self._runner.task.name, version=version)
+        super().__init__(
+            name=name or self._runner.task.name, version=version, identity=identity
+        )
         self._to_input = to_input
         self._to_verdict = to_verdict
         self._config = dict(config or {})
@@ -217,6 +238,7 @@ class ProcessorPairwiseJudge[InT, OutT, RefT, JudgeInT, JudgeOutT](
             config=self.config(),
             annotator=self.annotator,
             code=[type(self), self._to_input, self._to_verdict],
+            identity=self.identity,
         )
 
     async def judge(self, ctx: PairwiseContext[InT, OutT, RefT]) -> PairwiseVerdict:

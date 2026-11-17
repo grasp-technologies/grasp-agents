@@ -300,8 +300,27 @@ class TestValidationGates:
         assert find_validation(store, [good_judge], "good") is not None
         # Same name, version and configuration; the function's code changed.
         module = importlib.import_module("grasp_agents.evals.scorer")
-        monkeypatch.setattr(module, "code_hash", lambda _: "edited")
+        monkeypatch.setattr(module, "code_hash", lambda _: "v2:edited")
         assert find_validation(store, [good_judge], "good") is None
+
+    @pytest.mark.asyncio
+    async def test_a_declared_prompt_change_invalidates_the_validation(
+        self, tmp_path: Path, store: LocalRunStore
+    ) -> None:
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Say good when it is good.")
+
+        def judge() -> Any:
+            return scorer(name="good", annotator="LLM", identity=[prompt])(
+                good_judge.fn
+            )
+
+        await judge_validation(judge(), _labels(tmp_path / "l.jsonl")).run(
+            split="test", store=store
+        )
+        assert find_validation(store, [judge()], "good") is not None
+        prompt.write_text("Say good only when it is excellent.")
+        assert find_validation(store, [judge()], "good") is None
 
     def test_gate_reads_the_lower_bound_by_default(self) -> None:
         from grasp_agents.evals import (

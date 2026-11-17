@@ -7,10 +7,14 @@ Code: `evals/judge.py`, `evals/validation.py`, `evals/labeling.py`, `evals/pairw
 ## An LLM judge as a scorer
 
 ```python
+from pathlib import Path
+
 from pydantic import BaseModel
 
 from grasp_agents import LLMAgent
 from grasp_agents.evals import JudgedOutput, ProcessorScorer, Score
+
+PROMPT_FILE = Path(__file__).parent / "prompts" / "specific.md"
 
 
 class Verdict(BaseModel):
@@ -24,7 +28,7 @@ Judged = JudgedOutput[Submission, Grade, TeacherGrade]
 
 def build_judge() -> LLMAgent[Judged, Verdict, None]:
     return LLMAgent[Judged, Verdict, None](
-        name="feedback_judge", llm=make_llm(), sys_prompt="Is the feedback specific?"
+        name="feedback_judge", llm=make_llm(), sys_prompt=PROMPT_FILE.read_text()
     )
 
 
@@ -36,7 +40,7 @@ judge = ProcessorScorer(
     build_judge,
     name="specific",
     version="1",
-    config={"model": "<model id>", "prompt": "v1"},  # a factory judge has no fingerprint
+    identity=[PROMPT_FILE],  # a factory judge reads it at run time: declare it
     to_scores=to_scores,
 )
 ```
@@ -48,7 +52,7 @@ judge = ProcessorScorer(
 | Isolation | Each call runs a fresh copy (or a factory product) in its own session |
 | Usage | Goes to `trial.scorer_usage[<judge name>]`, not `trial.usage`. It counts toward `cost_usd`, the budget and `run.usage`, but not the token measures. Models land in `trial.models` |
 | Failure | A raise, or a verdict that does not parse, is a scorer failure. Rescore retries it |
-| Identity | `describe().fingerprint` covers a template's models, settings, prompts, output schema and tools. `describe().source` covers the code of `to_input`, `to_scores`, custom classes, hooks and tool functions. Any change makes rescore re-run the judge and voids earlier validations. A factory-built judge has no fingerprint, so put its model and prompt version in `version` or `config` |
+| Identity | `describe().fingerprint` covers a template's models, settings, prompts, output schema and tools, plus the declared `identity=[...]` parts (strings, `Path`s hashed by content, functions). `describe().source` covers the code of `to_input`, `to_scores`, a factory, custom classes, hooks and tool functions, with the user-code helpers and module-level constants they refer to. Any change makes rescore re-run the judge and voids earlier validations. A factory-built judge has no fingerprint: a prompt it reads from a module constant is covered through the factory's code, a prompt file only through `identity` |
 | Load | All scorers of a trial run concurrently, so judge calls in flight = trials in flight (`concurrency`) × judges. A pairwise judge makes 2 calls per pair |
 | Timeouts | None, unless the `Evaluation` sets `scorer_timeout_s` |
 

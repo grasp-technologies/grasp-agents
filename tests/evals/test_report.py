@@ -107,3 +107,16 @@ async def test_groups_with_a_few_sealed_members_are_hidden() -> None:
     assert "band=mixed" not in groups
     assert "band=visible" in groups
     assert "band=mixed" not in render_run_markdown(run)
+
+
+@pytest.mark.asyncio
+async def test_lower_is_better_scores_list_their_highest_examples() -> None:
+    @scorer(lower_is_better=True)
+    def misses(ctx: ScoreContext[int, int, int]) -> float:
+        return float(ctx.output != ctx.reference)
+
+    run = await evaluate(wrong_on_odd, _data(), [misses, correct], persist=False)
+    text = render_run_markdown(run)
+    assert "## Highest `misses`" in text
+    assert "## Lowest `correct`" in text
+    assert run_summary(run)["lower_is_better"] == ["misses"]

@@ -54,7 +54,7 @@ grasp-evals [--root DIR] <command> ...      # --root goes BEFORE the command
 | `--split S`, `--ids a,b`, `--sample N --seed S`, `--limit N` | Applied in this order: split → ids → sample → limit. An empty selection is an error |
 | `-r`, `-c`, `--timeout`, `--max-cost` | Override the spec's repetitions, concurrency, per-trial task timeout and budget |
 | `--no-score` | Runs the task only. The validation gate is skipped; scores come later with `--resume` (into a `retry` child) |
-| `--resume RUN [--force]` | Continue (see SKILL.md pitfall 11). Pass the same selection and `-r` as the original run |
+| `--resume RUN [--force]` | Continue (see SKILL.md pitfall 12). Pass the same selection and `-r` as the original run |
 | `--baseline RUN` | Compares with that run afterwards. `latest` resolves *before* the new run exists |
 | `--fail-under METRIC=V` | Repeatable. Exit 1 when the metric's value is below V or missing |
 | `--fail-on-regression [--gate T]... [--min-effect X]` | Needs `--baseline`. `--gate` replaces the default targets (scores and `error`); `--min-effect` is in the target's units |
@@ -103,7 +103,7 @@ stored and reported, and `push_error` is set in the JSON.
 ## Gating recipes
 
 ```bash
-# CI: candidate vs a pinned baseline. Name the gated scores so a vanished score fails.
+# CI: candidate vs a pinned baseline. --gate replaces the default targets.
 grasp-evals run evals/grading.py:grader_llm --split dev --json -q \
   --baseline "$BASE_ID" --fail-on-regression --gate agrees --gate error \
   --fail-under 'pass_rate(agrees)=0.8'

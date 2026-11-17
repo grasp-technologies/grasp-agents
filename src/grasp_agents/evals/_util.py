@@ -1,3 +1,4 @@
+import ast
 import base64
 import dataclasses
 import functools
@@ -10,6 +11,8 @@ import secrets
 import shutil
 import subprocess  # ruff: ignore[suspicious-subprocess-import]
 import sysconfig
+import textwrap
+import types
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -119,6 +122,17 @@ def short_hash(*parts: str, length: int = 12) -> str:
 
 _PLAIN = (str, int, float, bool, type(None))
 _MAX_CODE_DEPTH = 4
+# Tag of the code-identity scheme, so hashes recorded by an older scheme are
+# recognized rather than reported as code changes.
+CODE_SCHEME = "v2"
+
+
+def code_scheme(identity: str | None) -> str | None:
+    """The scheme a recorded code hash was made with (``None`` when unknown)."""
+    if identity is None:
+        return None
+    scheme, sep, _ = identity.partition(":")
+    return scheme if sep else "v1"
 
 
 def _plain_text(value: Any) -> str:
@@ -136,75 +150,264 @@ def _is_constant(value: Any) -> bool:
     return False
 
 
-def _value_text(value: Any, depth: int) -> str:
-    # A value a function closes over, defaults to or is bound with: code for
-    # callables, constants as they are. Other objects (lists, caches,
-    # clients) are state, not configuration: only their type counts.
-    if callable(value) and not isinstance(value, type):
-        return _code_text(value, depth + 1)
-    if _is_constant(value):
-        return _plain_text(value)
-    return qualified_name(type(value))
+def _is_frozen_record(value: Any) -> bool:
+    # Immutable configuration objects: frozen pydantic models and dataclasses.
+    if isinstance(value, BaseModel):
+        return bool(type(value).model_config.get("frozen"))
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        params = getattr(type(value), "__dataclass_params__", None)
+        return bool(getattr(params, "frozen", False))
+    return False
 
 
-def _function_text(fn: Any, depth: int) -> str:
-    parts = [inspect.getsource(fn)]
-    parts.extend(_value_text(v, depth) for v in fn.__defaults__ or ())
-    keyword_defaults = cast("dict[str, Any]", fn.__kwdefaults__ or {})
-    parts.extend(f"{k}={_value_text(v, depth)}" for k, v in keyword_defaults.items())
-    for cell in fn.__closure__ or ():
+def _parsed_text(source: str) -> str:
+    """
+    Source as parsed, without docstrings, comments or layout; the text itself
+    when it does not parse on its own (e.g. a lambda inside a call).
+    """
+    try:
+        tree = ast.parse(textwrap.dedent(source))
+    except SyntaxError:
+        return source
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+        ):
+            continue
+        body = node.body
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            node.body = body[1:] or [ast.Pass()]
+    return ast.dump(tree)
+
+
+def _source_text(obj: Any) -> str:
+    return _parsed_text(inspect.getsource(obj))
+
+
+def _names(code: types.CodeType) -> set[str]:
+    """Global and attribute names a code object (and code nested in it) uses."""
+    names = set(code.co_names)
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            names |= _names(const)
+    return names
+
+
+def _member_function(member: Any) -> types.FunctionType | None:
+    if isinstance(member, staticmethod | classmethod):
+        member = cast("Any", member).__func__
+    if isinstance(member, property):
+        member = member.fget
+    if callable(member):
+        member = inspect.unwrap(member)
+    return member if inspect.isfunction(member) else None
+
+
+class _CodeText:
+    """
+    The text a code hash is made of: an object's parsed source, the
+    constants and functions it is bound with, and — followed a few levels
+    deep — the user-code functions, classes and module-level constants it
+    refers to. Library code (grasp-agents, installed packages, the standard
+    library) is left out, so upgrading a dependency does not change the hash.
+    """
+
+    def __init__(self) -> None:
+        self._seen: set[int] = set()
+
+    def of(self, obj: Any, depth: int = 0) -> str:
+        if depth > _MAX_CODE_DEPTH:
+            return qualified_name(obj)
+        if isinstance(obj, functools.partial):
+            call = cast("functools.partial[Any]", obj)
+            return "\x00".join(
+                [
+                    self.of(call.func, depth + 1),
+                    *(self.value(a, depth) for a in call.args),
+                    *(f"{k}={self.value(v, depth)}" for k, v in call.keywords.items()),
+                ]
+            )
+        if inspect.ismethod(obj):
+            return self.of(obj.__func__, depth + 1)
+        target = inspect.unwrap(obj)
+        if inspect.isfunction(target):
+            return self._function(target, depth)
+        if inspect.isclass(target):
+            return self._class(cast("type[Any]", target), depth)
+        # A callable object: its class's code and its constant public attributes.
+        attributes: dict[str, Any] = getattr(target, "__dict__", {})
+        settings = {
+            k: v
+            for k, v in attributes.items()
+            if not k.startswith("_") and _is_constant(v)
+        }
+        cls = cast("type[Any]", type(target))
+        return self._class(cls, depth) + _plain_text(settings)
+
+    def value(self, value: Any, depth: int) -> str:
+        # A value code closes over, defaults to or is bound with: code for
+        # callables, constants as they are. Other objects (lists, caches,
+        # clients) are state, not configuration: only their type counts.
+        if callable(value) and not isinstance(value, type):
+            return self.of(value, depth + 1)
+        if _is_constant(value):
+            return _plain_text(value)
+        return qualified_name(type(value))
+
+    def _function(self, fn: types.FunctionType, depth: int) -> str:
+        self._seen.add(id(fn))
+        parts = [_source_text(fn)]
+        parts.extend(self.value(v, depth) for v in fn.__defaults__ or ())
+        keyword_defaults: dict[str, Any] = fn.__kwdefaults__ or {}
+        parts.extend(f"{k}={self.value(v, depth)}" for k, v in keyword_defaults.items())
+        for cell in fn.__closure__ or ():
+            try:
+                parts.append(self.value(cell.cell_contents, depth))
+            except ValueError:  # an empty cell
+                parts.append("<empty>")
+        parts.extend(self._references(fn.__code__, fn.__globals__, depth))
+        return "\x00".join(parts)
+
+    def _class(self, cls: type[Any], depth: int) -> str:
+        self._seen.add(id(cls))
+        parts = [_source_text(cls)]
+        for member in vars(cls).values():
+            function = _member_function(member)
+            if function is not None and not is_library_code(function):
+                parts.extend(
+                    self._references(function.__code__, function.__globals__, depth)
+                )
+        return "\x00".join(parts)
+
+    def _references(
+        self, code: types.CodeType, scope: dict[str, Any], depth: int
+    ) -> list[str]:
+        names = _names(code)
+        found: list[str] = []
+        for name in sorted(names):
+            if name not in scope:
+                continue
+            value = scope[name]
+            if not inspect.ismodule(value):
+                text = self._reference(value, depth)
+                if text is not None:
+                    found.append(f"{name}={text}")
+                continue
+            if _is_library_module(value):
+                continue
+            # ``module.helper(...)``: the module's members this code names.
+            for attribute in sorted(names - {name}):
+                member = getattr(value, attribute, None)
+                if member is None or inspect.ismodule(member):
+                    continue
+                text = self._reference(member, depth)
+                if text is not None:
+                    found.append(f"{name}.{attribute}={text}")
+        return found
+
+    def _reference(self, value: Any, depth: int) -> str | None:
+        if _is_constant(value):
+            return _plain_text(value)
+        if id(value) in self._seen or is_library_code(value):
+            return None
+        if _is_frozen_record(value):
+            return _plain_text(value)
+        target: Any = value
+        if not (
+            inspect.isfunction(value)
+            or inspect.isclass(value)
+            or inspect.ismethod(value)
+            or isinstance(value, functools.partial)
+        ):
+            # Another user object: the code of its class, not its state.
+            target = type(cast("object", value))
+            if id(target) in self._seen:
+                return None
+        self._seen.add(id(target))
         try:
-            parts.append(_value_text(cell.cell_contents, depth))
-        except ValueError:  # an empty cell
-            parts.append("<empty>")
-    return "\x00".join(parts)
+            return self.of(target, depth + 1)
+        except (OSError, TypeError):
+            return qualified_name(target)
 
 
-def _code_text(obj: Any, depth: int = 0) -> str:
-    if depth > _MAX_CODE_DEPTH:
-        return qualified_name(obj)
-    if isinstance(obj, functools.partial):
-        call = cast("functools.partial[Any]", obj)
-        return "\x00".join(
-            [
-                _code_text(call.func, depth + 1),
-                *(_value_text(a, depth) for a in call.args),
-                *(f"{k}={_value_text(v, depth)}" for k, v in call.keywords.items()),
-            ]
-        )
-    if inspect.ismethod(obj):
-        return _code_text(obj.__func__, depth + 1)
-    target = inspect.unwrap(obj)
-    if inspect.isfunction(target):
-        return _function_text(target, depth)
-    if inspect.isclass(target):
-        return inspect.getsource(target)
-    # A callable object: its class's code and its constant public attributes.
-    attributes = cast("dict[str, Any]", getattr(target, "__dict__", {}))
-    settings = {
-        k: v for k, v in attributes.items() if not k.startswith("_") and _is_constant(v)
-    }
-    cls = cast("type[Any]", type(target))
-    return inspect.getsource(cls) + _plain_text(settings)
+def _code_text(obj: Any) -> str:
+    return _CodeText().of(obj)
+
+
+def _tagged(digest: str) -> str:
+    return f"{CODE_SCHEME}:{digest}"
 
 
 def code_hash(obj: Any) -> str | None:
     """
     Hash of the code of a function, class, method, ``functools.partial`` or
-    callable object, including the constants (numbers, strings, tuples of
-    them) it closes over, defaults to or is bound with, and the code of the
-    functions among them (``None`` when its source is unavailable).
+    callable object: its source without docstrings, comments or layout, the
+    constants (numbers, strings, tuples of them) it closes over, defaults to
+    or is bound with, and the user-code functions, classes and module-level
+    constants it refers to, followed a few levels deep. ``None`` when its
+    source is unavailable.
     """
     try:
-        return short_hash(_code_text(obj))
+        return _tagged(short_hash(_code_text(obj)))
     except (OSError, TypeError):
         return None
+
+
+def identity_hash(parts: Iterable[Any]) -> str | None:
+    """
+    Hash of declared identity parts: a string as text, a :class:`Path` by
+    the contents of its file (or of every file under a directory), a
+    function or class by its code (see :func:`code_hash`), other values as
+    canonical JSON. ``None`` when there are none.
+    """
+    texts: list[str] = []
+    for part in parts:
+        if isinstance(part, str):
+            texts.append(f"text:{part}")
+        elif isinstance(part, Path):
+            texts.append(f"path:{_path_digest(part)}")
+        elif callable(part):
+            texts.append(f"code:{_code_text(part)}")
+        else:
+            texts.append(f"value:{canonical_json(part)}")
+    return short_hash(*texts) if texts else None
+
+
+def _path_digest(path: Path) -> str:
+    if path.is_dir():
+        files = sorted(p for p in path.rglob("*") if p.is_file())
+        return short_hash(
+            *(f"{p.relative_to(path).as_posix()}:{_file_digest(p)}" for p in files)
+        )
+    if not path.exists():
+        raise FileNotFoundError(f"Identity file {path} does not exist")
+    return _file_digest(path)
+
+
+def _file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _library_roots() -> tuple[Path, ...]:
     paths = sysconfig.get_paths()
     roots = {paths[key] for key in ("stdlib", "platstdlib", "purelib", "platlib")}
     return tuple(Path(root).resolve() for root in roots if root)
+
+
+def _is_library_module(module: types.ModuleType) -> bool:
+    name = module.__name__
+    if name.partition(".")[0] == "grasp_agents":
+        return not name.startswith("grasp_agents.examples")
+    path = getattr(module, "__file__", None)
+    if path is None:
+        return True  # built-in or namespace package
+    resolved = Path(path).resolve()
+    return any(resolved.is_relative_to(root) for root in _library_roots())
 
 
 def is_library_code(obj: Any) -> bool:
@@ -252,7 +455,7 @@ def user_code_hash(objects: Iterable[Any]) -> str | None:
         for obj in objects
         if obj is not None and not is_library_code(obj)
     )
-    return short_hash(*identities) if identities else None
+    return _tagged(short_hash(*identities)) if identities else None
 
 
 def source_hash(objects: Iterable[Any]) -> str | None:

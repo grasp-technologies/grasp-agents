@@ -38,9 +38,9 @@ Always added: `error_rate`, `p50(duration_s)` and `p95(duration_s)`, plus
 
 | Metric | Unit (`n` counts) | Task errors | Name |
 |---|---|---|---|
-| `PassRate(of, threshold=None, errors_as_failures=True, reduce=mean)` | examples | failures | `pass_rate(of)`, `pass_rate(of>=0.7)`, `pass_rate(of)[all_pass]` |
+| `PassRate(of, threshold=None, errors_as_failures=True, reduce=mean, higher_is_better=None)` | examples | failures | `pass_rate(of)`, `pass_rate(of>=0.7)`, `pass_rate(of)[all_pass]` |
 | `PassAtK(of, k)` / `PassHatK(of, k)` | examples; an example with fewer than `k` repetitions is n/a | failures | `pass@k(of)` / `pass^k(of)` |
-| `Mean(of, reduce=mean, unit="example")` | examples (or trials) | missing | `mean(of)` |
+| `Mean(of, reduce=mean, unit="example", higher_is_better=None)` | examples (or trials) | missing | `mean(of)` |
 | `Percentile(of, q, unit="trial")` | trials | missing | `p95(of)` |
 | `ErrorRate()` | trials (clustered on the example) | what it measures | `error_rate` (`details.by_type`) |
 | `Total(of)` | trials | missing | `total(of)` (no interval) |
@@ -112,7 +112,13 @@ cluster_by=None)`:
    hash. `n_changed_examples`, `n_base_only` and `n_candidate_only` count the rest.
 2. **Default targets**: numeric scores (bool or number) found in *both* runs, then
    `error`, `duration_s`, and `cost_usd` when any trial has a cost. Label scores are
-   never compared. From Python, pass `targets=[...]` to choose others.
+   never compared. From Python, pass `targets=[...]` to choose others. Numeric
+   scores of the base run that the candidate lacks are listed in `missing_scores`.
+   **Direction**: each score is read the way the runs recorded it in
+   `EvaluationRun.directions` (higher is better unless a scorer's `lower_is_better`
+   or a metric's `higher_is_better=False` says otherwise; a run without the record
+   takes the other run's). A score the runs record opposite directions for is left
+   out and listed in `conflicting_directions`.
 3. **Per example**: repetitions are reduced with `reduce`.
    - For scores that are always `bool`, a task-errored trial counts as 0.
    - Numeric scores skip errored trials, so `n_pairs` drops. The `error` target catches
@@ -134,14 +140,17 @@ cluster_by=None)`:
    - `diff` is candidate − base, with a CI.
    - `mde` is the smallest true difference this comparison detects with 80% power.
    - `improved`/`regressed` count examples moving in the good or bad direction (lower
-     is better for `error` and the resources).
+     is better for `error`, the resources and lower-is-better scores).
    - `top_regressions` and `top_improvements` carry the worst repetition's explanation
      and never list sealed examples.
 7. **Warnings** are raised when:
    - both sides are the same run;
    - the configuration is identical (the differences are noise);
    - nothing paired, or the runs differ in content or subsets;
-   - a scorer changed version, config or code;
+   - a scorer changed version, config, fingerprint (prompt, model, declared identity)
+     or code, or its code was recorded by another grasp-evals version;
+   - a score of the base run is missing from the candidate, or the runs disagree on
+     its direction;
    - repetitions differ;
    - task errors appear in only one run;
    - a run is invalid or incomplete;
@@ -153,10 +162,12 @@ cluster_by=None)`:
 failure messages (an empty list means pass). It fails when:
 
 - nothing paired;
+- a gated score is missing from the candidate (`missing_scores`) or the runs disagree
+  on its direction (`conflicting_directions`);
 - a gated target has no paired values, or has pairs but no p-value;
 - a gated target shows a significant change in the bad direction with
   `|diff| >= min_effect`;
 - a target named in `targets` is not in the comparison.
 
-The default gated targets are the comparison's outcome targets. A score missing from
-either run is not a target, so it is not gated unless you name it.
+The default gated targets are the comparison's outcome targets plus the missing and
+conflicting scores. With `targets=[...]` only the named ones are gated.

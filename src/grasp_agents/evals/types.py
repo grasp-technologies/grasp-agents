@@ -389,11 +389,12 @@ class ComponentInfo(BaseModel):
     annotator: Literal["CODE", "LLM", "HUMAN"] | None = None
     # Tasks and processor judges: hash of what the processor is made of
     # (models, settings, prompts, tools, structure) when it can be read before
-    # running.
+    # running; for scorers, also of their declared identity parts.
     fingerprint: str | None = None
-    # Scorers only: hash of the scorer's own code (its function or
-    # class). Outside the config hash; rescoring re-runs a scorer whose
-    # code changed, and comparisons warn about it.
+    # Scorers only: hash of the scorer's code (its function or class, and the
+    # user-code helpers and constants they refer to), tagged with the hashing
+    # scheme. Outside the config hash; rescoring re-runs a scorer whose code
+    # changed, and comparisons warn about it.
     source: str | None = None
 
     @field_validator("config")
@@ -461,6 +462,7 @@ class PhoenixLink(BaseModel):
 
 
 type RunKind = Literal["evaluation", "rescore", "pairwise", "retry"]
+type Direction = Literal["higher", "lower"]
 
 
 class EvaluationRun(BaseModel):
@@ -495,6 +497,10 @@ class EvaluationRun(BaseModel):
     counts: RunCounts = Field(default_factory=RunCounts)
     usage: Usage = Field(default_factory=Usage)
     metrics: list[MetricResult] = Field(default_factory=list[MetricResult])
+    # Which values are better for each numeric score (and each measurement a
+    # metric declared a direction for): "lower" when a scorer's
+    # ``lower_is_better`` or a metric's ``higher_is_better=False`` says so.
+    directions: dict[str, Direction] = Field(default_factory=dict[str, Direction])
     # Set when the run finished but its numbers should not be trusted (e.g.
     # the task error rate exceeded ``config.max_error_rate``).
     invalid_reason: str | None = None

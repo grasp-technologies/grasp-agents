@@ -29,7 +29,14 @@ from ._execution import (
     retype_examples,
     run_all,
 )
-from ._util import code_hash, new_run_id, qualified_name, short_hash, utc_now
+from ._util import (
+    code_hash,
+    identity_hash,
+    new_run_id,
+    qualified_name,
+    short_hash,
+    utc_now,
+)
 from .metrics import Metric, MetricsSpec, PassRate
 from .scorer import (
     ScoreContext,
@@ -100,14 +107,24 @@ class PairwiseJudge[InT, OutT, RefT](ABC):
     name: str = ""
     version: str = "1"
     annotator: Literal["CODE", "LLM", "HUMAN"] = "LLM"
+    # What else the judge's verdicts depend on (see ``Scorer.identity``).
+    identity: Sequence[Any] = ()
 
-    def __init__(self, name: str | None = None, version: str | None = None) -> None:
+    def __init__(
+        self,
+        name: str | None = None,
+        version: str | None = None,
+        *,
+        identity: Sequence[Any] | None = None,
+    ) -> None:
         if name is not None:
             self.name = name
         if version is not None:
             self.version = version
         if not self.name:
             self.name = snake_case(type(self).__name__)
+        if identity is not None:
+            self.identity = tuple(identity)
 
     def config(self) -> dict[str, Any]:
         return {}
@@ -119,6 +136,7 @@ class PairwiseJudge[InT, OutT, RefT](ABC):
             version=self.version,
             config=self.config(),
             annotator=self.annotator,
+            fingerprint=identity_hash(self.identity),
             source=code_hash(type(self)),
         )
 
@@ -141,8 +159,9 @@ class FunctionPairwiseJudge[InT, OutT, RefT](PairwiseJudge[InT, OutT, RefT]):
         name: str | None = None,
         version: str = "1",
         annotator: Literal["CODE", "LLM", "HUMAN"] = "LLM",
+        identity: Sequence[Any] = (),
     ) -> None:
-        super().__init__(name=name or fn.__name__, version=version)
+        super().__init__(name=name or fn.__name__, version=version, identity=identity)
         self._fn = fn
         self.annotator = annotator
 

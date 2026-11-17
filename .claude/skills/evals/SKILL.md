@@ -283,15 +283,18 @@ Each item gives the wrong assumption, what actually happens, and what to do.
 
 ### Gates and exit codes
 
-7. **"`--fail-on-regression` catches a broken candidate."** The gate's default targets
-   are the numeric scores present in *both* runs, plus `error`. If the candidate's
-   scorer fails on every trial, or a score is renamed, that score silently drops out
-   and the gate passes.
-
-   **Do:** name the targets (`--gate agrees --gate error`; a named target that is
-   missing fails the gate) and add `--fail-under`. `--gate` replaces the default set.
-   Code: `evals/compare.py` → `regressions`.
-8. **"Exit 1 means a gate flag fired."**
+7. **"Higher is better for every score."** Only if declared otherwise: a defect share
+   or error count needs `@scorer(lower_is_better=True)` (or a set of score names), or
+   `Mean("x", higher_is_better=False)`. Without it, `compare` calls an improvement a
+   regression and the gate fires the wrong way. Runs record each score's direction;
+   if two runs disagree, `compare` leaves the score out and the default gate fails.
+   Code: `evals/_execution.py` → `score_directions`, `evals/compare.py`.
+8. **"`--fail-on-regression` only looks at scores both runs have."** A score of the
+   base run that the candidate lacks (its scorer failed on every trial, or was
+   renamed) fails the default gate (`missing_scores`). `--gate` replaces the default
+   set, so a score you do not name is not gated at all. Add `--fail-under` for an
+   absolute floor. Code: `evals/compare.py` → `regressions`.
+9. **"Exit 1 means a gate flag fired."**
    - The CLI also exits 1 with no flags at all when the run is `partial` (the
      `--max-cost` budget was hit) or invalid.
    - Dataset problems found by `run` exit 2, but `datasets validate` exits 1 for the
@@ -300,7 +303,7 @@ Each item gives the wrong assumption, what actually happens, and what to do.
    - A failed `--push` decides the exit code even when the run passed.
 
    See [cli.md](cli.md#exit-codes).
-9. **"`--max-cost` is a hard cap."** It stops *scheduling*, so trials already running
+10. **"`--max-cost` is a hard cap."** It stops *scheduling*, so trials already running
    finish and the total can exceed the cap by roughly one trial per concurrent slot.
    It only sees priced usage. Two things are not limited, and the run only warns and
    lists `unpriced_agents` in its metadata:
@@ -309,12 +312,12 @@ Each item gives the wrong assumption, what actually happens, and what to do.
 
 ### Runs, resume and identity
 
-10. **"`latest:<name>` is my last evaluation run."** It is the newest run with that run
+11. **"`latest:<name>` is my last evaluation run."** It is the newest run with that run
     name or spec attribute, children included. After `rescore`, `latest:grader_rules`
     resolves to the rescore child, which keeps the parent's name and spec.
 
     **Do:** in scripts, capture ids from `--json` output.
-11. **"Resume just continues."**
+12. **"Resume just continues."**
     - **Must match, cannot be forced:** the task identity (name, version, config, and
       for a template processor its models, prompts and settings), the scorers, the
       selected examples and the repetitions. So repeat
@@ -326,7 +329,7 @@ Each item gives the wrong assumption, what actually happens, and what to do.
     - `--no-score` followed by `--resume` puts the scores in a `retry` child.
 
     Code: `evals/runner.py` → `_resume_record`.
-12. **"Rescore and pairwise see my output types."** Outputs are stored as JSON.
+13. **"Rescore and pairwise see my output types."** Outputs are stored as JSON.
     - The bare `rescore()` and `pairwise()` default `output_type` to `Any`. Scorers
       receive dicts, `ctx.output.verdict` raises `AttributeError`, and every trial gets
       a scorer failure while the run still reports `completed`.
@@ -335,17 +338,17 @@ Each item gives the wrong assumption, what actually happens, and what to do.
 
     **Do:** use `Evaluation.rescore` or the CLI (both pass the spec's types), or pass
     `output_type=`.
-13. **"Scorers see the same context on rescore."** On rescore and resume, `ctx.session`
+14. **"Scorers see the same context on rescore."** On rescore and resume, `ctx.session`
     is `None`, and events reload as generic `Event` objects whose `data` is JSON, so
     `isinstance(e, ToolCallEvent)`-style checks fail. Match on `e.type` and `e.source`
     instead. Function tasks have no events at all.
-14. **"`evaluate()` validates inputs."** It never does: `Dataset.load(path)` without
+15. **"`evaluate()` validates inputs."** It never does: `Dataset.load(path)` without
     `input_type=` yields plain dicts.
     - An `Evaluation` takes `input_type` from a `FunctionTask`'s first-parameter
       annotation or a template processor's `in_type`.
     - A factory-based `ProcessorTask` (or one with `input_fn`) reports `Any`, so inputs
       stay dicts unless you set `Evaluation(input_type=...)`.
-15. **"Same content means same example."** The default id is a hash of the input *as
+16. **"Same content means same example."** The default id is a hash of the input *as
     stored*. Examples built in code leave out model fields that are at their default
     value, so a hand-written file that spells those defaults out gets a different id and
     content hash.
@@ -354,15 +357,21 @@ Each item gives the wrong assumption, what actually happens, and what to do.
     - Two id-less examples with the same input are rejected as duplicates.
 
     **Do:** give explicit ids and write files with `Dataset.save`.
-16. **"Rescore notices my scorer changed."** Reuse compares name, version, config and
-    the code of the scorer's own function or class. Helpers, data files and mutable
-    closure state are not hashed.
+17. **"Rescore notices my scorer changed."** Reuse compares name, version, config,
+    fingerprint and code. The code covers the scorer's function or class (docstrings,
+    comments and layout ignored), its bound constants, and the user-code helpers,
+    classes and module-level constants it refers to, a few levels deep. It does not
+    cover data files, constants reached only through mutable objects, or code behind
+    a dynamic lookup (`getattr`, a registry).
 
-    **Do:** bump `version` or pass `--rerun`.
+    **Do:** list prompt files and other inputs in `identity=[Path(...), ...]`; bump
+    `version` or pass `--rerun` for anything else. After upgrading grasp-evals, every
+    scorer counts as changed once (the hashing scheme is tagged; `compare` says the
+    runs used different versions).
 
 ### Specs, CLI and data
 
-17. **"`Evaluation(task=my_async_fn)` works like `evaluate(my_async_fn, ...)`."** In an
+18. **"`Evaluation(task=my_async_fn)` works like `evaluate(my_async_fn, ...)`."** In an
     `Evaluation`, a value that is neither a `Task` nor a `Processor` is treated as a
     zero-argument *factory*, so the run fails with
     `missing 1 required positional argument`.
@@ -370,7 +379,7 @@ Each item gives the wrong assumption, what actually happens, and what to do.
     **Do:** use `FunctionTask(fn)` or `lambda: FunctionTask(fn)`. A `FunctionTask`
     passes the `TrialContext` only if the function has a second required positional
     parameter or a parameter named `trial`.
-18. **"Sealed means excluded."** A run without `--split` evaluates sealed splits too,
+19. **"Sealed means excluded."** A run without `--split` evaluates sealed splits too,
     and their trials count in the headline metrics.
     - **What sealing does:** it hides per-example results in reports, `show`, `compare`,
       progress lines and Phoenix trial pushes. It also forces a selection to take a
@@ -380,33 +389,33 @@ Each item gives the wrong assumption, what actually happens, and what to do.
       `trials.jsonl`, traces and `datasets push` all contain the examples.
 
     **Do:** iterate with `--split dev`.
-19. **"Paths are relative to the spec file."** Relative dataset paths resolve against
+20. **"Paths are relative to the spec file."** Relative dataset paths resolve against
     the current directory, and so does the store (`./.evals`, unless `$GRASP_EVALS_DIR`
     or `--root` is set). `--root` must come *before* the subcommand. Validation-gate
     lookups and `latest` only see runs in that one store.
-20. **"A run remembers its spec portably."**
+21. **"A run remembers its spec portably."**
     - A `file.py:attr` spec is recorded by absolute path. `rescore` and `pairwise`
       without `--spec` reload it from there, so moving the file breaks them (exit 2).
     - Module specs (`pkg.mod:attr`) are portable.
     - A rescore child records its parent's spec, not the `--spec` you passed.
-21. **"`--timeout` covers judges."** It is per trial and covers the task only. Scorer
+22. **"`--timeout` covers judges."** It is per trial and covers the task only. Scorer
     and judge timeouts come only from `Evaluation.scorer_timeout_s`; there is no CLI
     flag. A sync scorer that times out is abandoned, but its thread keeps running.
 
 ### Judges (details in [judges.md](judges.md))
 
-22. **"A structured verdict scores itself."** A `ProcessorScorer` whose judge returns a
+23. **"A structured verdict scores itself."** A `ProcessorScorer` whose judge returns a
     pydantic verdict needs `to_scores=`. Without it, every call is a scorer failure
     ("returned an unsupported value ('passed', True)") and the score is absent from the
     metrics.
-23. **"Any type works as an `LLMAgent` type parameter."** They must be real classes.
+24. **"Any type works as an `LLMAgent` type parameter."** They must be real classes.
     `type Judged = JudgedOutput[...]` fails at the first call
     (`TypeError: issubclass() arg 1 must be a class`). Write
     `Judged = JudgedOutput[...]` instead.
-24. **"`--split dev` is enough to validate on dev labels."** `judge_validation` seals
+25. **"`--split dev` is enough to validate on dev labels."** `judge_validation` seals
     `("test",)` by default. A labels file without a `test` split raises `ValueError`,
     even with `--split dev`.
-25. **"A judge that agrees with every label passes its gate."** `ValidationGate`
+26. **"A judge that agrees with every label passes its gate."** `ValidationGate`
     thresholds read the *lower interval bound* and allow zero missing verdicts by
     default.
     - A judge that agrees with all 15 test labels has accuracy `ci_low` ≈ 0.77 and κ
@@ -423,7 +432,9 @@ Each item gives the wrong assumption, what actually happens, and what to do.
    `error_rate` are small. `counts.scorer_failures > 0` means a scorer broke; check
    `show --failures`.
 3. In `compare`, read the warnings first:
-   - a scorer's version or code changed;
+   - a scorer's version, configuration, prompt/model/identity or code changed;
+   - a score of the base run is missing from the candidate, or the runs disagree on
+     its direction;
    - the runs cover different subsets;
    - "identical configuration", which means the differences are noise;
    - task errors in only one run.

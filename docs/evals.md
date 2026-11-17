@@ -84,6 +84,18 @@ task's `events`, the trial's `session` (for state-mutating tasks) and
 thread. Bump `version` whenever a scorer's semantics change: runs are
 comparable only under the same scorer versions.
 
+A scorer's identity (`describe()`) also covers its code — its function or
+class without docstrings, comments or layout, plus the user-code helpers,
+classes and module-level constants it refers to, followed a few levels deep —
+and anything listed in `identity=[...]`: strings (a prompt, a model id),
+`Path`s (a prompt or rubric file, or a directory), functions. A change to any
+of them makes `rescore` run the scorer again, voids judge validations and is
+flagged by `compare`. `lower_is_better=True` (or a set of score names) marks
+scores whose lower values are better, such as a defect share;
+`Mean(..., higher_is_better=False)` does the same from a metric, also for
+recorded measurements. Runs record each score's direction in
+`EvaluationRun.directions`.
+
 ## Running
 
 ```python
@@ -152,9 +164,11 @@ paired difference with a confidence interval and a p-value. Exact McNemar is
 used only when every paired per-example value is 0 or 1 and nothing is
 clustered; with repetitions > 1 or `cluster_by` it is a paired (or clustered)
 t-test. `significant` reads the Holm-adjusted p-value. Task errors count as
-failures of pass/fail scores. Default targets are the numeric scores present
-in both runs, so a score that is missing from the candidate is not compared
-unless named.
+failures of pass/fail scores. Each score is read in the direction the runs
+recorded (a score they disagree on is left out). Default targets are the
+numeric scores present in both runs; a score of the base run that the
+candidate lacks is listed in `missing_scores` and fails the default
+regression gate.
 
 `pairwise(base, candidate, judge)` asks a `PairwiseJudge` which of two outputs
 is better. The judge sees them only as `first` and `second`; with
@@ -184,7 +198,9 @@ A judge is validated like any other system:
   of its labels, meets the thresholds (lower interval bound by default). A
   changed judge (version, prompt, model, settings, code) needs a new validation.
   Gated scores also report a pass rate corrected for the judge's measured error
-  rates (`CorrectedPassRate`). The check raises `UnvalidatedJudgeError`
+  rates (`CorrectedPassRate`). A judge's prompt file, or a prompt or model it
+  reads from elsewhere, belongs in its `identity=[...]` so a change to it
+  needs a new validation too. The check raises `UnvalidatedJudgeError`
   (`--allow-unvalidated` overrides; a `--no-score` run skips the check).
 - `sample_for_labeling(run, n, score=, against=)` picks outputs worth labeling
   (disagreements with a cheaper check first, never sealed trials);

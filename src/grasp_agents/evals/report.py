@@ -1,7 +1,6 @@
 """Human- and agent-readable views of runs and comparisons."""
 
 from collections.abc import Iterable
-from operator import itemgetter
 from typing import Any, cast
 
 from .compare import Comparison, TargetComparison
@@ -91,10 +90,14 @@ def _metric_rows(
     return rows
 
 
-def _lowest(
-    trials: Iterable[Trial], name: str, limit: int
+def _weakest(
+    trials: Iterable[Trial], name: str, limit: int, *, higher_is_better: bool = True
 ) -> list[tuple[str, float, int, Score]]:
-    """Weakest examples: ``(example_id, mean value, repetitions, worst score)``."""
+    """
+    Weakest examples — lowest values, or highest when lower is better:
+    ``(example_id, mean value, repetitions, worst score)``.
+    """
+    sign = 1.0 if higher_is_better else -1.0
     by_example: dict[str, list[Score]] = {}
     for trial in trials:
         if trial.sealed:
@@ -105,9 +108,9 @@ def _lowest(
     rows: list[tuple[str, float, int, Score]] = []
     for example_id, scores in by_example.items():
         values = [s.as_float() or 0.0 for s in scores]
-        worst = min(scores, key=lambda s: s.as_float() or 0.0)
+        worst = min(scores, key=lambda s: sign * (s.as_float() or 0.0))
         rows.append((example_id, sum(values) / len(values), len(values), worst))
-    rows.sort(key=itemgetter(1))
+    rows.sort(key=lambda row: sign * row[1])
     return rows[:limit]
 
 
@@ -253,12 +256,18 @@ def render_run_markdown(run: EvaluationRun, *, max_rows: int = 10) -> str:
             )
 
     for name in run.score_names():
-        lowest = _lowest(run.trials, name, 5)
-        if not lowest or all(mean >= 1.0 for _, mean, _, _ in lowest):
+        higher = run.directions.get(name, "higher") == "higher"
+        lowest = _weakest(run.trials, name, 5, higher_is_better=higher)
+        perfect = (
+            all(mean >= 1.0 for _, mean, _, _ in lowest)
+            if higher
+            else all(mean <= 0.0 for _, mean, _, _ in lowest)
+        )
+        if not lowest or perfect:
             continue
         lines += [
             "",
-            f"## Lowest `{name}`",
+            f"## {'Lowest' if higher else 'Highest'} `{name}`",
             "",
             "| example | mean | reps | explanation (worst repetition) |",
             "|---|---|---|---|",
@@ -372,6 +381,9 @@ def run_summary(run: EvaluationRun) -> dict[str, Any]:
         },
         "task": {"name": run.task.name, "version": run.task.version},
         "scorers": {e.name: e.version for e in run.scorers},
+        "lower_is_better": sorted(
+            name for name, d in run.directions.items() if d == "lower"
+        ),
         "counts": run.counts.model_dump(),
         "cost_usd": run.usage.cost_usd,
         "metrics": {m.name: _metric_summary(m, hidden) for m in run.metrics},

@@ -27,7 +27,7 @@ from ._util import (
     to_jsonable,
     utc_now,
 )
-from .metrics import MetricsSpec, compute_metrics
+from .metrics import Metric, MetricsSpec, compute_metrics, select_metrics
 from .report import render_run_markdown
 from .scorer import (
     FunctionScorer,
@@ -41,6 +41,7 @@ from .task import Task, TrialContext
 from .types import (
     ComponentInfo,
     DatasetRef,
+    Direction,
     ErrorInfo,
     EvaluationRun,
     Example,
@@ -77,6 +78,61 @@ type ProgressCallback = Callable[[TrialProgress], None]
 def scorer_sources(scorers: Iterable[Scorer[Any, Any, Any]]) -> list[Any]:
     """Classes and functions whose source files define ``scorers``."""
     return [e.fn if isinstance(e, FunctionScorer) else type(e) for e in scorers]
+
+
+def declared_directions(
+    scorers: Iterable[Scorer[Any, Any, Any]], metrics: Iterable[Metric]
+) -> dict[str, Direction]:
+    """
+    The directions scorers (``lower_is_better``) and metrics
+    (``higher_is_better``) declare. Raises ``ValueError`` when they disagree.
+    """
+    declared: dict[str, Direction] = {}
+    for scorer in scorers:
+        for name in scorer.lower_is_better:
+            declared[name] = "lower"
+    for metric in metrics:
+        found = metric.declared_direction()
+        if found is None:
+            continue
+        name, higher = found
+        direction: Direction = "higher" if higher else "lower"
+        if declared.get(name, direction) != direction:
+            raise ValueError(
+                f"{metric.name} says {'higher' if higher else 'lower'} values of "
+                f"{name!r} are better, but its scorer declares the opposite"
+            )
+        declared[name] = direction
+    return declared
+
+
+def score_directions(
+    trials: Iterable[Trial],
+    scorers: Sequence[Scorer[Any, Any, Any]],
+    metrics: Iterable[Metric],
+    inherited: Mapping[str, Direction],
+) -> dict[str, Direction]:
+    """
+    Which values are better for each numeric score of ``trials``: as
+    declared, else as recorded on the run for scores of scorers not run
+    now (a parent's other scorers), else higher.
+    """
+    try:
+        declared = declared_directions(scorers, metrics)
+    except ValueError as exc:
+        logger.warning("%s; the scorer's declaration is kept", exc)
+        declared = declared_directions(scorers, ())
+    current = {s.name for s in scorers}
+    directions: dict[str, Direction] = {}
+    for trial in trials:
+        for score in trial.scores:
+            if score.name in directions or score.as_float() is None:
+                continue
+            if score.name in declared or (score.scorer or score.name) in current:
+                directions[score.name] = declared.get(score.name, "higher")
+            else:
+                directions[score.name] = inherited.get(score.name, "higher")
+    return {**directions, **declared}
 
 
 def capture_provenance(
@@ -509,9 +565,13 @@ class Executor:
         run.status = status
         run.finished_at = utc_now()
         try:
+            selected = select_metrics(trials, metrics)
+            run.directions = score_directions(
+                trials, self.scorers, selected, run.directions
+            )
             run.metrics = compute_metrics(
                 trials,
-                metrics,
+                selected,
                 examples=run.examples,
                 group_by=run.config.group_by,
                 cluster_by=run.config.cluster_by,

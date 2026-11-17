@@ -3,6 +3,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from ._util import code_scheme
 from .metrics import Measure, Reducer, Target, as_target, mean, trial_value
 from .stats import holm_adjust, paired_difference
 from .types import EvaluationRun, RunStatus, Trial
@@ -90,6 +91,12 @@ class Comparison(BaseModel):
     cluster_by: str | None = None
     warnings: list[str] = Field(default_factory=list[str])
     targets: list[TargetComparison] = Field(default_factory=list[TargetComparison])
+    # Numeric scores of the base run the candidate lacks (its scorer failed
+    # everywhere, was renamed or removed): the default gate fails on them.
+    missing_scores: list[str] = Field(default_factory=list[str])
+    # Scores the runs record opposite directions for: left out of the
+    # targets, and the gate fails on them.
+    conflicting_directions: list[str] = Field(default_factory=list[str])
 
     def target(self, name: str) -> TargetComparison | None:
         for target in self.targets:
@@ -218,11 +225,24 @@ def _warnings(
                 f"Scorer {scorer.name!r} changed its configuration without a "
                 "version bump: score differences may come from the instrument."
             )
-        elif old.source and scorer.source and old.source != scorer.source:
+        elif old.fingerprint != scorer.fingerprint:
             warnings.append(
-                f"Scorer {scorer.name!r} changed its code without a version "
-                "bump: score differences may come from the instrument."
+                f"Scorer {scorer.name!r} changed its prompt, model, settings or "
+                "declared identity without a version bump: score differences may "
+                "come from the instrument."
             )
+        elif old.source and scorer.source and old.source != scorer.source:
+            if code_scheme(old.source) != code_scheme(scorer.source):
+                warnings.append(
+                    f"Scorer {scorer.name!r}: the runs recorded its code with "
+                    "different versions of grasp-evals, so whether it changed is "
+                    "unknown."
+                )
+            else:
+                warnings.append(
+                    f"Scorer {scorer.name!r} changed its code without a version "
+                    "bump: score differences may come from the instrument."
+                )
     if base.config.repetitions != candidate.config.repetitions:
         warnings.append(
             f"Repetitions differ ({base.config.repetitions} vs "
@@ -240,6 +260,23 @@ def _warnings(
         if run.status != RunStatus.COMPLETED:
             warnings.append(f"The {label} run did not complete (status {run.status}).")
     return warnings
+
+
+def _higher_is_better(
+    target: Target, base: EvaluationRun, candidate: EvaluationRun
+) -> bool | None:
+    """
+    Whether higher values of ``target`` are better, as both runs recorded it
+    (built-in for measures); ``None`` when the runs disagree.
+    """
+    if isinstance(target, Measure):
+        return target not in _LOWER_IS_BETTER
+    recorded = {
+        d for run in (base, candidate) if (d := run.directions.get(target)) is not None
+    }
+    if len(recorded) > 1:
+        return None
+    return recorded != {"lower"}
 
 
 def _clusters(
@@ -268,7 +305,10 @@ def compare(
     """
     Paired comparison of two runs on the examples they share.
 
-    Examples are paired by id and only when their content is unchanged;
+    Each score is read in the direction the runs recorded for it (higher is
+    better unless its scorer declared ``lower_is_better``); a score the runs
+    disagree on is left out with a warning. Examples are paired by id and
+    only when their content is unchanged;
     repetitions are reduced per example first, and a task error counts as a
     failure of pass/fail scores. Each target reports the mean paired
     difference with a confidence interval, a p-value (exact McNemar for
@@ -292,13 +332,15 @@ def compare(
         1 for i in paired if base_views[i].errored != candidate_views[i].errored
     )
     comparisons: list[TargetComparison] = []
+    disagreements: list[str] = []
     for raw_target in (
         targets if targets is not None else _default_targets(base, candidate)
     ):
         target = as_target(raw_target)
-        higher_is_better = not (
-            isinstance(target, Measure) and target in _LOWER_IS_BETTER
-        )
+        higher_is_better = _higher_is_better(target, base, candidate)
+        if higher_is_better is None:
+            disagreements.append(str(target))
+            continue
         as_failures = not isinstance(target, Measure) and target in pass_fail
         rows: list[tuple[str, float, float]] = []
         for example_id in paired:
@@ -398,6 +440,18 @@ def compare(
         n_paired=len(paired),
         errored_one_side=errored_one_side,
     )
+    warnings.extend(
+        f"The runs disagree on whether higher or lower {name!r} is better "
+        "(its scorer's lower_is_better changed); it is left out."
+        for name in disagreements
+    )
+    candidate_scores = set(_numeric_scores(candidate))
+    missing = [n for n in _numeric_scores(base) if n not in candidate_scores]
+    if missing:
+        warnings.append(
+            f"The candidate has no values for {missing}, which the base run "
+            "scored: its scorer failed everywhere, was renamed or was removed."
+        )
     if cluster_key is not None and paired:
         clusters = set(_clusters(base, cluster_key, paired) or ())
         if len(clusters) < 2:
@@ -418,6 +472,8 @@ def compare(
         cluster_by=cluster_key,
         warnings=warnings,
         targets=comparisons,
+        missing_scores=missing,
+        conflicting_directions=disagreements,
     )
 
 
@@ -432,11 +488,18 @@ def regressions(
     direction of at least ``min_effect`` in a gated target — the outcome
     targets (scores and the error rate) unless ``targets`` names others, e.g.
     ``"duration_s"`` — or a gated target that cannot be tested (nothing
-    paired, or too few examples or clusters).
+    paired, too few examples or clusters, a score of the base run missing
+    from the candidate, or a score whose direction the runs disagree on).
     """
     failures: list[str] = []
     if comparison.n_paired_examples == 0:
         failures.append("no example could be paired with the baseline")
+    for name in comparison.missing_scores:
+        if targets is None or name in targets:
+            failures.append(f"the candidate has no values for {name}")
+    for name in comparison.conflicting_directions:
+        if targets is None or name in targets:
+            failures.append(f"the runs disagree on the direction of {name}")
     for target in comparison.targets:
         gated = target.target in targets if targets is not None else not target.resource
         if not gated:
@@ -464,7 +527,10 @@ def regressions(
                 else f"significant regression in {target.target}"
             )
     if targets is not None:
-        known = {t.target for t in comparison.targets}
+        known = {t.target for t in comparison.targets} | {
+            *comparison.missing_scores,
+            *comparison.conflicting_directions,
+        }
         failures.extend(
             f"no comparison for gated target {name!r}"
             for name in targets

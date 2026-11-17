@@ -297,6 +297,13 @@ class Metric(ABC):
     # Whether ``n`` counts examples (repetitions reduced first) or trials.
     unit: Unit = "example"
 
+    def declared_direction(self) -> tuple[str, bool] | None:
+        """
+        ``(target, higher_is_better)`` when the metric declares which values
+        of its target are better, so runs record it for comparisons.
+        """
+        return None
+
     @abstractmethod
     def compute(
         self,
@@ -310,7 +317,28 @@ class Metric(ABC):
         """
 
 
+def _checked_direction(of: Target, higher_is_better: bool | None) -> bool | None:
+    if higher_is_better is not None and isinstance(of, Measure):
+        raise ValueError(
+            f"{of} has a built-in direction; higher_is_better applies to scores "
+            "and recorded measurements"
+        )
+    return higher_is_better
+
+
+def _direction_of(of: Target, higher_is_better: bool | None) -> tuple[str, bool] | None:
+    if higher_is_better is None or isinstance(of, Measure):
+        return None
+    return str(of), higher_is_better
+
+
 class Mean(Metric):
+    """
+    Mean of a target, per example (repetitions reduced first) or per trial.
+    ``higher_is_better=False`` declares that lower values of a score or
+    measurement are better (as a scorer's ``lower_is_better`` does).
+    """
+
     def __init__(
         self,
         of: Target,
@@ -319,12 +347,18 @@ class Mean(Metric):
         unit: Unit = "example",
         name: str | None = None,
         confidence: float = 0.95,
+        higher_is_better: bool | None = None,
     ) -> None:
         self.of = as_target(of)
         self.reduce = reduce
         self.unit = unit
         self.confidence = confidence
         self.name = name or f"mean({self.of}){_reducer_suffix(reduce)}"
+        self.higher_is_better = _checked_direction(self.of, higher_is_better)
+
+    @override
+    def declared_direction(self) -> tuple[str, bool] | None:
+        return _direction_of(self.of, self.higher_is_better)
 
     @override
     def compute(
@@ -364,7 +398,8 @@ class PassRate(Metric):
     Trials whose task failed have no score; they count as failures unless
     ``errors_as_failures=False`` excludes them (then a system that crashes on
     hard examples would look better). The error rate is reported separately
-    either way.
+    either way. ``higher_is_better=False`` declares a score whose passes are
+    bad (``has_defect``).
     """
 
     def __init__(
@@ -376,6 +411,7 @@ class PassRate(Metric):
         reduce: Reducer = mean,
         name: str | None = None,
         confidence: float = 0.95,
+        higher_is_better: bool | None = None,
     ) -> None:
         self.of = as_target(of)
         self.threshold = threshold
@@ -384,6 +420,11 @@ class PassRate(Metric):
         self.confidence = confidence
         bar = "" if threshold is None else f">={threshold:g}"
         self.name = name or f"pass_rate({self.of}{bar}){_reducer_suffix(reduce)}"
+        self.higher_is_better = _checked_direction(self.of, higher_is_better)
+
+    @override
+    def declared_direction(self) -> tuple[str, bool] | None:
+        return _direction_of(self.of, self.higher_is_better)
 
     def _passed(self, trial: Trial) -> float | None:
         value = trial_value(trial, self.of)
@@ -1078,6 +1119,15 @@ Metrics for a run: a list, a function of the finished trials returning one
 """
 
 
+def select_metrics(trials: Sequence[Trial], metrics: MetricsSpec) -> list[Metric]:
+    """The metrics ``metrics`` (see :data:`MetricsSpec`) gives for ``trials``."""
+    if metrics is None:
+        return default_metrics(trials)
+    if callable(metrics):
+        return list(metrics(trials))
+    return list(metrics)
+
+
 def compute_metrics(
     trials: Sequence[Trial],
     metrics: MetricsSpec,
@@ -1092,12 +1142,7 @@ def compute_metrics(
     ``expected`` lists the trials that should exist: those that never ran
     (e.g. the budget ran out) count as missing.
     """
-    if metrics is None:
-        selected = default_metrics(trials)
-    elif callable(metrics):
-        selected = list(metrics(trials))
-    else:
-        selected = list(metrics)
+    selected = select_metrics(trials, metrics)
     by_id = {e.id: e for e in examples}
     clusters: dict[str, Hashable] | None = None
     if cluster_by is not None:

@@ -12,6 +12,7 @@ from grasp_agents.evals import (
     FunctionPairwiseJudge,
     FunctionTask,
     LocalRunStore,
+    Mean,
     Measure,
     PairwiseContext,
     PairwiseVerdict,
@@ -446,15 +447,58 @@ class TestGate:
         assert any("correct cannot be tested" in f for f in regressions(result))
 
     @pytest.mark.asyncio
+    async def test_a_score_missing_from_the_candidate_fails_the_gate(
+        self, store: LocalRunStore
+    ) -> None:
+        @scorer(name="correct")
+        def broken(ctx: Ctx) -> bool:
+            raise RuntimeError("judge down")
+
+        base = await evaluate(good, _dataset(4), [correct], store=store)
+        candidate = await evaluate(good, _dataset(4), [broken], store=store)
+        result = compare(base, candidate)
+        assert result.missing_scores == ["correct"]
+        assert any("no values for ['correct']" in w for w in result.warnings)
+        assert "the candidate has no values for correct" in regressions(result)
+        # Naming other targets leaves it out of the gate.
+        assert not any(
+            "correct" in f for f in regressions(result, targets=["error"])
+        )
+
+    @pytest.mark.asyncio
     async def test_changed_scorer_code_is_flagged(
         self, store: LocalRunStore, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         base = await evaluate(good, _dataset(4), [correct], store=store)
         # (The package exports a function named like the module.)
         module = importlib.import_module("grasp_agents.evals.scorer")
-        monkeypatch.setattr(module, "code_hash", lambda _: "edited")
+        monkeypatch.setattr(module, "code_hash", lambda _: "v2:edited")
         candidate = await evaluate(good, _dataset(4), [correct], store=store)
         assert any("changed its code" in w for w in compare(base, candidate).warnings)
+
+    @pytest.mark.asyncio
+    async def test_code_hashes_of_an_older_scheme_are_not_called_changes(
+        self, store: LocalRunStore
+    ) -> None:
+        base = await evaluate(good, _dataset(4), [correct], store=store)
+        candidate = await evaluate(good, _dataset(4), [correct], store=store)
+        base.scorers[0].source = "0123456789ab"  # recorded before schemes
+        warnings = compare(base, candidate).warnings
+        assert any("different versions of grasp-evals" in w for w in warnings)
+        assert not any("changed its code" in w for w in warnings)
+
+    @pytest.mark.asyncio
+    async def test_changed_declared_identity_is_flagged(
+        self, store: LocalRunStore
+    ) -> None:
+        def judged(model: str) -> Any:
+            return scorer(name="correct", identity=[model])(correct.fn)
+
+        base = await evaluate(good, _dataset(4), [judged("a")], store=store)
+        candidate = await evaluate(good, _dataset(4), [judged("b")], store=store)
+        assert any(
+            "declared identity" in w for w in compare(base, candidate).warnings
+        )
 
     @pytest.mark.asyncio
     async def test_clustered_runs_compare_on_clustered_errors(
@@ -513,6 +557,91 @@ class TestGate:
         base = await evaluate(good, _dataset(6).head(4), [correct], store=store)
         candidate = await evaluate(good, _dataset(6).head(3), [correct], store=store)
         assert any("different subsets" in w for w in compare(base, candidate).warnings)
+
+
+class TestDirections:
+    @staticmethod
+    def _defects(lower_is_better: bool) -> Any:
+        @scorer(name="defects", lower_is_better=lower_is_better)
+        def defects(ctx: Ctx) -> float:
+            return float(ctx.output != ctx.reference)
+
+        return defects
+
+    @pytest.mark.asyncio
+    async def test_a_lower_is_better_score_improves_downwards(
+        self, store: LocalRunStore
+    ) -> None:
+        defects = self._defects(lower_is_better=True)
+        base = await evaluate(flawed, _dataset(), [defects], store=store)
+        candidate = await evaluate(good, _dataset(), [defects], store=store)
+        reloaded = store.load(candidate.id)
+        assert reloaded.directions == {"defects": "lower"}
+        result = compare(base, reloaded)
+        target = result.target("defects")
+        assert target is not None
+        assert not target.higher_is_better
+        assert target.diff == pytest.approx(-0.5)
+        assert (target.improved, target.regressed) == (10, 0)
+        assert target.significant
+        assert not target.top_regressions
+        assert regressions(result) == []
+        backwards = compare(reloaded, base)
+        assert any("defects" in f for f in regressions(backwards))
+        assert "↓ defects" in render_comparison_markdown(result)
+
+    @pytest.mark.asyncio
+    async def test_runs_that_disagree_leave_the_score_out(
+        self, store: LocalRunStore
+    ) -> None:
+        base = await evaluate(
+            flawed, _dataset(), [self._defects(lower_is_better=False)], store=store
+        )
+        candidate = await evaluate(
+            good, _dataset(), [self._defects(lower_is_better=True)], store=store
+        )
+        result = compare(base, candidate)
+        assert result.target("defects") is None
+        assert any("disagree" in w and "defects" in w for w in result.warnings)
+
+    @pytest.mark.asyncio
+    async def test_a_run_without_directions_takes_the_other_runs(
+        self, store: LocalRunStore
+    ) -> None:
+        defects = self._defects(lower_is_better=True)
+        base = await evaluate(flawed, _dataset(), [defects], store=store)
+        candidate = await evaluate(good, _dataset(), [defects], store=store)
+        base.directions = {}  # recorded before directions existed
+        target = compare(base, candidate).target("defects")
+        assert target is not None
+        assert not target.higher_is_better
+
+    @pytest.mark.asyncio
+    async def test_metrics_declare_directions_of_measurements(
+        self, store: LocalRunStore
+    ) -> None:
+        async def solve(x: int, trial: TrialContext) -> int:
+            trial.record("retries", float(x % 3))
+            return x * 2
+
+        run = await evaluate(
+            solve,
+            _dataset(4),
+            [correct],
+            [Mean("retries", higher_is_better=False)],
+            store=store,
+        )
+        assert run.directions == {"correct": "higher", "retries": "lower"}
+        with pytest.raises(ValueError, match="declares the opposite"):
+            await evaluate(
+                solve,
+                _dataset(4),
+                [self._defects(lower_is_better=True)],
+                [Mean("defects", higher_is_better=True)],
+                store=store,
+            )
+        with pytest.raises(ValueError, match="built-in direction"):
+            Mean(Measure.DURATION, higher_is_better=True)
 
 
 class TestWinRateUnits:

@@ -11,6 +11,7 @@ from ._execution import (
     TrialKey,
     capture_provenance,
     config_hash,
+    declared_directions,
     execute_trial,
     load_run,
     output_adapter,
@@ -68,12 +69,16 @@ class SealedSelectionError(ValueError):
     pass
 
 
-def _check_scorers(scorers: Sequence[Scorer[Any, Any, Any]]) -> None:
+def _check_scorers(
+    scorers: Sequence[Scorer[Any, Any, Any]], metrics: MetricsSpec = None
+) -> None:
     seen: set[str] = set()
     for scorer in scorers:
         if scorer.name in seen:
             raise ValueError(f"Duplicate scorer name {scorer.name!r}")
         seen.add(scorer.name)
+    if metrics is not None and not callable(metrics):
+        declared_directions(scorers, metrics)
 
 
 def check_sealed(dataset: Dataset[Any, Any], sealed: frozenset[str]) -> None:
@@ -190,6 +195,7 @@ def _retry_run(
         config_hash=run_hash,
         tags=[*parent.tags, *tags],
         metadata={**parent.metadata, **(metadata or {})},
+        directions=dict(parent.directions),
         examples=list(parent.examples),
         trials=[t.model_copy(deep=True) for t in parent.trials if t.ok],
     )
@@ -284,7 +290,7 @@ async def evaluate[InT, OutT, RefT](
         raise ValueError(f"The selection from {dataset.name!r} has no examples")
     the_task = as_task(task)
     scorer_list: list[Scorer[Any, Any, Any]] = list(scorers)
-    _check_scorers(scorer_list)
+    _check_scorers(scorer_list, metrics)
     sealed = frozenset(sealed_splits)
     check_sealed(dataset, sealed)
     run_store = resolve_store(store, persist)
@@ -491,7 +497,7 @@ async def rescore(
     ``reference_type`` / ``output_type`` before scorers see them. A parent
     that did not complete yields a ``partial`` child.
     """
-    _check_scorers(scorers)
+    _check_scorers(scorers, metrics)
     run_store = resolve_store(store, persist)
     parent = load_run(run_store, run)
     if parent.status == RunStatus.RUNNING:
@@ -551,6 +557,7 @@ async def rescore(
         ),
         tags=[*parent.tags, *tags],
         metadata={**parent.metadata, **(metadata or {})},
+        directions=dict(parent.directions),
         examples=list(parent.examples),
     )
     if run_store is not None:
