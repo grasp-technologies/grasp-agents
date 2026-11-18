@@ -11,7 +11,6 @@ import pytest
 from grasp_agents.agent.task_progress import spill_if_large
 from grasp_agents.file_backend import (
     CompositeFileBackend,
-    GrepLine,
     GrepRawResult,
     InMemoryFileBackend,
     LocalFileBackend,
@@ -334,9 +333,9 @@ async def test_grep_spans_mounts() -> None:
 
     result = await backend.grep(Path("/user"), "TODO", output_mode="content")
 
-    assert result.content == [
-        GrepLine(MEMORY / "todo.md", 1, "TODO memory", is_match=True),
-        GrepLine(NOTES / "inbox/a.md", 1, "TODO read the paper", is_match=True),
+    assert result.lines == [
+        "/user/memory/todo.md:1:TODO memory",
+        "/user/notes/inbox/a.md:1:TODO read the paper",
     ]
     assert result.num_matches == 2
     assert result.num_files_matched == 2
@@ -615,10 +614,23 @@ async def test_grep_tool_renders_notes() -> None:
     assert "/user/memory" in result.output
 
 
-async def test_grep_tool_renders_notes_in_content_mode() -> None:
+class _ListingFails(InMemoryFileBackend):
+    """Searches contents but fails to list the files that match."""
+
+    async def grep(self, root: Path, pattern: str, **kwargs: Any) -> GrepRawResult:
+        if kwargs.get("output_mode", "files_with_matches") == "files_with_matches":
+            raise RuntimeError("index unavailable")
+        return await super().grep(root, pattern, **kwargs)
+
+
+async def test_grep_tool_notes_a_mount_whose_content_lines_it_dropped() -> None:
+    # Content mode lists the matching files to attribute lines to them, so a
+    # mount that fails only that listing loses its lines, which a note explains.
     backend = CompositeFileBackend(
         [
-            Mount(MEMORY, _NoGrep([MEMORY], files={str(MEMORY / "a.md"): "TODO\n"})),
+            Mount(
+                MEMORY, _ListingFails([MEMORY], files={str(MEMORY / "a.md"): "TODO\n"})
+            ),
             Mount(NOTES, _mem(NOTES, **{"b.md": "TODO\n"})),
         ]
     )
@@ -630,5 +642,5 @@ async def test_grep_tool_renders_notes_in_content_mode() -> None:
 
     assert isinstance(result, GrepResult)
     assert result.output.splitlines()[0] == "/user/notes/b.md:1:TODO"
-    assert "Note: /user/memory was not searched" in result.output
+    assert "Note: /user/memory was not searched: index unavailable" in result.output
     assert (result.num_matches, result.num_files_matched) == (1, 1)

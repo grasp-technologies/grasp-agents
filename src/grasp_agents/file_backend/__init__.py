@@ -27,7 +27,6 @@ if TYPE_CHECKING:
         FileBackend,
         FileEntry,
         FileStat,
-        GrepLine,
         GrepRawResult,
         StaleFileError,
     )
@@ -53,7 +52,6 @@ _LAZY: dict[str, str] = {
     "FileBackend": "base",
     "FileEntry": "base",
     "FileStat": "base",
-    "GrepLine": "base",
     "GrepRawResult": "base",
     "StaleFileError": "base",
     "CompositeFileBackend": "composite",
@@ -88,7 +86,6 @@ __all__ = [
     "FileBackend",
     "FileEntry",
     "FileStat",
-    "GrepLine",
     "GrepRawResult",
     "InMemoryFileBackend",
     "LocalFileBackend",

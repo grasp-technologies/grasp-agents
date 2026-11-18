@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from grasp_agents.file_backend import GrepLine, LocalFileBackend
+from grasp_agents.file_backend import LocalFileBackend
 from grasp_agents.file_backend.text_grep import grep_texts, grep_texts_async
 from grasp_agents.tools.file_search import rg_available
 from tests._helpers import max_loop_gap
@@ -87,7 +87,7 @@ async def test_matches_ripgrep(tmp_path: Path, case: dict[str, Any]) -> None:
 
     assert actual.files == expected.files
     assert actual.counts == expected.counts
-    assert actual.content == expected.content
+    assert actual.lines == expected.lines
     assert actual.num_matches == expected.num_matches
     assert actual.num_files_matched == expected.num_files_matched
 
@@ -178,7 +178,7 @@ def test_multiline_match_spans_lines(tmp_path: Path) -> None:
         pairs, "one.two", root=root, multiline=True, output_mode="content"
     )
 
-    assert result.content == [GrepLine(root / "a.md", 1, "one\ntwo", is_match=True)]
+    assert result.lines == [f"{root / 'a.md'}:1:one\ntwo"]
     assert result.num_matches == 1
 
 
