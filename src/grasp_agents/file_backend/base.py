@@ -76,34 +76,17 @@ GrepOutputMode = Literal["files_with_matches", "content", "count"]
 
 
 @dataclass(frozen=True)
-class GrepLine:
-    """
-    One line of a ``content``-mode grep result: a match, or a context line
-    around one (``is_match=False``).
-
-    ``line_number`` is 1-based. A multiline match is one record: ``text``
-    holds every line it spans, joined by newlines, and ``line_number`` is
-    the first one's.
-    """
-
-    path: Path
-    line_number: int
-    text: str
-    is_match: bool
-
-
-@dataclass(frozen=True)
 class GrepRawResult:
     """
-    Backend-uniform grep output. The :class:`GrepTool` filters, slices and
-    renders it for the agent.
+    Backend-uniform grep output. The :class:`GrepTool` slices + renders
+    these for the agent.
 
     Fields by mode:
 
     * ``files_with_matches``: ``files`` holds matching file paths.
     * ``count``: ``counts`` holds ``(path, n)`` tuples.
-    * ``content``: ``content`` holds a :class:`GrepLine` per matching or
-      context line, files in path order and each file's lines in order.
+    * ``content``: ``lines`` holds rendered ``path:line:content`` (or
+      ``path-line-context``) lines.
 
     ``notes`` carries caveats the :class:`GrepTool` renders after the
     results, e.g. a mount a :class:`CompositeFileBackend` could not search.
@@ -111,7 +94,7 @@ class GrepRawResult:
 
     files: list[Path] = field(default_factory=list["Path"])
     counts: list[tuple[Path, int]] = field(default_factory=list[tuple["Path", int]])
-    content: list[GrepLine] = field(default_factory=list["GrepLine"])
+    lines: list[str] = field(default_factory=list[str])
     num_matches: int = 0
     num_files_matched: int = 0
     notes: list[str] = field(default_factory=list[str])
@@ -336,12 +319,11 @@ class FileBackend(ABC):
         result; the tool slices + paginates per ``head_limit`` /
         ``offset``. Default raises :class:`NotImplementedError`.
 
-        In ``content`` mode, return a :class:`GrepLine` for every matching
-        line and every context line, naming the file by the path
-        ``files_with_matches`` mode reports for it, with its line number
-        whatever ``show_line_numbers`` says. The ``Grep`` tool checks each
-        record's path for read access, then renders the lines itself, line
-        numbers and ``--`` group separators included.
+        In ``content`` mode each line must start with its file's path
+        exactly as ``files_with_matches`` mode reports it, then ``:`` for a
+        match or ``-`` for a context line. The ``Grep`` tool attributes
+        lines to files that way to drop the ones the agent may not read,
+        and drops any line it cannot attribute.
         """
         ...
 
@@ -359,7 +341,6 @@ __all__ = [
     "FileBackend",
     "FileEntry",
     "FileStat",
-    "GrepLine",
     "GrepOutputMode",
     "GrepRawResult",
     "StaleFileError",
