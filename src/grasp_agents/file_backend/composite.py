@@ -388,7 +388,7 @@ class CompositeFileBackend(FileBackend):
         return GrepRawResult(
             files=[f for r in results for f in r.files],
             counts=[c for r in results for c in r.counts],
-            lines=[line for r in results for line in r.lines],
+            content=[line for r in results for line in r.content],
             num_matches=sum(r.num_matches for r in results),
             num_files_matched=sum(r.num_files_matched for r in results),
             notes=notes,

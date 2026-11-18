@@ -11,7 +11,7 @@ The file tools let an agent read, write, edit, copy, delete and search files thr
 | `GlobTool`, `GrepTool` | `tools/file_search/` | Search tools (`Glob`, `Grep`). |
 | `FileEditSessionState` | `tools/file_edit/session_state.py` | The read-before-write ledger (`agent.agent_ctx.file_edit_state`). |
 | `SecretRedactor`, `DefaultSecretRedactor`, `NullRedactor` | `tools/file_edit/redact.py` | Redaction of `Read` output. |
-| `FileBackend` (ABC), `FileStat`, `FileEntry`, `GrepRawResult`, `StaleFileError` | `file_backend/base.py` | Backend contract; `StaleFileError` is a refused conditional write. |
+| `FileBackend` (ABC), `FileStat`, `FileEntry`, `GrepRawResult`, `GrepLine`, `StaleFileError` | `file_backend/base.py` | Backend contract; `GrepLine` is one line of a `content`-mode grep; `StaleFileError` is a refused conditional write. |
 | `LocalFileBackend`, `MCPFileBackend`, `InMemoryFileBackend` | `file_backend/local.py`, `file_backend/mcp.py`, `file_backend/memory.py` | Host filesystem; MCP server (`grasp-agents[mcp]`); process memory. |
 | `E2BFileBackend` | `sandbox/e2b/file_backend.py` | E2B sandbox filesystem. |
 | `CompositeFileBackend`, `Mount` | `file_backend/composite.py` | Several backends served as one tree. |
@@ -46,7 +46,7 @@ agent = LLMAgent[str, str, None]("editor", llm=llm, ctx=ctx, tools=toolkit.tools
 | `Delete` | Removes one file (never a directory). |
 | `Copy` | Copies a file or a directory tree without passing its content through the model (see [Copy](#copy)). Opt-in: `FileToolkit(include_copy=True)`. |
 | `Glob` | Glob search returning the 250 most recently modified matches, newest first (`truncated` says whether more matched). Hidden directories are skipped unless `FileToolkit(glob_include_hidden=True)`; common build/cache directories (`node_modules`, `__pycache__`, `dist`, …) below the search path are always skipped. Matches the agent may not `Read` are left out ([Search and read access](#search-and-read-access)). |
-| `Grep` | Regex search with modes `files_with_matches` (default), `count`, `content` (with `-A` / `-B` / `-C`, line numbers). `LocalFileBackend` runs `rg`, which must be on `PATH`; `InMemoryFileBackend` searches in Python (`grep_texts`). Results from files the agent may not `Read` are left out, and the totals count only what is left. Notes from the backend (a mount it could not search, a search cut short by its time budget) follow the results. Paginated with `head_limit` (250) and `offset`. |
+| `Grep` | Regex search with modes `files_with_matches` (default), `count`, `content` (with `-A` / `-B` / `-C`, line numbers). `content` reads like `rg`'s output: `path:N:text` for a match, `path-N-text` for a context line, and `--` between groups that are not adjacent. `LocalFileBackend` runs `rg`, which must be on `PATH`; `InMemoryFileBackend` searches in Python (`grep_texts`). Results from files the agent may not `Read` are left out, and the totals count only what is left. Notes from the backend (a mount it could not search, a search cut short by its time budget) follow the results. Paginated with `head_limit` (250) and `offset`, which count result lines, not `--` separators. |
 | `ReadImage` | Returns a PNG / JPEG / GIF / WebP file as an image the model can see (up to 5 MB). |
 | `NotebookRead`, `NotebookEdit` | Cell-structured notebook access (see [Notebooks](notebooks.md)). |
 
@@ -106,7 +106,7 @@ A per-session opt-in bypasses the dotfile list for one path: `agent.agent_ctx.fi
 
 `Glob` and `Grep` validate their search root, and the backend then walks everything under it. So each tool also passes every result path through `validate_path(access="read")`, with the agent's dotfile overrides, and drops the paths it refuses: a search shows no more than `Read` would, neither the names nor the lines of files under a `deny_read` carve-out or among the credential dotfiles. The totals count only what is left.
 
-A `content` line carries its file's path only as text, and paths may contain `:` or `-`. So `Grep` lists the matching files with a second search, in `files_with_matches` mode, and keeps a line only when it starts with a listed path that may be read, followed by `:` or `-`, and with no listed path that may not. Notes from either search follow the results.
+In `content` mode the backend returns each line as a `GrepLine` record naming its file, so `Grep` checks every line by the exact path of its file and renders only the lines it keeps.
 
 ## Backends
 
@@ -127,7 +127,7 @@ Subclass `FileBackend` and implement every abstract method: `allowed_roots`, `ad
 - **Honor `expected_mtime`.** When `write_bytes` or `delete` gets one, raise `StaleFileError` without changing anything if the file is missing or its mtime differs. Check and write in one step where the store can (a conditional update); otherwise check right before writing. The file tools always pass the argument and rely on the check.
 - **Take a read's mtime first.** `read_text` and `read_bytes` return the mtime taken before the content (or with it, in one step). An mtime taken after could postdate a write that landed in between, and the conditional write that follows would then overwrite that write.
 - **Search stored text.** A backend that holds file text can return `await grep_texts_async(files, pattern, root=root, ...)` from `grep`, which builds a `GrepRawResult` shaped like the local `rg` backend's. `find_files` can filter `list_dir(root, recursive=True)` through `glob_filter_entries` (`file_backend/local.py`) in a worker thread.
-- **Grep lines.** In `content` mode, start each line with the file's path exactly as `files_with_matches` mode reports it, then `:` for a match or `-` for a context line. `Grep` attributes lines to files that way, and drops a line it cannot attribute.
+- **Grep records.** In `content` mode, return `GrepRawResult(content=[...])` with a `GrepLine(path, line_number, text, is_match)` for every matching line and every context line (`is_match=False`), files in path order and each file's lines in order. Name the file by the path `files_with_matches` mode reports for it, and number every line whatever `show_line_numbers` says; a multiline match is one record whose `text` holds its lines. `Grep` renders the records itself, line numbers and `--` separators included.
 - **Notes.** Put caveats the model should see in `GrepRawResult.notes`; `Grep` prints them after the results.
 - **Wrappers.** A backend that serves other backends overrides `includes`, which `SessionContext` uses to accept it next to an environment.
 
@@ -177,7 +177,7 @@ Next to an environment, `SessionContext` accepts a composite when a mount includ
 12. A composite's `allowed_roots` begin with its writable scratch mount, where framework writes and path-less searches go (`CompositeFileBackend.allowed_roots`).
 13. `Copy` checks its whole plan and reads every source before its first write, and reads only files that pass `validate_path` for reading (`CopyTool`).
 14. `Glob` and `Grep` return only results whose paths pass `validate_path(access="read")`, and their totals count only those (`tools/file_search/_read_access.py`).
-15. In `content` mode, a backend's `grep` starts each line with the file's path exactly as `files_with_matches` mode reports it, then `:` or `-` (`FileBackend.grep`).
+15. In `content` mode, a backend's `grep` returns a `GrepLine` for every matching and context line, numbered and named by the path `files_with_matches` mode reports, and `Grep` alone renders them (`FileBackend.grep`, `GrepRawResult`).
 
 ## Limitations
 
@@ -189,8 +189,7 @@ Next to an environment, `SessionContext` accepts a composite when a mount includ
 - `grep_texts` differs from `rg`: it uses the `regex` module's Python syntax instead of Rust's, ignores `.gitignore`, matches a glob containing `/` against the path under the search root, and knows only a subset of `rg`'s file types (`file_backend/text_grep.py`). It refuses patterns and globs over 1,000 characters and globs with more than 128 brace alternatives.
 - A `grep_texts` search stops at its time budget (5 s by default) and returns only the files it finished, with a note saying so. A cancelled caller stops waiting at once, but the worker thread runs until the search ends or the budget runs out.
 - Inside a directory, `Copy` skips files it may not read, symbolic links and special files instead of failing; check `skipped`. It holds every source in memory until written, and a write that fails partway (a size limit, a concurrent change) leaves the files already copied.
-- `Grep` in `content` mode runs the backend's search twice, the second time to list the matching files, and drops the lines of a file that second search did not list.
-- When a matching file `Grep` may not read has a path that, followed by `:` or `-`, begins another matching file's path (a refused file `notes` beside a readable `notes-2024/`), the other file's `content` lines are dropped too: `Grep` cannot tell which of the two they come from.
+- `Grep` prints a multiline match (`multiline=True`) as one entry numbered by its first line, where `rg` prints each of its lines with its own number.
 - `Glob` filters after the backend's cap (`head_limit`), so it can return fewer matches than the cap while reporting `truncated`.
 - The search filter is only as strict as the backend's `validate_path`. `MCPFileBackend` leaves read policy to its server and checks only `allowed_roots`, and `InMemoryFileBackend` has no read policy, so neither drops anything inside its roots.
 - `Glob` and `Grep` at a composite's virtual directory search every mount below it. `Glob` there lists each mount in full (a local mount's `.git` and `node_modules` included) before filtering, and leaves out a mount that cannot list its files, logging only a warning.
