@@ -31,7 +31,7 @@ from typing import Any, cast
 import pytest
 from e2b import AsyncSandbox
 
-from grasp_agents.file_backend.base import FileBackend
+from grasp_agents.file_backend.base import FileBackend, GrepLine
 from grasp_agents.file_backend.paths import PathAccessError
 from grasp_agents.sandbox import (
     E2BEnvironment,
@@ -372,22 +372,23 @@ _CONTENT_STDOUT = (
     f"{WS}/src/lib.rs\x007:TODO two\n"
     f"{WS}/src/lib.rs\x008-after\n"
 )
+_CONTENT_RECORDS = [
+    GrepLine(Path(f"{WS}/notes-1-a.md"), 1, "intro", is_match=False),
+    GrepLine(Path(f"{WS}/notes-1-a.md"), 2, "TODO one", is_match=True),
+    GrepLine(Path(f"{WS}/src/lib.rs"), 7, "TODO two", is_match=True),
+    GrepLine(Path(f"{WS}/src/lib.rs"), 8, "after", is_match=False),
+]
 
 
 async def test_grep_content_mode_counts_match_lines_only() -> None:
     backend, cmds = _grep_backend(_CONTENT_STDOUT)
     res = await backend.grep(Path(WS), "TODO", output_mode="content", context=1)
-    assert res.lines == [
-        f"{WS}/notes-1-a.md-1-intro",
-        f"{WS}/notes-1-a.md:2:TODO one",
-        f"{WS}/src/lib.rs:7:TODO two",
-        f"{WS}/src/lib.rs-8-after",
-    ]
+    assert res.content == _CONTENT_RECORDS
     assert (res.num_matches, res.num_files_matched) == (2, 2)
     assert cmds.calls[0]["cmd"].startswith("grep -r -E -H -Z -n -C1")
 
 
-async def test_grep_content_mode_without_line_numbers() -> None:
+async def test_grep_content_records_keep_line_numbers_the_caller_hides() -> None:
     backend, cmds = _grep_backend(_CONTENT_STDOUT)
     res = await backend.grep(
         Path(WS),
@@ -396,12 +397,7 @@ async def test_grep_content_mode_without_line_numbers() -> None:
         context=1,
         show_line_numbers=False,
     )
-    assert res.lines == [
-        f"{WS}/notes-1-a.md-intro",
-        f"{WS}/notes-1-a.md:TODO one",
-        f"{WS}/src/lib.rs:TODO two",
-        f"{WS}/src/lib.rs-after",
-    ]
+    assert res.content == _CONTENT_RECORDS
     # Line numbers are still requested: they tell matches from context.
     assert " -n " in cmds.calls[0]["cmd"]
 
@@ -1234,7 +1230,10 @@ async def test_e2b_live_grep_matrix() -> None:
 
         # content mode with line numbers
         content = await fb.grep(Path(WS), "import", output_mode="content")
-        assert any("a.py" in ln and "import os" in ln for ln in content.lines)
+        assert any(
+            line.path.name == "a.py" and "import os" in line.text
+            for line in content.content
+        )
 
         # count mode
         counts = await fb.grep(Path(WS), "TODO", output_mode="count")
